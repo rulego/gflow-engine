@@ -1,0 +1,189 @@
+{
+  "ruleChain": {
+    "id": "leave_approval",
+    "name": "leave_approval_process",
+    "root": true,
+    "debugMode": true,
+    "additionalInfo": {
+      "description": "请假审批工作流程",
+      "inputSchema": {}
+    }
+  },
+  "metadata": {
+    "firstNodeIndex": 0,
+    "nodes": [
+      {
+        "id": "node_days_route",
+        "type": "switch",
+        "name": "判断请假天数",
+        "debugMode": false,
+        "configuration": {
+          "cases": [
+            {
+              "case": "msg.days <= 3",
+              "then": "node_manager_approval"
+            },
+            {
+              "case": "msg.days > 3 && msg.days <= 7",
+              "then": "node_hr_approval"
+            }
+          ]
+        },
+        "additionalInfo": {
+          "description": "按请假天数路由：≤3 天经理单签；3~7 天并行会签；其余走默认分支（顺序会签）",
+          "layoutX": 100,
+          "layoutY": 100
+        }
+      },
+      {
+        "id": "node_manager_approval",
+        "type": "userTask",
+        "name": "经理审批",
+        "debugMode": false,
+        "configuration": {
+          "candidateType": "user",
+          "candidateConfig": {
+            "userIds": [
+              "mgr001"
+            ]
+          },
+          "formKey": "manager_approval_form",
+          "approvalType": "single"
+        },
+        "additionalInfo": {
+          "description": "直属经理审批请假申请",
+          "layoutX": 300,
+          "layoutY": 50
+        }
+      },
+      {
+        "id": "node_hr_approval",
+        "type": "userTask",
+        "name": "经理与HR会签",
+        "debugMode": false,
+        "configuration": {
+          "candidateType": "user",
+          "candidateConfig": {
+            "userIds": [
+              "mgr001",
+              "hr001"
+            ]
+          },
+          "formKey": "multi_approval_form",
+          "approvalType": "countersign",
+          "approvalRule": "{\"isSequential\":false,\"type\":\"all\"}"
+        },
+        "additionalInfo": {
+          "description": "经理和HR并行会签（全部通过）",
+          "layoutX": 300,
+          "layoutY": 150
+        }
+      },
+      {
+        "id": "node_sequential_approval",
+        "type": "userTask",
+        "name": "顺序会签审批",
+        "debugMode": false,
+        "configuration": {
+          "candidateType": "user",
+          "candidateConfig": {
+            "userIds": [
+              "user001",
+              "user002",
+              "user003"
+            ]
+          },
+          "formKey": "sequential_approval_form",
+          "approvalType": "countersign",
+          "approvalRule": "{\"isSequential\":true,\"type\":\"majority\"}"
+        },
+        "additionalInfo": {
+          "description": "顺序会签审批，需要按顺序进行审批",
+          "layoutX": 300,
+          "layoutY": 250
+        }
+      },
+      {
+        "id": "node_notify",
+        "type": "serviceTask",
+        "name": "发送审批通知",
+        "debugMode": false,
+        "configuration": {
+          "functionName": "NotificationService.sendApprovalNotification"
+        },
+        "additionalInfo": {
+          "description": "发送审批结果通知",
+          "layoutX": 500,
+          "layoutY": 100
+        }
+      },
+      {
+        "id": "end",
+        "type": "end",
+        "name": "结束",
+        "additionalInfo": {
+          "description": "结束",
+          "layoutX": 500,
+          "layoutY": 200
+        }
+      }
+    ],
+    "connections": [
+      {
+        "fromId": "node_days_route",
+        "toId": "node_manager_approval",
+        "type": "node_manager_approval"
+      },
+      {
+        "fromId": "node_days_route",
+        "toId": "node_hr_approval",
+        "type": "node_hr_approval"
+      },
+      {
+        "fromId": "node_days_route",
+        "toId": "node_sequential_approval",
+        "type": "Default"
+      },
+      {
+        "fromId": "node_manager_approval",
+        "toId": "node_notify",
+        "type": "Success"
+      },
+      {
+        "fromId": "node_manager_approval",
+        "toId": "node_notify",
+        "type": "Failure"
+      },
+      {
+        "fromId": "node_hr_approval",
+        "toId": "node_notify",
+        "type": "Success"
+      },
+      {
+        "fromId": "node_hr_approval",
+        "toId": "node_notify",
+        "type": "Failure"
+      },
+      {
+        "fromId": "node_sequential_approval",
+        "toId": "node_notify",
+        "type": "Success"
+      },
+      {
+        "fromId": "node_sequential_approval",
+        "toId": "node_notify",
+        "type": "Failure"
+      },
+      {
+        "fromId": "node_notify",
+        "toId": "end",
+        "type": "Success"
+      },
+      {
+        "fromId": "node_notify",
+        "toId": "end",
+        "type": "Failure"
+      }
+    ]
+  }
+}

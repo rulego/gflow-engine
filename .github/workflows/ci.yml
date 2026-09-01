@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test -race -count=1 -timeout 20m ./...
+
+  # SQLite silently drops SELECT ... FOR UPDATE, so row-lock serialization is
+  # only verifiable on a real database. Runs the optional real-DB lock test in
+  # service/instance_lock_test.go against live PostgreSQL and MySQL. The test
+  # creates and drops its own gflow_locktest database; no pre-created schema
+  # is needed beyond a reachable server.
+  lock-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: gflow
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Real-DB lock test (postgres)
+        env:
+          TEST_PG_DSN: "host=127.0.0.1 user=postgres password=postgres dbname=gflow port=5432 sslmode=disable"
+        run: go test -race -count=1 -v -run TestWithInstanceTx_RealDB_ForUpdateSerializes ./service/
+      - name: Real-DB lock test (mysql)
+        env:
+          TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/gflow?charset=utf8mb4&parseTime=True&loc=Local"
+        run: go test -race -count=1 -v -run TestWithInstanceTx_RealDB_ForUpdateSerializes ./service/

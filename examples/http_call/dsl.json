@@ -1,0 +1,80 @@
+{
+  "ruleChain": {
+    "id": "risk_check",
+    "name": "risk_check_process",
+    "root": true,
+    "additionalInfo": {
+      "description": "httpCall 查询外部接口 + switch 按结果路由示例"
+    }
+  },
+  "metadata": {
+    "firstNodeIndex": 0,
+    "nodes": [
+      {
+        "id": "node_start",
+        "type": "startTask",
+        "name": "发起"
+      },
+      {
+        "id": "node_query_risk",
+        "type": "httpCall",
+        "name": "查询风险评估",
+        "configuration": {
+          "url": "",
+          "method": "GET",
+          "timeoutMs": 5000,
+          "outputMappings": [
+            { "from": "riskLevel", "to": "riskLevel" },
+            { "from": "score", "to": "riskScore" }
+          ],
+          "reservedKey": "_http"
+        },
+        "additionalInfo": {
+          "description": "url 由示例运行时注入（本机模拟服务）；响应字段映射进流程变量，表单字段保留"
+        }
+      },
+      {
+        "id": "node_route",
+        "type": "switch",
+        "name": "按风险等级路由",
+        "configuration": {
+          "cases": [
+            { "case": "msg.riskLevel == 'high'", "then": "node_manual_review" }
+          ]
+        },
+        "additionalInfo": {
+          "description": "高风险转人工；其余走 Default 分支自动通过"
+        }
+      },
+      {
+        "id": "node_manual_review",
+        "type": "serviceTask",
+        "name": "转人工审批",
+        "configuration": {
+          "functionName": "RiskService.manualReview"
+        }
+      },
+      {
+        "id": "node_auto_pass",
+        "type": "serviceTask",
+        "name": "自动通过",
+        "configuration": {
+          "functionName": "RiskService.autoPass"
+        }
+      },
+      {
+        "id": "end",
+        "type": "end",
+        "name": "结束"
+      }
+    ],
+    "connections": [
+      { "fromId": "node_start", "toId": "node_query_risk", "type": "Success" },
+      { "fromId": "node_query_risk", "toId": "node_route", "type": "Success" },
+      { "fromId": "node_route", "toId": "node_manual_review", "type": "node_manual_review" },
+      { "fromId": "node_route", "toId": "node_auto_pass", "type": "Default" },
+      { "fromId": "node_manual_review", "toId": "end", "type": "Success" },
+      { "fromId": "node_auto_pass", "toId": "end", "type": "Success" }
+    ]
+  }
+}

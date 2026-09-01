@@ -1,0 +1,35 @@
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+
+# AI 辅助工具工作目录
+.trae/
+.claude/
+
+# 编译产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/gflow-engine
+/bin/
+
+# 性能剖析与覆盖率产物
+*.prof
+coverage.*
+
+# 日志与临时文件
+*.log
+logs/
+tmp/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# vendored deps for offline builds (not committed)
+vendor/
