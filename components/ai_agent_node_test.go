@@ -18,6 +18,7 @@ package components
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -638,4 +639,167 @@ func TestAIAgentNode_AssembleContextSources(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fakeAttachmentResolver 测试桩：png 视为图片（来源 D:/data/<name>），txt/pdf 视为文档
+type fakeAttachmentResolver struct {
+	gotTenantID string
+	gotRefs     []service.AttachmentRef
+}
+
+func (f *fakeAttachmentResolver) ResolveImages(tenantID string, refs []service.AttachmentRef) []service.ResolvedAttachment {
+	f.gotTenantID = tenantID
+	f.gotRefs = refs
+	var out []service.ResolvedAttachment
+	for _, r := range refs {
+		if strings.HasSuffix(strings.ToLower(r.Name), ".png") {
+			out = append(out, service.ResolvedAttachment{Name: r.Name, Source: "D:/data/" + r.Name})
+		}
+	}
+	return out
+}
+
+func (f *fakeAttachmentResolver) ResolveDocs(tenantID string, refs []service.AttachmentRef) []service.ResolvedAttachment {
+	var out []service.ResolvedAttachment
+	for _, r := range refs {
+		switch {
+		case strings.HasSuffix(strings.ToLower(r.Name), ".txt"):
+			out = append(out, service.ResolvedAttachment{Name: r.Name, Text: "说明文档内容"})
+		case strings.HasSuffix(strings.ToLower(r.Name), ".pdf"):
+			out = append(out, service.ResolvedAttachment{Name: r.Name, Text: "PDF抽取文本"})
+		}
+	}
+	return out
+}
+
+// 附件多模态组装：图片解析出时 content 升级为 parts 数组（文本在前图在后），
+// 文档以章节进正文；子开关显式关闭/解析器未注入时回退纯文本。
+func TestAIAgentNode_AssembleMultimodalAttachments(t *testing.T) {
+	srcMsg := func() types.RuleMsg {
+		meta := types.NewMetadata()
+		meta.PutValue(constants.KeyTenantID, "t1")
+		return types.NewMsg(0, "t", types.JSON, meta,
+			`{"attachments":[{"name":"invoice.png","url":"/uploads/t1/approval/20260902/f.png","path":"t1/approval/20260902/f.png"},{"name":"readme.txt","url":"/uploads/t1/approval/20260902/r.txt"}]}`)
+	}
+
+	parseMessages := func(t *testing.T, captured string) []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} {
+		var payload struct {
+			Messages []struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(captured), &payload))
+		require.Len(t, payload.Messages, 1)
+		require.Equal(t, "user", payload.Messages[0].Role)
+		return payload.Messages
+	}
+
+	t.Run("images and docs resolved to multimodal parts", func(t *testing.T) {
+		resolver := &fakeAttachmentResolver{}
+		SetAttachmentResolver(resolver)
+		defer SetAttachmentResolver(nil)
+
+		exec := useFakeExec(t)
+		captured := ""
+		exec.collectFn = func(_ string, m types.RuleMsg, _ time.Duration) (types.RuleMsg, error) {
+			captured = m.GetData()
+			return newAgentOutput("AI_DECISION: PASS"), nil
+		}
+		engine := buildAIEngine(t, "mm_parts", `{"agentId":"a","timeoutSec":5,"inputAssembly":{"contextSources":{"attachments":true}}}`)
+		runChain(t, engine, srcMsg())
+
+		msgs := parseMessages(t, captured)
+		content := msgs[0].Content
+		require.True(t, strings.HasPrefix(strings.TrimSpace(string(content)), "["), "content 应为 parts 数组: %s", content)
+
+		var parts []map[string]interface{}
+		require.NoError(t, json.Unmarshal(content, &parts))
+		require.Len(t, parts, 2, "文本 + 1 图 = 2 part（文档并入正文而非独立 part）")
+		// 文本 part 在前：含清单标注与文档章节
+		require.Equal(t, "text", parts[0]["type"])
+		text := parts[0]["text"].(string)
+		require.Contains(t, text, "## 附件")
+		require.Contains(t, text, "invoice.png（已附图）")
+		require.Contains(t, text, "readme.txt（已附文本摘要）")
+		require.Contains(t, text, "## 文档：readme.txt")
+		require.Contains(t, text, "说明文档内容")
+		// 图片 part 在文本之后，来源为解析器给的本地路径
+		imgParts := parts[1:]
+		require.Len(t, imgParts, 1)
+		require.Equal(t, "image_url", imgParts[0]["type"])
+		imageURL := imgParts[0]["image_url"].(map[string]interface{})
+		require.Equal(t, "D:/data/invoice.png", imageURL["url"])
+		// 解析器收到租户与引用
+		require.Equal(t, "t1", resolver.gotTenantID)
+		require.Len(t, resolver.gotRefs, 2)
+	})
+
+	t.Run("attachmentsImages=false keeps text-only", func(t *testing.T) {
+		SetAttachmentResolver(&fakeAttachmentResolver{})
+		defer SetAttachmentResolver(nil)
+
+		exec := useFakeExec(t)
+		captured := ""
+		exec.collectFn = func(_ string, m types.RuleMsg, _ time.Duration) (types.RuleMsg, error) {
+			captured = m.GetData()
+			return newAgentOutput("AI_DECISION: PASS"), nil
+		}
+		engine := buildAIEngine(t, "mm_img_off", `{"agentId":"a","timeoutSec":5,"inputAssembly":{"contextSources":{"attachments":true,"attachmentsImages":false}}}`)
+		runChain(t, engine, srcMsg())
+
+		msgs := parseMessages(t, captured)
+		content := strings.TrimSpace(string(msgs[0].Content))
+		require.True(t, strings.HasPrefix(content, "\""), "content 应为纯字符串: %s", content)
+		require.Contains(t, content, "invoice.png")
+		require.NotContains(t, content, "image_url")
+		// 图片关闭不影响文档摘要
+		require.Contains(t, content, "## 文档：readme.txt")
+		require.NotContains(t, content, "已附图")
+	})
+
+	t.Run("attachmentsDocs=false drops doc sections", func(t *testing.T) {
+		SetAttachmentResolver(&fakeAttachmentResolver{})
+		defer SetAttachmentResolver(nil)
+
+		exec := useFakeExec(t)
+		captured := ""
+		exec.collectFn = func(_ string, m types.RuleMsg, _ time.Duration) (types.RuleMsg, error) {
+			captured = m.GetData()
+			return newAgentOutput("AI_DECISION: PASS"), nil
+		}
+		engine := buildAIEngine(t, "mm_doc_off", `{"agentId":"a","timeoutSec":5,"inputAssembly":{"contextSources":{"attachments":true,"attachmentsDocs":false}}}`)
+		runChain(t, engine, srcMsg())
+
+		var payload struct {
+			Messages []struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"messages"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(captured), &payload))
+		all := string(payload.Messages[0].Content)
+		require.NotContains(t, all, "## 文档：readme.txt")
+		require.Contains(t, all, "image_url", "图片不受文档开关影响")
+	})
+
+	t.Run("resolver nil falls back to text list", func(t *testing.T) {
+		SetAttachmentResolver(nil)
+		exec := useFakeExec(t)
+		captured := ""
+		exec.collectFn = func(_ string, m types.RuleMsg, _ time.Duration) (types.RuleMsg, error) {
+			captured = m.GetData()
+			return newAgentOutput("AI_DECISION: PASS"), nil
+		}
+		engine := buildAIEngine(t, "mm_nores", `{"agentId":"a","timeoutSec":5,"inputAssembly":{"contextSources":{"attachments":true}}}`)
+		runChain(t, engine, srcMsg())
+
+		msgs := parseMessages(t, captured)
+		content := strings.TrimSpace(string(msgs[0].Content))
+		require.True(t, strings.HasPrefix(content, "\""), "解析器未注入时 content 保持字符串")
+		require.Contains(t, content, "invoice.png")
+		require.Contains(t, content, "/uploads/t1/approval/20260902/f.png")
+	})
 }

@@ -187,7 +187,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	// 加签守卫：主任务（无 ParentID）存在未决加签子任务时不能直接完成。
 	// 否则审批人加签后又自己点通过，主任务会被直接完成并流转——加签人从未参与
 	// （实例 completed，加签待办被归档吞掉）。
-	// 语义对齐钉钉：加签人必须先审；全部子任务完成后原审批人再通过。
+	// 加签人必须先审；全部子任务完成后原审批人再通过。
 	// 不适用于会签/票签子任务路径（它们带 ParentID，在下方分支按阈值判定）。
 	if task.ParentID == nil || *task.ParentID == "" {
 		// 查询失败必须拒绝完成（fail-closed），否则守卫被静默绕过

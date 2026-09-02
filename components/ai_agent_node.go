@@ -151,8 +151,16 @@ type InputAssemblyConfig struct {
 type ContextSourcesConfig struct {
 	// FormData 流程变量（审批表单数据）
 	FormData bool `json:"formData"`
-	// Attachments 附件列表（从 metadata.attachments 读取）
+	// Attachments 附件主开关：附件清单文本 + 图片送识别 + 文档摘要（从 metadata.attachments
+	// 或表单上传字段 attachments 读取）
 	Attachments bool `json:"attachments"`
+	// AttachmentsImages 图片送识别（nil=跟随 Attachments 主开关）。
+	// 开启时图片以 image_url 内容片随消息发送：模型支持视觉则直接看图，
+	// 不支持则由共享库自动降级为 [图片：路径] 文本。
+	AttachmentsImages *bool `json:"attachmentsImages,omitempty"`
+	// AttachmentsDocs 文档摘要送识别（nil=跟随 Attachments 主开关）。
+	// 开启时文字型文档（PDF/TXT/MD）抽取文本后以章节形式随消息发送。
+	AttachmentsDocs *bool `json:"attachmentsDocs,omitempty"`
 	// ProcessInfo 流程元信息（processKey/instanceId/initiator/已用时长）
 	ProcessInfo bool `json:"processInfo"`
 	// PrevComments 前序节点审批意见（从 metadata.comments 读取）
@@ -408,6 +416,8 @@ func (n *AIAgentNode) decisionEnabled() bool {
 // assembleInput 组装 MultiTurnChatRequest。
 // 节点只发送 user 角色消息：customPrompt（如非空）作前置片段，业务上下文作正文，
 // 裁决启用且同步模式时在末尾追加裁决协议，拼接成单条 user 消息。
+// 附件开启且解析出图片时，content 升级为 OpenAI 多模态 parts 数组
+// （[文本, image_url...]），由引擎按模型视觉能力分流；无图片时为纯字符串。
 // 不发送 system 消息。三者皆空时注入最小占位消息。
 func (n *AIAgentNode) assembleInput(ctx types.RuleContext, msg types.RuleMsg) ([]byte, error) {
 	cfg := n.Config.InputAssembly
@@ -421,19 +431,28 @@ func (n *AIAgentNode) assembleInput(ctx types.RuleContext, msg types.RuleMsg) ([
 			contextParts = append(contextParts, "## 表单数据\n"+formData)
 		}
 	}
+	// 附件引用：优先读 metadata（历史入口），回退读表单上传字段 attachments
+	//（值为上传组件写入的文件名/下载地址数组）
+	attRefs := extractAttachmentRefs(msg, vars)
+	attImages := []service.ResolvedAttachment{}
+	attDocs := []service.ResolvedAttachment{}
 	if cfg.ContextSources.Attachments {
-		// 附件优先读 metadata（历史入口），回退读表单上传字段 attachments
-		//（值为上传组件写入的文件名/下载地址数组，以文本形式随上下文发送）
-		att := metaValue(msg, "attachments")
-		if att == "" && vars != nil {
-			if raw, ok := vars["attachments"]; ok && raw != nil {
-				if b, err := json.Marshal(raw); err == nil {
-					att = string(b)
-				}
-			}
+		if list := attachmentListText(attRefs); list != "" {
+			contextParts = append(contextParts, "## 附件\n"+list)
 		}
-		if att != "" {
-			contextParts = append(contextParts, "## 附件\n"+att)
+		// 图片/文档解析：宿主注入的解析器把附件变成模型可用形态（绝对路径/文本）。
+		// 解析器未注入（nil）或开关关闭时保持纯文本行为。
+		if resolver := getAttachmentResolver(); resolver != nil {
+			tenantID := metaValue(msg, constants.KeyTenantID)
+			if n.attachmentsImagesEnabled() {
+				attImages = resolver.ResolveImages(tenantID, attRefs)
+			}
+			if n.attachmentsDocsEnabled() {
+				attDocs = resolver.ResolveDocs(tenantID, attRefs)
+			}
+			if len(attImages) > 0 || len(attDocs) > 0 {
+				contextParts[len(contextParts)-1] = "## 附件\n" + annotatedAttachmentList(attRefs, attImages, attDocs)
+			}
 		}
 	}
 	if cfg.ContextSources.ProcessInfo {
@@ -446,6 +465,11 @@ func (n *AIAgentNode) assembleInput(ctx types.RuleContext, msg types.RuleMsg) ([
 	}
 	if cfg.ContextSources.Initiator {
 		contextParts = append(contextParts, "## 发起人\n"+n.buildInitiatorInfo(ctx, msg))
+	}
+
+	// 文档摘要作为正文章节（在附件清单之后，与图片 part 的顺序约定：先文本后图）
+	for _, d := range attDocs {
+		contextParts = append(contextParts, "## 文档："+d.Name+"\n"+d.Text)
 	}
 
 	userContent := strings.Join(contextParts, "\n\n")
@@ -478,12 +502,113 @@ func (n *AIAgentNode) assembleInput(ctx types.RuleContext, msg types.RuleMsg) ([
 	if strings.TrimSpace(content) == "" {
 		content = "请处理"
 	}
-	messages = append(messages, map[string]interface{}{
-		"role":    "user",
-		"content": content,
-	})
+
+	if len(attImages) > 0 {
+		// 多模态：文本 part 在前、图片 part 在后
+		parts := []map[string]interface{}{{
+			"type": "text",
+			"text": content,
+		}}
+		for _, img := range attImages {
+			parts = append(parts, map[string]interface{}{
+				"type":      "image_url",
+				"image_url": map[string]interface{}{"url": img.Source},
+			})
+		}
+		messages = append(messages, map[string]interface{}{
+			"role":    "user",
+			"content": parts,
+		})
+	} else {
+		messages = append(messages, map[string]interface{}{
+			"role":    "user",
+			"content": content,
+		})
+	}
 
 	return json.Marshal(map[string]interface{}{"messages": messages})
+}
+
+// attachmentsImagesEnabled 图片送识别开关：nil=跟随附件主开关
+func (n *AIAgentNode) attachmentsImagesEnabled() bool {
+	cs := n.Config.InputAssembly.ContextSources
+	return cs.Attachments && (cs.AttachmentsImages == nil || *cs.AttachmentsImages)
+}
+
+// attachmentsDocsEnabled 文档摘要送识别开关：nil=跟随附件主开关
+func (n *AIAgentNode) attachmentsDocsEnabled() bool {
+	cs := n.Config.InputAssembly.ContextSources
+	return cs.Attachments && (cs.AttachmentsDocs == nil || *cs.AttachmentsDocs)
+}
+
+// extractAttachmentRefs 提取附件引用清单：优先 metadata.attachments（历史入口，
+// JSON 字符串），回退表单上传字段 vars["attachments"]（[]map{name,url[,path]}）。
+func extractAttachmentRefs(msg types.RuleMsg, vars map[string]interface{}) []service.AttachmentRef {
+	var refs []service.AttachmentRef
+	appendRaw := func(raw interface{}) {
+		items, ok := raw.([]interface{})
+		if !ok {
+			return
+		}
+		for _, it := range items {
+			m, ok := it.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			refs = append(refs, service.AttachmentRef{
+				Name: str.ToString(m["name"]),
+				URL:  str.ToString(m["url"]),
+				Path: str.ToString(m["path"]),
+			})
+		}
+	}
+	if att := metaValue(msg, "attachments"); att != "" {
+		var parsed interface{}
+		if err := json.Unmarshal([]byte(att), &parsed); err == nil {
+			appendRaw(parsed)
+		}
+	}
+	if len(refs) == 0 && vars != nil {
+		appendRaw(vars["attachments"])
+	}
+	return refs
+}
+
+// attachmentListText 附件纯文本清单（每行一个附件）
+func attachmentListText(refs []service.AttachmentRef) string {
+	if len(refs) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(refs))
+	for _, r := range refs {
+		lines = append(lines, "- "+r.Name+" "+r.URL)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// annotatedAttachmentList 带识别状态标注的附件清单：让模型把图片 part / 文档章节
+// 与清单里的文件名对应起来（"（已附图）"/"（已附文本摘要）"）。
+func annotatedAttachmentList(refs []service.AttachmentRef, images, docs []service.ResolvedAttachment) string {
+	imageNames := map[string]bool{}
+	for _, img := range images {
+		imageNames[img.Name] = true
+	}
+	docNames := map[string]bool{}
+	for _, d := range docs {
+		docNames[d.Name] = true
+	}
+	lines := make([]string, 0, len(refs))
+	for _, r := range refs {
+		note := ""
+		switch {
+		case imageNames[r.Name]:
+			note = "（已附图）"
+		case docNames[r.Name]:
+			note = "（已附文本摘要）"
+		}
+		lines = append(lines, "- "+r.Name+note)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (n *AIAgentNode) buildProcessInfo(msg types.RuleMsg) string {

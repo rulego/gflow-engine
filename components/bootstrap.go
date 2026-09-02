@@ -12,6 +12,9 @@ type bootstrapOptions struct {
 	serviceFuncs []ServiceFunc
 	// automationExecutor 非 nil 时覆盖引擎默认（GetRuleChainExecutor）。
 	automationExecutor service.RuleChainExecutor
+	// attachmentResolver 附件解析器（AIAgentNode 多模态输入）。nil=不注入，
+	// aiAgent 节点附件保持纯文本行为。
+	attachmentResolver service.AttachmentResolver
 }
 
 // Option 引擎组件装配可选项。
@@ -31,6 +34,14 @@ func WithServiceFuncs(funcs []ServiceFunc) Option {
 func WithAutomationExecutor(executor service.RuleChainExecutor) Option {
 	return func(o *bootstrapOptions) {
 		o.automationExecutor = executor
+	}
+}
+
+// WithAttachmentResolver 注入附件解析器：AIAgentNode 组装输入时把附件解析成
+// 模型可用形态（图片绝对路径 / 文档抽取文本）。不注入时附件保持纯文本行为。
+func WithAttachmentResolver(r service.AttachmentResolver) Option {
+	return func(o *bootstrapOptions) {
+		o.attachmentResolver = r
 	}
 }
 
@@ -76,6 +87,7 @@ func assembleDeps(e service.WorkflowEngine, opts ...Option) (ComponentDeps, erro
 		CCTaskCreatedListener: e.GetCCTaskCreatedListener(),
 		TaskEventListener:     e.GetTaskEventListener(),
 		ServiceFuncs:          o.serviceFuncs,
+		AttachmentResolver:    o.attachmentResolver,
 	}
 	if o.automationExecutor != nil {
 		deps.AutomationExecutor = o.automationExecutor

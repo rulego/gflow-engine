@@ -24,7 +24,7 @@ import (
 	"github.com/rulego/rulego/api/types"
 )
 
-// processDefinitionEnvelope 是设计器（AntFlowDesigner.vue）保存时输出的
+// processDefinitionEnvelope 是前端流程设计器保存时输出的
 // DefinitionJSON 包裹结构，形如：
 //
 //	{

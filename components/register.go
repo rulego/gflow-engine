@@ -54,6 +54,10 @@ type ComponentDeps struct {
 	// AutomationExecutor AutomationCallNode 跨池调用自动化规则链的执行器（可选）。
 	// nil 时节点仍注册但运行时 TellFailure（bridge 未启用场景）。
 	AutomationExecutor service.RuleChainExecutor
+	// AttachmentResolver 附件解析器（可选）。AIAgentNode 组装多模态输入时把
+	// 附件解析成模型可用形态（图片绝对路径/文档文本）。nil 时附件保持
+	// 纯文本行为（文件名+地址），完全向后兼容。
+	AttachmentResolver service.AttachmentResolver
 	// ServiceFuncs 服务任务函数（可选）。宿主业务函数随组件引导一并注册，
 	// 等价于逐个调 Services.Register；统一入口是为了集成方一次调用完成装配。
 	// 运行时 ServiceTaskNode 按 functionName 在注册表查找，未注册的函数在部署期即被拦截。
@@ -79,6 +83,9 @@ func Register(deps ComponentDeps) error {
 
 	// 注入全局自动化执行器（AutomationCallNode.New 引用）
 	SetAutomationExecutor(deps.AutomationExecutor)
+
+	// 注入全局附件解析器（AIAgentNode 多模态输入引用；nil 合法）
+	SetAttachmentResolver(deps.AttachmentResolver)
 
 	// 注入 serviceTask 函数名校验器：注册表（components.Services）在本包，
 	// service 层部署期校验经回调取用，避免 service→components 循环依赖。

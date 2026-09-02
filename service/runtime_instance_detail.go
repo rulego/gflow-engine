@@ -143,7 +143,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 
 			// 设计器配置分两层：
 			// - ruleChain.additionalInfo.actionPermissions：流程级发起人动作（withdraw/resubmit/urge/suspend/terminate）
-			//   —— 钉钉"高级设置"对应，不挂在 startTask 节点上
+			//   —— 即流程级"高级设置"，不挂在 startTask 节点上
 			// - userTask（审批人节点）的 additionalInfo.actionPermissions：审批人视角动作（addComment/transfer/return/terminate/uploadAttachment/awaken）
 			if rc, err := procDef.ToRuleChain(); err == nil {
 				// 流程级发起人动作权限
