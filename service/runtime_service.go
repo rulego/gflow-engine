@@ -127,13 +127,15 @@ type RuntimeService interface {
 	// GetTodoProcessInstanceList 获取我的待办实例列表。
 	// 含：① assignee 为本人的任务；② 待认领且本人在候选人池的任务（候选组模式，
 	// 角色经 IdentityService 展开）。
-	GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
+	// keyword 命中实例标题/业务键/编号；startUserIDs 为按申请人过滤的发起人 ID
+	//（宿主按姓名解析），与 keyword 任一命中。
+	GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
 
 	// GetDoneProcessInstanceList 获取我的已办实例列表。
-	GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
+	GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
 
 	// GetCcProcessInstanceList 获取抄送给我的实例列表。
-	GetCcProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
+	GetCcProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
 
 	// GetMyApplicationsProcessInstanceList 获取我发起的申请实例列表
 	// （按 start_user_id=发起人用户ID 过滤，与 token userId 同口径）

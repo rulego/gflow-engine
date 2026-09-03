@@ -289,21 +289,21 @@ func TestRuntimeServiceImpl_GetProcessInstanceDetail_NilDAO_Panics(t *testing.T)
 func TestRuntimeServiceImpl_GetTodoList_NilDAO_Panics(t *testing.T) {
 	s := &RuntimeServiceImpl{}
 	expectPanicRuntime(t, "GetTodoList", func() {
-		s.GetTodoProcessInstanceList(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, 1, 10, "", "", false)
+		s.GetTodoProcessInstanceList(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, 1, 10, "", nil, "", false)
 	})
 }
 
 func TestRuntimeServiceImpl_GetDoneList_NilDAO_Panics(t *testing.T) {
 	s := &RuntimeServiceImpl{}
 	expectPanicRuntime(t, "GetDoneList", func() {
-		s.GetDoneProcessInstanceList(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, 1, 10, "", "", false)
+		s.GetDoneProcessInstanceList(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, 1, 10, "", nil, "", false)
 	})
 }
 
 func TestRuntimeServiceImpl_GetCcList_NilDAO_Panics(t *testing.T) {
 	s := &RuntimeServiceImpl{}
 	expectPanicRuntime(t, "GetCcList", func() {
-		s.GetCcProcessInstanceList(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, 1, 10, "", "", false)
+		s.GetCcProcessInstanceList(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, 1, 10, "", nil, "", false)
 	})
 }
 

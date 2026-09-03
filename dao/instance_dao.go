@@ -460,9 +460,18 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 		args = append(args, req.ApprovalType)
 	}
 	if req.Keyword != "" {
-		conditions += " AND (i.name LIKE ? OR i.business_key LIKE ?)"
+		// keyword 命中申请标题 / 业务键 / 编号（实例ID）/ 申请人（StartUserIDs，宿主按姓名解析）
+		conditions += " AND (i.name LIKE ? OR i.business_key LIKE ? OR i.id LIKE ?"
 		kw := likeContains(req.Keyword)
-		args = append(args, kw, kw)
+		args = append(args, kw, kw, kw)
+		if len(req.StartUserIDs) > 0 {
+			ph := strings.TrimSuffix(strings.Repeat("?,", len(req.StartUserIDs)), ",")
+			conditions += " OR i.start_user_id IN (" + ph + ")"
+			for _, id := range req.StartUserIDs {
+				args = append(args, id)
+			}
+		}
+		conditions += ")"
 	}
 
 	// 合并运行时与历史两个来源。一个实例可能命中多个任务、甚至同时出现在
@@ -570,9 +579,10 @@ func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID,
 		}
 	}
 	if keyword != "" {
+		// 申请编号即实例ID，纳入 keyword 匹配
 		kw := likeContains(keyword)
-		conditions += " AND (name LIKE ? OR business_key LIKE ?)"
-		args = append(args, kw, kw)
+		conditions += " AND (name LIKE ? OR business_key LIKE ? OR id LIKE ?)"
+		args = append(args, kw, kw, kw)
 	}
 	if startTimeFrom != nil {
 		conditions += " AND created_at >= ?"

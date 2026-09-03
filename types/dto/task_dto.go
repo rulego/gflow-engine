@@ -56,6 +56,9 @@ type TaskQuery struct {
 	// 配合 CandidateUser，扩展候选匹配到 entity_type='department' AND entity_id IN (CandidateDeptIDs)。
 	// dept 候选任务落库的是部门实体，须按部门匹配才对成员可见。
 	CandidateDeptIDs []string `json:"candidateDeptIDs" form:"candidateDeptIDs"`
+	// StartUserIDs 发起人 ID 列表：与 Keyword 联动按申请人过滤。引擎不持有姓名，
+	// 由宿主按姓名/用户名解析后传入。
+	StartUserIDs []string `json:"startUserIDs" form:"startUserIDs"`
 
 	// 时间范围查询条件
 	CreatedAfter  *time.Time `json:"createdAfter" form:"createdAfter"`   // 创建时间起始

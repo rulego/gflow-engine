@@ -128,13 +128,13 @@ func (r *testRuntimeDouble) RestartProcessInstance(ctx context.Context, actor Ac
 func (r *testRuntimeDouble) CompleteProcessInstance(ctx context.Context, actor Actor, id, reason string) error {
 	return nil
 }
-func (r *testRuntimeDouble) GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
+func (r *testRuntimeDouble) GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	return nil, 0, nil
 }
-func (r *testRuntimeDouble) GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
+func (r *testRuntimeDouble) GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	return nil, 0, nil
 }
-func (r *testRuntimeDouble) GetCcProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
+func (r *testRuntimeDouble) GetCcProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	return nil, 0, nil
 }
 func (r *testRuntimeDouble) GetMyApplicationsProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {

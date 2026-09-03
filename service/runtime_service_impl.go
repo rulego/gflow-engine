@@ -1596,7 +1596,7 @@ func (s *RuntimeServiceImpl) GetProcessInstancesByTaskConditions(ctx context.Con
 // GetTodoProcessInstanceList 获取我的待办实例列表
 // 含：① assignee=userID 的任务；② status=Pending 且 user 在候选人池的未签收任务（候选组模式）。
 // 候选人池依赖 wf_task_assignee 表；表不存在时退化为仅 ①。
-func (s *RuntimeServiceImpl) GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
+func (s *RuntimeServiceImpl) GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	ctx = bindActor(ctx, actor)
 	userID, tenantID := actor.UserID, actor.TenantID
 	q := &dto.TaskQuery{
@@ -1606,6 +1606,7 @@ func (s *RuntimeServiceImpl) GetTodoProcessInstanceList(ctx context.Context, act
 		CandidateDeptIDs: identityDeptIDs(ctx, s.workflowEngine.GetIdentityService(), tenantID, userID),
 		TenantID:         tenantID,
 		Keyword:          keyword,
+		StartUserIDs:     startUserIDs,
 		PageRequest: dto.PageRequest{
 			Page:      page,
 			PageSize:  pageSize,
@@ -1647,13 +1648,14 @@ func (s *RuntimeServiceImpl) isUserCandidate(ctx context.Context, task *model.Wf
 }
 
 // GetDoneProcessInstanceList 获取我的已办实例列表
-func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
+func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	ctx = bindActor(ctx, actor)
 	userID, tenantID := actor.UserID, actor.TenantID
 	q := &dto.TaskQuery{
-		Assignee: userID,
-		TenantID: tenantID,
-		Keyword:  keyword,
+		Assignee:     userID,
+		TenantID:     tenantID,
+		Keyword:      keyword,
+		StartUserIDs: startUserIDs,
 		PageRequest: dto.PageRequest{
 			Page:      page,
 			PageSize:  pageSize,
@@ -1671,13 +1673,14 @@ func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, act
 }
 
 // GetCcProcessInstanceList 获取抄送给我的实例列表
-func (s *RuntimeServiceImpl) GetCcProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
+func (s *RuntimeServiceImpl) GetCcProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	ctx = bindActor(ctx, actor)
 	userID, tenantID := actor.UserID, actor.TenantID
 	q := &dto.TaskQuery{
 		Assignee:     userID,
 		TenantID:     tenantID,
 		Keyword:      keyword,
+		StartUserIDs: startUserIDs,
 		ApprovalType: string(enums.ApprovalTypeCC),
 		PageRequest: dto.PageRequest{
 			Page:      page,
