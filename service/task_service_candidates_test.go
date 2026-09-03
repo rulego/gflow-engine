@@ -286,8 +286,9 @@ func TestGetTaskCandidates_RoleExpanded(t *testing.T) {
 	require.True(t, ids["m2"], "应包含 role-a 成员 m2")
 }
 
-// TestGetTaskCandidates_IdentityNil_OnlyPerson 验证 identity==nil 时 role 记录跳过，只返回 person。
-func TestGetTaskCandidates_IdentityNil_OnlyPerson(t *testing.T) {
+// TestGetTaskCandidates_IdentityNil 验证 identity==nil 时 person 池正常返回；
+// 池含 role/dept 实体时报错（展开不了不能当空池放行，与认领校验同口径）。
+func TestGetTaskCandidates_IdentityNil(t *testing.T) {
 	q := candGroupDB(t)
 	ctx := context.Background()
 	seedRoleInstance(t, q, "task-mix", "inst-mix")
@@ -296,9 +297,13 @@ func TestGetTaskCandidates_IdentityNil_OnlyPerson(t *testing.T) {
 	require.NoError(t, taskSvc.AddCandidates(ctx, Actor{UserID: "system", TenantID: "t1"}, "task-mix", "role", []string{"role-a"}))
 	require.NoError(t, taskSvc.AddCandidates(ctx, Actor{UserID: "system", TenantID: "t1"}, "task-mix", "person", []string{"p1"}))
 
+	_, err := taskSvc.GetTaskCandidates(ctx, "inst-mix", "approve-node")
+	require.Error(t, err, "identity 缺失且池含 role 实体时必须报错")
+
+	require.NoError(t, taskSvc.RemoveCandidates(ctx, Actor{UserID: "system", TenantID: "t1"}, "task-mix", "role", []string{"role-a"}))
 	candidates, err := taskSvc.GetTaskCandidates(ctx, "inst-mix", "approve-node")
 	require.NoError(t, err)
-	require.Len(t, candidates, 1, "identity nil 时只返回 person")
+	require.Len(t, candidates, 1, "纯 person 池不依赖 identity")
 	require.Equal(t, "p1", candidates[0].EntityID)
 	require.Equal(t, "person", candidates[0].EntityType)
 }

@@ -109,8 +109,38 @@ func (s *TaskServiceImpl) GetTaskCandidates(ctx context.Context, processInstance
 		return nil, fmt.Errorf("failed to query task assignees: %w", err)
 	}
 
-	// identity 非 nil 时展开 role/dept；nil 时只返回 person。
+	// identity 非 nil 时展开 role/dept；展开失败返回错误而非空池——
+	// 本方法的调用方包括实例详情可见性与候选名单展示，展开不了不能当空池放行。
 	identity := s.workflowEngine.GetIdentityService()
+	expand := func(entityType, entityID string) ([]string, error) {
+		switch entityType {
+		case string(enums.EntityTypePerson):
+			if entityID == "" {
+				return nil, nil
+			}
+			return []string{entityID}, nil
+		case string(enums.EntityTypeRole):
+			if identity == nil {
+				return nil, fmt.Errorf("identity service unavailable, cannot expand role candidate %s", entityID)
+			}
+			members, err := identity.GetUserIDsByRoleID(ctx, tenantID, entityID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve role candidate %s: %w", entityID, err)
+			}
+			return members, nil
+		case string(enums.EntityTypeDepartment):
+			if identity == nil {
+				return nil, fmt.Errorf("identity service unavailable, cannot expand department candidate %s", entityID)
+			}
+			members, err := identity.GetUserIDsByDepartmentID(ctx, tenantID, entityID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to resolve department candidate %s: %w", entityID, err)
+			}
+			return members, nil
+		default:
+			return nil, nil
+		}
+	}
 
 	approverMap := make(map[string]*dto.NodeApproverDTO)
 	addPerson := func(uid string) {
@@ -122,7 +152,14 @@ func (s *TaskServiceImpl) GetTaskCandidates(ctx context.Context, processInstance
 		}
 	}
 	for _, r := range rows {
-		for _, m := range expandCandidateMembers(ctx, identity, tenantID, r.EntityType, r.EntityID) {
+		if r == nil {
+			continue
+		}
+		members, err := expand(r.EntityType, r.EntityID)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range members {
 			addPerson(m)
 		}
 	}

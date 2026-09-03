@@ -1673,7 +1673,13 @@ func (s *RuntimeServiceImpl) isUserCandidate(ctx context.Context, task *model.Wf
 		return true
 	}
 	candidates, err := s.workflowEngine.GetTaskService().GetTaskCandidates(ctx, *task.ProcessInstanceID, task.TaskDefKey)
-	if err != nil || len(candidates) == 0 {
+	if err != nil {
+		// 展开失败按非候选处理（fail-closed）：与认领校验同口径，
+		// identity 不可用时不能把候选实例当空池对全租户放行。
+		return false
+	}
+	// 空池任务与认领口径一致：不限定候选人，同租户可见
+	if len(candidates) == 0 {
 		return true
 	}
 	for _, c := range candidates {
