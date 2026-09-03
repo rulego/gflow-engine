@@ -92,10 +92,11 @@ func (x *CCTaskNode) Init(ruleConfig types.Config, configuration types.Configura
 func (x *CCTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 	defer recoverNodePanic(ctx, msg, CCTaskNodeType, x.GetSelfId())
 	// 获取抄送用户
+	// selfSelect=true 时名单完全以业务变量 ccUserIds 为准，静态配置名单不参与
+	// （发起人未选则无人被抄送）；仅静态模式下使用配置名单。
 	// 节点实例跨消息复用，x.Config.CCUserIds 是共享 slice header；直接 append 在底层数组
 	// 有余容时会写共享数组，并发 OnMsg 会触发数据竞争并污染抄送列表。先复制一份再追加。
-	ccUserIds := make([]string, 0, len(x.Config.CCUserIds)+8)
-	ccUserIds = append(ccUserIds, x.Config.CCUserIds...)
+	var ccUserIds []string
 	if x.Config.SelfSelect {
 		// 自选抄送人来自业务变量 ccUserIds（业务变量在 env 信封的 "msg" 下，见 extractVariables）；
 		// 发起人跳过选择时变量缺失，不视为错误，仅告警留痕
@@ -114,6 +115,9 @@ func (x *CCTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 				"instanceId": metaValue(msg, constants.KeyInstanceID),
 			}).Warn("ccTask selfSelect=true but variable ccUserIds missing; nobody cc'd by self-select")
 		}
+	} else {
+		ccUserIds = make([]string, 0, len(x.Config.CCUserIds))
+		ccUserIds = append(ccUserIds, x.Config.CCUserIds...)
 	}
 
 	// 去重
