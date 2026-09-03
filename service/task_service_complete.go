@@ -493,14 +493,50 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 	// resolveDelegatedApproval 把任务归还给自己 → 节点永不完成、实例卡死。
 	emptyOwner := ""
 	task.Owner = &emptyOwner
-	username := ""
+	operator := ""
 	if u := GetUserFromCtx(ctx); u != nil {
-		username = u.UserName
+		operator = u.UserID
 	}
 	now := time.Now()
-	task.UpdatedBy = &username
+	task.UpdatedBy = &operator
 	task.UpdatedAt = &now
-	return taskDAO.Update(ctx, task)
+	// 被委派人的审批意见落两处：task.Comment 快照让详情时间线立即可见（原审批人
+	// 带意见完成时按完成语义覆盖）；评论表留档，不随任务归档丢失
+	if request.Comment != "" {
+		task.Comment = &request.Comment
+	}
+	if err := taskDAO.Update(ctx, task); err != nil {
+		return err
+	}
+	if err := s.recordApprovalComment(ctx, scope, task, operator, request.Comment); err != nil {
+		return err
+	}
+
+	// 归还事件：原审批人需感知任务已回到名下（与显式 Resolve 同口径）
+	if listener := s.workflowEngine.GetTaskEventListener(); listener != nil && task.Assignee != nil && *task.Assignee != "" {
+		instanceID := ""
+		if task.ProcessInstanceID != nil {
+			instanceID = *task.ProcessInstanceID
+		}
+		evt := TaskEvent{
+			Type:       TaskEventResolved,
+			TaskID:     task.ID,
+			TaskDefKey: task.TaskDefKey,
+			InstanceID: instanceID,
+			ProcessID:  task.ProcessID,
+			TenantID:   task.TenantID,
+			TaskName:   task.Name,
+			ToUsers:    []string{*task.Assignee},
+			FromUser:   operator,
+			Reason:     request.Comment,
+			Timestamp:  time.Now(),
+		}
+		scope.AfterCommit(func() error {
+			DispatchTaskEvent(listener, evt, ctx)
+			return nil
+		})
+	}
+	return nil
 }
 
 // cancelSiblingActiveTasks 终止同实例同节点(TaskDefKey)的其他活跃任务。
