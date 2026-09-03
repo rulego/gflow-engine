@@ -281,3 +281,95 @@ func TestTaskDAO_Delete_MissingTask_KeepsData(t *testing.T) {
 		t.Errorf("assignees must not be touched, rows=%d err=%v", len(rows), err)
 	}
 }
+
+// List 候选维度过滤：person/role/department 三类候选实体等价命中；
+// 已指派与状态不符的任务不得进入可认领集合。
+func TestTaskDAO_List_CandidatePoolFilter(t *testing.T) {
+	q := newTestQuery(t, ddlWfTask, ddlWfTaskAssignee)
+	d := NewTaskDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	seedTask := func(taskID, status, assignee string) {
+		t.Helper()
+		var assigneePtr *string
+		if assignee != "" {
+			assigneePtr = &assignee
+		}
+		if err := q.WfTask.Create(&model.WfTask{
+			ID: taskID, TaskDefKey: "n1", Name: "审批", TaskType: "user_task",
+			Status: status, Assignee: assigneePtr,
+			TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("seed task %s: %v", taskID, err)
+		}
+	}
+	seedTask("task-person", "pending", "")
+	seedTask("task-role", "pending", "")
+	seedTask("task-dept", "pending", "")
+	seedTask("task-taken", "pending", "u2")
+	seedTask("task-done", "completed", "")
+
+	pool := func(taskID, entityType, entityID string) {
+		t.Helper()
+		if err := q.WfTaskAssignee.Create(&model.WfTaskAssignee{
+			ID: "pool-" + taskID, TaskID: taskID, EntityType: entityType, EntityID: entityID,
+			TenantID: "t1", CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("seed pool %s: %v", taskID, err)
+		}
+	}
+	pool("task-person", "person", "u1")
+	pool("task-role", "role", "r1")
+	pool("task-dept", "department", "d1")
+	pool("task-taken", "person", "u1")
+	pool("task-done", "person", "u1")
+
+	list := func(candUser string, roleIDs, deptIDs []string) map[string]bool {
+		t.Helper()
+		tasks, _, err := d.List(ctx, &dto.TaskQuery{
+			TenantID:         "t1",
+			CandidateUser:    candUser,
+			CandidateRoleIDs: roleIDs,
+			CandidateDeptIDs: deptIDs,
+			PageRequest:      dto.PageRequest{Page: 1, PageSize: 50, Status: []string{"pending"}},
+		})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		set := make(map[string]bool)
+		for _, task := range tasks {
+			set[task.ID] = true
+		}
+		return set
+	}
+
+	got := list("u1", nil, nil)
+	if !got["task-person"] {
+		t.Error("person 候选应命中候选池内任务")
+	}
+	if got["task-taken"] {
+		t.Error("已被他人签收的任务不得进入可认领集合")
+	}
+	if got["task-done"] {
+		t.Error("已完结任务不得进入可认领集合")
+	}
+
+	if !list("", []string{"r1"}, nil)["task-role"] {
+		t.Error("role 候选应按角色命中")
+	}
+	if !list("", nil, []string{"d1"})["task-dept"] {
+		t.Error("department 候选应按部门命中")
+	}
+	if list("", nil, []string{"d2"})["task-dept"] {
+		t.Error("其他部门成员不应命中")
+	}
+
+	got = list("u1", []string{"r1"}, []string{"d1"})
+	if !got["task-person"] || !got["task-role"] || !got["task-dept"] {
+		t.Errorf("三类候选应取并集, got %v", got)
+	}
+	if got["task-taken"] {
+		t.Error("并集查询同样不得命中已指派任务")
+	}
+}

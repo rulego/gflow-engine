@@ -154,3 +154,114 @@ func TestGetProcessInstanceDetail_IDOR_RejectsNonParticipant(t *testing.T) {
 	require.NotNil(t, resp)
 	require.Equal(t, "inst-idor", resp.InstanceID)
 }
+
+// 候选池成员的详情可见性：待签收任务的候选成员（department/role 展开后）可读
+// 实例详情，池外用户拒绝；他人签收后剩余成员失去候选可见性。
+func TestGetProcessInstanceDetail_CandidateVisibility(t *testing.T) {
+	q := candGroupDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	identity := newMockIdentity()
+	identity.AddMockUser(&User{ID: "alice", TenantID: "t1"})
+	identity.AddMockUserDepartment("alice", "dept-1")
+	identity.AddMockUser(&User{ID: "bob", TenantID: "t1"})
+	identity.AddMockUserDepartment("bob", "dept-1")
+	identity.AddMockUser(&User{ID: "carol", TenantID: "t1"})
+	identity.AddMockRoleUsers("r1", []string{"carol"})
+
+	// 实例 i1：pending 任务候选池为部门 dept-1
+	seedRoleInstance(t, q, "task-dept-vis", "inst-dept-vis")
+	require.NoError(t, q.WfTaskAssignee.Create(&model.WfTaskAssignee{
+		ID: "pool-dept-vis", TaskID: "task-dept-vis", EntityType: "department", EntityID: "dept-1",
+		TenantID: "t1", CreatedAt: now,
+	}))
+	// 实例 i2：pending 任务候选池为角色 r1
+	seedRoleInstance(t, q, "task-role-vis", "inst-role-vis")
+	require.NoError(t, q.WfTaskAssignee.Create(&model.WfTaskAssignee{
+		ID: "pool-role-vis", TaskID: "task-role-vis", EntityType: "role", EntityID: "r1",
+		TenantID: "t1", CreatedAt: now,
+	}))
+
+	taskSvc := newCandSvc(q, identity)
+	engine := &secFixEngine{taskSvc: taskSvc}
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: engine,
+	}
+	engine.runtimeSvc = rs
+
+	detail := func(userID, instanceID string) error {
+		userCtx := SetUserToCtx(ctx, &Actor{UserID: userID, TenantID: "t1", UserName: userID})
+		_, err := rs.GetProcessInstanceDetail(userCtx, Actor{UserID: userID, TenantID: "t1"}, instanceID)
+		return err
+	}
+
+	// 部门候选：成员可读，池外（仅角色成员）拒绝
+	require.NoError(t, detail("alice", "inst-dept-vis"))
+	require.ErrorIs(t, detail("carol", "inst-dept-vis"), ErrPermissionDenied)
+
+	// 角色候选：角色成员可读，部门成员拒绝
+	require.NoError(t, detail("carol", "inst-role-vis"))
+	require.ErrorIs(t, detail("alice", "inst-role-vis"), ErrPermissionDenied)
+
+	// alice 签收部门候选任务后，同部门其他成员失去候选可见性
+	require.NoError(t, taskSvc.Claim(SetUserToCtx(ctx, &Actor{UserID: "alice", TenantID: "t1"}),
+		Actor{UserID: "alice", TenantID: "t1"}, "task-dept-vis"))
+	require.ErrorIs(t, detail("bob", "inst-dept-vis"), ErrPermissionDenied)
+}
+
+// errDeptIdentity 部门成员查询恒失败的 identity：展开失败时详情必须拒绝，不得当作空池放行。
+type errDeptIdentity struct {
+	*IdentityServiceImpl
+}
+
+func (errDeptIdentity) GetUserIDsByDepartmentID(context.Context, string, string) ([]string, error) {
+	return nil, errors.New("identity backend unavailable")
+}
+
+// 候选展开不可用（identity 缺失或查询失败）时，待签收实例详情必须 fail-closed，
+// 与认领校验同口径：展开不了不能当作空池对全租户放行。
+func TestGetProcessInstanceDetail_CandidateExpandFailureDenied(t *testing.T) {
+	q := candGroupDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	seedRoleInstance(t, q, "task-open", "inst-open")
+	require.NoError(t, q.WfTaskAssignee.Create(&model.WfTaskAssignee{
+		ID: "pool-open", TaskID: "task-open", EntityType: "department", EntityID: "dept-9",
+		TenantID: "t1", CreatedAt: now,
+	}))
+
+	outsider := func(rs *RuntimeServiceImpl) error {
+		userCtx := SetUserToCtx(ctx, &Actor{UserID: "outsider", TenantID: "t1", UserName: "outsider"})
+		_, err := rs.GetProcessInstanceDetail(userCtx, Actor{UserID: "outsider", TenantID: "t1"}, "inst-open")
+		return err
+	}
+
+	// identity 查询失败
+	taskSvc := newCandSvc(q, errDeptIdentity{newMockIdentity()})
+	engine := &secFixEngine{taskSvc: taskSvc}
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: engine,
+	}
+	engine.runtimeSvc = rs
+	require.ErrorIs(t, outsider(rs), ErrPermissionDenied, "identity 展开失败时不得放行详情")
+
+	// identity 缺失且池含 group 实体
+	taskSvc2 := newCandSvc(q, nil)
+	engine2 := &secFixEngine{taskSvc: taskSvc2}
+	rs2 := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: engine2,
+	}
+	engine2.runtimeSvc = rs2
+	require.ErrorIs(t, outsider(rs2), ErrPermissionDenied, "identity 缺失且池含 role/dept 时不得放行详情")
+}
