@@ -91,6 +91,27 @@ const (
 		updated_at DATETIME
 	)`
 
+	ddlWfHiInstance = `CREATE TABLE IF NOT EXISTS wf_hi_instance (
+		id TEXT PRIMARY KEY,
+		process_id TEXT NOT NULL DEFAULT '',
+		business_key TEXT,
+		name TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'running',
+		variables TEXT,
+		current_activity TEXT,
+		priority INTEGER NOT NULL DEFAULT 50,
+		parent_id TEXT,
+		tenant_id TEXT NOT NULL DEFAULT '',
+		created_by TEXT NOT NULL DEFAULT '',
+		created_at DATETIME,
+		updated_by TEXT,
+		updated_at DATETIME,
+		end_reason TEXT,
+		duration INTEGER,
+		ended_at DATETIME,
+		start_user_id TEXT NOT NULL DEFAULT ''
+	)`
+
 	ddlWfInstance = `CREATE TABLE IF NOT EXISTS wf_instance (
 		id TEXT PRIMARY KEY,
 		process_id TEXT NOT NULL DEFAULT '',

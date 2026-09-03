@@ -122,9 +122,14 @@ type IdentityService interface {
 	GetUserDepartmentID(ctx context.Context, tenantID string, userID string) (string, error)
 
 	// GetRoleIDsByUserID 反向 SPI：按用户 ID 查其角色 ID 列表。
-	// 用于 role 候选任务的待办维度查询（用户有哪些角色 → 哪些 role 候选任务可见）。
+	// 用于 role 候选任务的待办查询：候选任务落库的是 role 实体，须按用户的角色匹配。
 	// 生产实现由上层应用（gflow）注入。
 	GetRoleIDsByUserID(ctx context.Context, tenantID string, userID string) ([]string, error)
+
+	// GetDepartmentIDsByUserID 反向 SPI：按用户 ID 查其部门 ID 列表（含非主部门）。
+	// 用于 dept 候选任务的待办查询：候选任务落库的是 department 实体，须按用户的部门匹配。
+	// 生产实现由上层应用（gflow）注入。
+	GetDepartmentIDsByUserID(ctx context.Context, tenantID string, userID string) ([]string, error)
 }
 
 // TenantMembershipChecker IdentityService 的可选扩展接口：宿主的 IdentityService

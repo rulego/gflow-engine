@@ -116,9 +116,9 @@ func (d *TaskAssigneeDAO) DeleteByTaskAndEntities(ctx context.Context, tenantID,
 	return err
 }
 
-// CountCandidateTasks 统计用户作为候选人（person 或 role 成员）的待办任务数。
+// CountCandidateTasks 统计用户作为候选人（person、role 成员或 department 成员）的待办任务数。
 // JOIN wf_task 过滤状态/创建/截止时间；候选任务无 assignee，与 assignee 计数不重叠。
-func (d *TaskAssigneeDAO) CountCandidateTasks(ctx context.Context, tenantID, userID string, roleIDs, statuses []string, createdAfter, dueBefore *time.Time) (int64, error) {
+func (d *TaskAssigneeDAO) CountCandidateTasks(ctx context.Context, tenantID, userID string, roleIDs, deptIDs, statuses []string, createdAfter, dueBefore *time.Time) (int64, error) {
 	if userID == "" {
 		return 0, nil
 	}
@@ -128,6 +128,10 @@ func (d *TaskAssigneeDAO) CountCandidateTasks(ctx context.Context, tenantID, use
 	if len(roleIDs) > 0 {
 		cond += " OR (ca.entity_type = 'role' AND ca.entity_id IN (?))"
 		args = append(args, roleIDs)
+	}
+	if len(deptIDs) > 0 {
+		cond += " OR (ca.entity_type = 'department' AND ca.entity_id IN (?))"
+		args = append(args, deptIDs)
 	}
 	q := db.Table(model.TableNameWfTaskAssignee+" AS ca").
 		Joins("JOIN "+model.TableNameWfTask+" AS t ON t.id = ca.task_id").

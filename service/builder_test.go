@@ -260,6 +260,9 @@ func (fakeIdentityService) GetUserDepartmentID(_ context.Context, _, _ string) (
 func (fakeIdentityService) GetRoleIDsByUserID(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }
+func (fakeIdentityService) GetDepartmentIDsByUserID(_ context.Context, _, _ string) ([]string, error) {
+	return nil, nil
+}
 
 // TestBuilder_RequireIdentityService_RejectsMock verifies Build refuses to
 // construct an engine when RequireIdentityService is set but only a mock (or

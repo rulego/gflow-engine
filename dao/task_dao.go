@@ -193,11 +193,11 @@ func (d *TaskDAO) List(ctx context.Context, query *dto.TaskQuery) ([]*model.WfTa
 	if query.DueDateBefore != nil {
 		queryBuilder = queryBuilder.Where(q.DueDate.IsNotNull(), q.DueDate.Lt(*query.DueDateBefore))
 	}
-	// 候选维度过滤：CandidateUser/CandidateRoleIDs 任一设置时，限定"未指派且命中
-	// wf_task_assignee 候选池"的任务（person 直配或 role 引用）。
+	// 候选维度过滤：CandidateUser/CandidateRoleIDs/CandidateDeptIDs 任一设置时，
+	// 限定"未指派且命中 wf_task_assignee 候选池"的任务（person 直配、role 或 department 引用）。
 	// 注意与 InstanceDAO.ListByTaskConditions 的候选分支不同：那边还会命中
 	// assignee=user 的已指派任务；可认领集合必须排除已指派任务。
-	if query.CandidateUser != "" || len(query.CandidateRoleIDs) > 0 {
+	if query.CandidateUser != "" || len(query.CandidateRoleIDs) > 0 || len(query.CandidateDeptIDs) > 0 {
 		ca := d.Query.WfTaskAssignee
 		var poolGroups []field.Expr
 		if query.CandidateUser != "" {
@@ -207,6 +207,10 @@ func (d *TaskDAO) List(ctx context.Context, query *dto.TaskQuery) ([]*model.WfTa
 		if len(query.CandidateRoleIDs) > 0 {
 			poolGroups = append(poolGroups,
 				field.And(ca.EntityType.Eq(string(enums.EntityTypeRole)), ca.EntityID.In(query.CandidateRoleIDs...)))
+		}
+		if len(query.CandidateDeptIDs) > 0 {
+			poolGroups = append(poolGroups,
+				field.And(ca.EntityType.Eq(string(enums.EntityTypeDepartment)), ca.EntityID.In(query.CandidateDeptIDs...)))
 		}
 		sub := ca.WithContext(ctx).Select(ca.TaskID).Where(field.Or(poolGroups...))
 		assigneeFree := field.Or(q.Assignee.IsNull(), q.Assignee.Eq(""))

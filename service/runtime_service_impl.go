@@ -1603,6 +1603,7 @@ func (s *RuntimeServiceImpl) GetTodoProcessInstanceList(ctx context.Context, act
 		Assignee:         userID,
 		CandidateUser:    userID,
 		CandidateRoleIDs: s.candidateRoleIDs(ctx, tenantID, userID),
+		CandidateDeptIDs: identityDeptIDs(ctx, s.workflowEngine.GetIdentityService(), tenantID, userID),
 		TenantID:         tenantID,
 		Keyword:          keyword,
 		PageRequest: dto.PageRequest{

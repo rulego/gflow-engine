@@ -227,3 +227,59 @@ func TestInstanceDAO_Statistics(t *testing.T) {
 		t.Error("expected error for empty tenantID")
 	}
 }
+
+// ListByTaskConditions 候选维度：dept 候选任务落库的是 department 实体，
+// 待办查询必须按用户的部门 ID 匹配才对成员可见；person/role 口径不得误命中。
+func TestInstanceDAO_ListByTaskConditions_DeptCandidate(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfTask, ddlWfTaskAssignee, ddlWfHiInstance, ddlWfHiTask)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := q.WfInstance.Create(&model.WfInstance{
+		ID: "i-dept", ProcessID: "proc-1", Name: "dept_candidate_flow", Status: "active",
+		TenantID: "t1", CreatedBy: "starter", StartUserID: "starter", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed instance: %v", err)
+	}
+	instID := "i-dept"
+	if err := q.WfTask.Create(&model.WfTask{
+		ID: "task-dept", ProcessInstanceID: &instID, TaskDefKey: "n1", Name: "审批",
+		TaskType: "user_task", Status: "pending", TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	if err := q.WfTaskAssignee.Create(&model.WfTaskAssignee{
+		ID: "as-dept", TaskID: "task-dept", EntityType: "department", EntityID: "dept-1",
+		TenantID: "t1", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed assignee: %v", err)
+	}
+
+	todoHit := func(deptIDs []string) bool {
+		t.Helper()
+		instances, _, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
+			Assignee: "u1", CandidateUser: "u1", CandidateDeptIDs: deptIDs, TenantID: "t1",
+			PageRequest: dto.PageRequest{Status: []string{"pending"}},
+		})
+		if err != nil {
+			t.Fatalf("ListByTaskConditions: %v", err)
+		}
+		for _, in := range instances {
+			if in.ID == "i-dept" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if !todoHit([]string{"dept-1"}) {
+		t.Error("dept 候选任务的实例应出现在该部门成员的待办中")
+	}
+	if todoHit([]string{"dept-2"}) {
+		t.Error("非该部门成员不应看到 dept 候选任务")
+	}
+	if todoHit(nil) {
+		t.Error("仅 person/role 口径不应命中 department 候选")
+	}
+}

@@ -301,6 +301,27 @@ func (s *IdentityServiceImpl) GetRoleIDsByUserID(ctx context.Context, tenantID s
 	return result, nil
 }
 
+// GetDepartmentIDsByUserID 反向 SPI：按用户 ID 查其部门 ID 列表（Mock 实现）。
+// 由 userDept 映射反推，按 tenantID 过滤。
+func (s *IdentityServiceImpl) GetDepartmentIDsByUserID(ctx context.Context, tenantID string, userID string) ([]string, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("user ID cannot be empty")
+	}
+	if _, exists := s.users[userID]; !exists {
+		return []string{}, nil
+	}
+	if tenantID != "" {
+		if user, exists := s.users[userID]; !exists || user.TenantID != tenantID {
+			return []string{}, nil
+		}
+	}
+	deptID := s.userDept[userID]
+	if deptID == "" {
+		return []string{}, nil
+	}
+	return []string{deptID}, nil
+}
+
 // AddMockUser 向 Mock 数据中添加用户（仅测试用）
 func (s *IdentityServiceImpl) AddMockUser(user *User) {
 	if s.users == nil {

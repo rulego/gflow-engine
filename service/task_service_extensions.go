@@ -53,6 +53,7 @@ func (s *TaskServiceImpl) GetClaimableInstanceIDs(ctx context.Context, actor Act
 		TenantID:         tenantID,
 		CandidateUser:    userID,
 		CandidateRoleIDs: s.candidateRoleIDs(ctx, tenantID, userID),
+		CandidateDeptIDs: s.candidateDeptIDs(ctx, tenantID, userID),
 		PageRequest: dto.PageRequest{
 			Page:     1,
 			PageSize: 500,

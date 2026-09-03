@@ -418,23 +418,31 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 	}
 	if req.Assignee != "" {
 		// 候选维度：assignee=user OR (Pending 未签收 且 user 在候选人池 wf_task_assignee)。
-		// 候选池匹配 person（entity_id=user）与 role（entity_id IN userRoleIDs）。
-		switch {
-		case req.CandidateUser != "" && len(req.CandidateRoleIDs) > 0:
-			ph := make([]string, len(req.CandidateRoleIDs))
-			for i := range req.CandidateRoleIDs {
-				ph[i] = "?"
+		// 候选池匹配 person（entity_id=user）、role（entity_id IN userRoleIDs）与
+		// department（entity_id IN userDeptIDs，dept 候选任务落库的是部门实体）。
+		if req.CandidateUser != "" {
+			poolCond := "(ca.entity_type = 'person' AND ca.entity_id = ?)"
+			poolArgs := []interface{}{}
+			for _, group := range []struct {
+				entityType string
+				ids        []string
+			}{{"role", req.CandidateRoleIDs}, {"department", req.CandidateDeptIDs}} {
+				if len(group.ids) == 0 {
+					continue
+				}
+				ph := strings.TrimSuffix(strings.Repeat("?,", len(group.ids)), ",")
+				poolCond += " OR (ca.entity_type = '" + group.entityType + "' AND ca.entity_id IN (" + ph + "))"
+				for _, id := range group.ids {
+					poolArgs = append(poolArgs, id)
+				}
 			}
-			placeholders := strings.Join(ph, ",")
-			conditions += " AND (t.assignee = ? OR (t.status = ? AND EXISTS (SELECT 1 FROM wf_task_assignee ca WHERE ca.task_id = t.id AND ((ca.entity_type = 'person' AND ca.entity_id = ?) OR (ca.entity_type = 'role' AND ca.entity_id IN (" + placeholders + "))))))"
-			args = append(args, req.Assignee, string(enums.TaskStatusPending), req.CandidateUser)
-			for _, rid := range req.CandidateRoleIDs {
-				args = append(args, rid)
+			if len(poolArgs) > 0 {
+				poolCond = "(" + poolCond + ")"
 			}
-		case req.CandidateUser != "":
-			conditions += " AND (t.assignee = ? OR (t.status = ? AND EXISTS (SELECT 1 FROM wf_task_assignee ca WHERE ca.task_id = t.id AND ca.entity_type = 'person' AND ca.entity_id = ?)))"
+			conditions += " AND (t.assignee = ? OR (t.status = ? AND EXISTS (SELECT 1 FROM wf_task_assignee ca WHERE ca.task_id = t.id AND " + poolCond + ")))"
 			args = append(args, req.Assignee, string(enums.TaskStatusPending), req.CandidateUser)
-		default:
+			args = append(args, poolArgs...)
+		} else {
 			conditions += " AND t.assignee = ?"
 			args = append(args, req.Assignee)
 		}

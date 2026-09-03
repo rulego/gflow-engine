@@ -817,6 +817,10 @@ func (managerChainIdentity) GetRoleIDsByUserID(context.Context, string, string) 
 	return nil, nil
 }
 
+func (managerChainIdentity) GetDepartmentIDsByUserID(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+
 func TestResolveAssignees_ManagerLevels(t *testing.T) {
 	newNode := func(ct string, levels interface{}) *UserTaskNode {
 		cfg := map[string]interface{}{}
@@ -917,6 +921,9 @@ func (cyclicManagerIdentity) GetUserDepartmentID(context.Context, string, string
 	return "", nil
 }
 func (cyclicManagerIdentity) GetRoleIDsByUserID(context.Context, string, string) ([]string, error) {
+	return nil, nil
+}
+func (cyclicManagerIdentity) GetDepartmentIDsByUserID(context.Context, string, string) ([]string, error) {
 	return nil, nil
 }
 

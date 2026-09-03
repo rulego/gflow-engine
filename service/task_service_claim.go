@@ -122,11 +122,13 @@ func (s *TaskServiceImpl) claimInternal(ctx context.Context, scope *InstanceScop
 	// 更新任务
 	task.Assignee = &userID
 	task.Status = string(enums.TaskStatusActive)
+	// claimed_at 是"已签收"的判定字段：详情面板的取消签收显隐、已办时间线都读它
+	now := time.Now()
+	task.ClaimedAt = &now
 	username := ""
 	if u := GetUserFromCtx(ctx); u != nil {
 		username = u.UserName
 	}
-	now := time.Now()
 	task.UpdatedBy = &username
 	task.UpdatedAt = &now
 
@@ -264,8 +266,10 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 		return nil
 	}
 
-	// 更新 assignee 为 nil，状态回退为 Pending
-	task.Assignee = nil
+	// 更新 assignee，状态回退为 Pending。
+	// gorm Updates(struct) 忽略 nil 字段，清空 assignee 须用空串指针，残留办理人会挡住后续签收
+	emptyAssignee := ""
+	task.Assignee = &emptyAssignee
 	task.Status = string(enums.TaskStatusPending)
 	now := time.Now()
 	username := ""

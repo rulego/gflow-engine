@@ -52,6 +52,10 @@ type TaskQuery struct {
 	// 配合 CandidateUser，扩展候选匹配到 entity_type='role' AND entity_id IN (CandidateRoleIDs)。
 	// 为空时仅匹配 person 候选。
 	CandidateRoleIDs []string `json:"candidateRoleIDs" form:"candidateRoleIDs"`
+	// CandidateDeptIDs 候选部门：用户所属部门 ID 列表。
+	// 配合 CandidateUser，扩展候选匹配到 entity_type='department' AND entity_id IN (CandidateDeptIDs)。
+	// dept 候选任务落库的是部门实体，须按部门匹配才对成员可见。
+	CandidateDeptIDs []string `json:"candidateDeptIDs" form:"candidateDeptIDs"`
 
 	// 时间范围查询条件
 	CreatedAfter  *time.Time `json:"createdAfter" form:"createdAfter"`   // 创建时间起始

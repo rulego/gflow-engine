@@ -61,7 +61,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		// 管理员放行
 	} else if currentUserId == "" {
 		return nil, fmt.Errorf("instance %s detail requires an actor with user id: %w", processInstanceID, ErrAuthenticationRequired)
-	} else if !isInstanceVisibleToUser(instance, visibilityTasks, currentUserId) {
+	} else if !isInstanceVisibleToUser(instance, visibilityTasks, currentUserId) && !s.isPendingCandidateVisible(ctx, visibilityTasks, currentUserId) {
 		return nil, fmt.Errorf("current user %s has no view permission on instance %s: %w", currentUserId, processInstanceID, ErrPermissionDenied)
 	}
 	var approvalList []dto.ExecutionInfo
@@ -307,7 +307,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 }
 
 // isInstanceVisibleToUser 判定当前用户对该实例是否有可见性。
-// 可见条件（满足任一）：① 发起人 ② 该实例任一 task 的 assignee（含历史） ③ CC 抄送归属（assignee==user 且 approval_type==cc）。
+// 可见条件（满足任一）：发起人、该实例任一 task 的 assignee（含历史）、CC 抄送归属。
+// 待认领候选成员不在 task.assignee 上，由调用方经 isPendingCandidateVisible 补充判定。
 // currentUserId 由调用方保证非空（空 UserID 在 GetProcessInstanceDetail 已被拒绝）。
 func isInstanceVisibleToUser(instance *model.WfInstance, tasks []*model.WfTask, currentUserId string) bool {
 	if instance.StartUserID == currentUserId {
@@ -318,6 +319,26 @@ func isInstanceVisibleToUser(instance *model.WfInstance, tasks []*model.WfTask, 
 			continue
 		}
 		if t.Assignee != nil && *t.Assignee == currentUserId {
+			return true
+		}
+	}
+	return false
+}
+
+// isPendingCandidateVisible 待认领任务的候选成员对实例详情可见：候选任务无 assignee，
+// 不满足 isInstanceVisibleToUser 的任何条件，但成员须能看到详情才能签收。
+func (s *RuntimeServiceImpl) isPendingCandidateVisible(ctx context.Context, tasks []*model.WfTask, currentUserId string) bool {
+	candMemo := map[string]bool{}
+	for _, t := range tasks {
+		if t == nil || t.Status != string(enums.TaskStatusPending) {
+			continue
+		}
+		ok, cached := candMemo[t.TaskDefKey]
+		if !cached {
+			ok = s.isUserCandidate(ctx, t, currentUserId)
+			candMemo[t.TaskDefKey] = ok
+		}
+		if ok {
 			return true
 		}
 	}

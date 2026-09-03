@@ -47,9 +47,27 @@ func identityRoleIDs(ctx context.Context, identity IdentityService, tenantID, us
 	return roleIDs
 }
 
+// identityDeptIDs 取用户部门 ID 列表（含非主部门；dept 候选组待办按 department 匹配）。
+// identity 未注入或查询失败返回 nil。
+func identityDeptIDs(ctx context.Context, identity IdentityService, tenantID, userID string) []string {
+	if identity == nil || userID == "" {
+		return nil
+	}
+	deptIDs, err := identity.GetDepartmentIDsByUserID(ctx, tenantID, userID)
+	if err != nil {
+		return nil
+	}
+	return deptIDs
+}
+
 // candidateRoleIDs 取用户角色 ID 列表（统计候选维度用）。
 func (s *TaskServiceImpl) candidateRoleIDs(ctx context.Context, tenantID, userID string) []string {
 	return identityRoleIDs(ctx, s.workflowEngine.GetIdentityService(), tenantID, userID)
+}
+
+// candidateDeptIDs 取用户部门 ID 列表（统计候选维度用）。
+func (s *TaskServiceImpl) candidateDeptIDs(ctx context.Context, tenantID, userID string) []string {
+	return identityDeptIDs(ctx, s.workflowEngine.GetIdentityService(), tenantID, userID)
 }
 
 // GetApprovalStatistics 卡片条无参聚合：覆盖待审批/已审批两页的正确语义。
@@ -70,6 +88,7 @@ func (s *TaskServiceImpl) GetApprovalStatistics(ctx context.Context, actor Actor
 	activeStatuses := []string{string(enums.TaskStatusPending), string(enums.TaskStatusActive)}
 	completedStatus := []string{string(enums.TaskStatusCompleted)}
 	roleIDs := s.candidateRoleIDs(ctx, tenantID, userID)
+	deptIDs := s.candidateDeptIDs(ctx, tenantID, userID)
 
 	// 待办（已签收 assignee + 候选组未签收）
 	_, todoCount, err := s.QueryTasks(ctx, &dto.TaskQuery{
@@ -79,7 +98,7 @@ func (s *TaskServiceImpl) GetApprovalStatistics(ctx context.Context, actor Actor
 	if err != nil {
 		return nil, fmt.Errorf("failed to query todo tasks: %w", err)
 	}
-	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, []string{string(enums.TaskStatusPending)}, nil, nil); cerr == nil {
+	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, deptIDs, []string{string(enums.TaskStatusPending)}, nil, nil); cerr == nil {
 		todoCount += candCnt
 	}
 
@@ -126,7 +145,7 @@ func (s *TaskServiceImpl) GetApprovalStatistics(ctx context.Context, actor Actor
 		logrus.WithError(err).Warn("Failed to query today arrived tasks")
 		todayArrived = 0
 	}
-	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, []string{string(enums.TaskStatusPending)}, &todayStart, nil); cerr == nil {
+	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, deptIDs, []string{string(enums.TaskStatusPending)}, &todayStart, nil); cerr == nil {
 		todayArrived += candCnt
 	}
 
@@ -136,7 +155,7 @@ func (s *TaskServiceImpl) GetApprovalStatistics(ctx context.Context, actor Actor
 		logrus.WithError(err).Warn("Failed to query overdue tasks")
 		overdueCount = 0
 	}
-	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, []string{string(enums.TaskStatusPending)}, nil, &now); cerr == nil {
+	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, deptIDs, []string{string(enums.TaskStatusPending)}, nil, &now); cerr == nil {
 		overdueCount += candCnt
 	}
 
@@ -298,7 +317,7 @@ func (s *TaskServiceImpl) GetApprovalStatisticsDetail(ctx context.Context, actor
 	if err != nil {
 		return nil, fmt.Errorf("failed to query todo tasks: %w", err)
 	}
-	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, s.candidateRoleIDs(ctx, tenantID, userID), []string{string(enums.TaskStatusPending)}, nil, nil); cerr == nil {
+	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, s.candidateRoleIDs(ctx, tenantID, userID), s.candidateDeptIDs(ctx, tenantID, userID), []string{string(enums.TaskStatusPending)}, nil, nil); cerr == nil {
 		todoCount += candCnt
 	}
 

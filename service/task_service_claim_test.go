@@ -75,6 +75,8 @@ func TestClaim_RejectsNonCandidate(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, persisted.Assignee)
 	require.Equal(t, "userA", *persisted.Assignee)
+	// claimed_at 是取消签收显隐/已办时间线的判定字段，签收必须落值
+	require.NotNil(t, persisted.ClaimedAt, "签收应写 claimed_at")
 }
 
 // TestClaim_EmptyCandidatePool_AllowsClaim 验证业务规则：wf_task_assignee 池为空时放行
@@ -116,4 +118,49 @@ func TestClaim_EmptyCandidatePool_AllowsClaim(t *testing.T) {
 	}
 	claimerCtx := SetUserToCtx(ctx, &Actor{UserID: "userX", TenantID: "t1", UserName: "X"})
 	require.NoError(t, taskSvc.Claim(claimerCtx, Actor{UserID: "userX", TenantID: "t1", UserName: "X"}, "task-empty-pool"), "空候选人池应放行认领")
+}
+
+// TestUnclaim_ClearsAssignee_AndReclaim 取消签收必须显式清空 assignee
+// （gorm Updates(struct) 忽略 nil），否则残留旧办理人，再签收被 already assigned 拒绝。
+func TestUnclaim_ClearsAssignee_AndReclaim(t *testing.T) {
+	q := candGroupDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-unclaim", ProcessID: "proc-1", Name: "unclaim_test",
+		Status: string(enums.InstanceStatusActive), StartUserID: "starter",
+		TenantID: "t1", CreatedBy: "starter", CreatedAt: now,
+	}))
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-unclaim", ProcessInstanceID: secFixStrPtr("inst-unclaim"), TaskDefKey: "approve-node",
+		Name: "审批", TaskType: "user_task", Status: string(enums.TaskStatusPending),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+	}))
+
+	identity := &IdentityServiceImpl{}
+	identity.AddMockUser(&User{ID: "userA", TenantID: "t1"})
+	identity.AddMockRoleUsers("role-1", []string{"userA"})
+
+	taskSvc := &TaskServiceImpl{
+		taskDAO:         dao.NewTaskDAOWithQuery(q),
+		hiTaskDAO:       dao.NewHiTaskDAOWithQuery(q),
+		taskAssigneeDAO: dao.NewTaskAssigneeDAOWithQuery(q),
+		idGenerator:     DefaultIDGenerator,
+		workflowEngine:  candGroupEngine{identity: identity},
+	}
+	require.NoError(t, taskSvc.AddCandidates(ctx, Actor{UserID: "system", TenantID: "t1"}, "task-unclaim", "role", []string{"role-1"}))
+
+	aActor := Actor{UserID: "userA", TenantID: "t1", UserName: "A"}
+	aCtx := SetUserToCtx(ctx, &aActor)
+	require.NoError(t, taskSvc.Claim(aCtx, aActor, "task-unclaim"))
+	require.NoError(t, taskSvc.Unclaim(aCtx, aActor, "task-unclaim"))
+
+	persisted, err := taskSvc.GetTask(aCtx, ActorFromCtx(aCtx), "task-unclaim")
+	require.NoError(t, err)
+	require.Equal(t, string(enums.TaskStatusPending), persisted.Status)
+	require.True(t, persisted.Assignee == nil || *persisted.Assignee == "", "取消签收后 assignee 应清空, got %v", persisted.Assignee)
+
+	// 再签收应成功（不被残留 assignee 挡住）
+	require.NoError(t, taskSvc.Claim(aCtx, aActor, "task-unclaim"))
 }

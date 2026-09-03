@@ -409,3 +409,41 @@ func TestGetClaimableInstanceIDs_NonCandidateExcluded(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, ids2, "非候选用户不得命中任何实例")
 }
+
+// TestGetClaimableInstanceIDs_DeptCandidate dept 候选任务落库的是 department 实体，
+// 可认领判断须按用户的部门 ID 匹配，否则成员看不到待签收任务。
+func TestGetClaimableInstanceIDs_DeptCandidate(t *testing.T) {
+	q := candGroupDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "i-dept", ProcessID: "proc-1", Name: "dept_task_test",
+		Status: string(enums.InstanceStatusActive), StartUserID: "starter",
+		TenantID: "t1", CreatedBy: "starter", CreatedAt: now,
+	}))
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-dept", ProcessInstanceID: secFixStrPtr("i-dept"), TaskDefKey: "n1",
+		Name: "审批", TaskType: "user_task", Status: string(enums.TaskStatusPending),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+	}))
+	require.NoError(t, q.WfTaskAssignee.Create(&model.WfTaskAssignee{
+		ID: "as-dept", TaskID: "task-dept", EntityType: "department", EntityID: "dept-1",
+		TenantID: "t1", CreatedAt: now,
+	}))
+
+	identity := newMockIdentity()
+	identity.AddMockUser(&User{ID: "member", TenantID: "t1"})
+	identity.AddMockUserDepartment("member", "dept-1")
+	identity.AddMockUser(&User{ID: "outsider", TenantID: "t1"})
+
+	taskSvc := newCandSvc(q, identity)
+
+	got, err := taskSvc.GetClaimableInstanceIDs(ctx, Actor{UserID: "member", TenantID: "t1"}, []string{"i-dept"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"i-dept"}, got)
+
+	got, err = taskSvc.GetClaimableInstanceIDs(ctx, Actor{UserID: "outsider", TenantID: "t1"}, []string{"i-dept"})
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
