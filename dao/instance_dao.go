@@ -451,6 +451,14 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 		conditions += " AND t.status IN (?)"
 		args = append(args, req.Status)
 	}
+	if len(req.InstanceStatuses) > 0 {
+		conditions += " AND i.status IN (?)"
+		args = append(args, req.InstanceStatuses)
+	}
+	if req.EndReasonPrefix != "" {
+		conditions += " AND i.end_reason LIKE ?"
+		args = append(args, req.EndReasonPrefix+"%")
+	}
 	if req.TaskDefKey != "" {
 		conditions += " AND t.task_def_key = ?"
 		args = append(args, req.TaskDefKey)
@@ -533,7 +541,7 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 }
 
 // GetInstancesUnionPagination 分页获取流程实例列表（合并运行时和历史表，支持多租户）
-func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID, ProcessID, startUserID string, statuses []string, keyword string, startTimeFrom, startTimeTo *time.Time, limit, offset int, instanceID, businessKey string) ([]*model.WfInstance, int64, error) {
+func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID, ProcessID, startUserID string, statuses []string, keyword string, startTimeFrom, startTimeTo *time.Time, limit, offset int, instanceID, businessKey, endReasonPrefix string) ([]*model.WfInstance, int64, error) {
 	if tenantID == "" {
 		return nil, 0, errors.New("tenantID required")
 	}
@@ -581,6 +589,10 @@ func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID,
 		// 未显式指定状态时排除软删除行：deleted 对用户不可见，任何列表不应带出
 		conditions += " AND status <> ?"
 		args = append(args, string(enums.InstanceStatusDeleted))
+	}
+	if endReasonPrefix != "" {
+		conditions += " AND end_reason LIKE ?"
+		args = append(args, endReasonPrefix+"%")
 	}
 	if keyword != "" {
 		// 申请编号即实例ID，纳入 keyword 匹配

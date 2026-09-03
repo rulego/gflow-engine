@@ -131,15 +131,15 @@ type RuntimeService interface {
 	//（宿主按姓名解析），与 keyword 任一命中。
 	GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
 
-	// GetDoneProcessInstanceList 获取我的已办实例列表。
-	GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
+	// GetDoneProcessInstanceList 获取我的已办实例列表。instanceStatus 按实例状态筛选，空为不过滤
+	GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool, instanceStatus string) ([]*model.WfInstance, int64, error)
 
 	// GetCcProcessInstanceList 获取抄送给我的实例列表。
 	GetCcProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
 
 	// GetMyApplicationsProcessInstanceList 获取我发起的申请实例列表
-	// （按 start_user_id=发起人用户ID 过滤，与 token userId 同口径）
-	GetMyApplicationsProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error)
+	// （按 start_user_id=发起人用户ID 过滤，与 token userId 同口径），instanceStatus 按实例状态筛选
+	GetMyApplicationsProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool, instanceStatus string) ([]*model.WfInstance, int64, error)
 
 	// CountMyApplications 统计我发起的申请数量（运行时+历史表，可按 created_at
 	// 时间段过滤；from/to 任一可为 nil 表示不设该侧边界）。统计页日期筛选用。

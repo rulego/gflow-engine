@@ -53,7 +53,7 @@ func (n *UserTaskNode) handleRejection(ctx types.RuleContext, msg types.RuleMsg,
 		// 默认策略：终止流程。
 		// 仅在真正终止路径触发 rejected 事件，避免后续 jump 回退到 terminate 时误通知。
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回")
-		terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, "审批拒绝：终止流程")
+		terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：终止流程")
 		return
 	case RejectStrategyRejectToStarter:
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至发起人")
@@ -66,7 +66,7 @@ func (n *UserTaskNode) handleRejection(ctx types.RuleContext, msg types.RuleMsg,
 	case RejectStrategyRejectToNode:
 		if strings.TrimSpace(n.Config.RejectTargetNode) == "" {
 			logrus.Warnf("Node %s strategy=rejectToNode but rejectTargetNode empty, fallback", n.GetSelfId())
-			n.fallbackRejection(ctx, msg, instanceID, "审批拒绝：未配置 rejectTargetNode，降级处理")
+			n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：未配置 rejectTargetNode，降级处理")
 			return
 		}
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至指定节点 "+n.Config.RejectTargetNode)
@@ -77,7 +77,7 @@ func (n *UserTaskNode) handleRejection(ctx types.RuleContext, msg types.RuleMsg,
 	// 未识别的策略值：兜底 terminate，避免实例卡死
 	logrus.Warnf("Node %s has unknown rejectStrategy=%q, terminating as fallback", n.GetSelfId(), strategy)
 	n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回")
-	terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, "审批拒绝：未识别的驳回策略，默认终止")
+	terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：未识别的驳回策略，默认终止")
 }
 
 // fireRejectedEvent 异步触发 rejected 事件；terminate 与 jump 回退路径均派发，
@@ -166,7 +166,7 @@ func (n *UserTaskNode) jumpToStartNode(ctx types.RuleContext, msg types.RuleMsg,
 	startNodeID := getStartNodeID(ctx)
 	if startNodeID == "" {
 		logrus.Errorf("cannot resolve start node id for instance %s, fallback", instanceID)
-		n.fallbackRejection(ctx, msg, instanceID, "审批拒绝：开始节点缺失，降级处理")
+		n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：开始节点缺失，降级处理")
 		return
 	}
 	n.jumpToNode(ctx, msg, instanceID, startNodeID)
@@ -177,7 +177,7 @@ func (n *UserTaskNode) jumpToPrevUserTask(ctx types.RuleContext, msg types.RuleM
 	prevNodeID := n.findPrevUserTaskNodeID(ctx)
 	if prevNodeID == "" {
 		logrus.Warnf("cannot find previous userTask node for %s, fallback", n.GetSelfId())
-		n.fallbackRejection(ctx, msg, instanceID, "审批拒绝：找不到上一个审批节点，降级处理")
+		n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：找不到上一个审批节点，降级处理")
 		return
 	}
 	n.jumpToNode(ctx, msg, instanceID, prevNodeID)
@@ -194,7 +194,7 @@ func (n *UserTaskNode) jumpToNode(ctx types.RuleContext, msg types.RuleMsg, inst
 	// 不拦截则 rejectToNode 配错目标时实例永久卡死 active。
 	if !n.nodeExists(ctx, targetNodeID) {
 		logrus.Warnf("reject jump target node %s not found in definition, fallback", targetNodeID)
-		n.fallbackRejection(ctx, msg, instanceID, "审批拒绝：跳转目标节点不存在，降级处理")
+		n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：跳转目标节点不存在，降级处理")
 		return
 	}
 	// 驳回回跳必须清理参与跳转节点上一轮的任务，否则：
@@ -230,7 +230,7 @@ func (n *UserTaskNode) jumpToNode(ctx types.RuleContext, msg types.RuleMsg, inst
 	if err := n.RuntimeService.ExecuteNext(ctx.GetContext(), instanceID, targetNodeID, nil); err != nil {
 		logrus.Errorf("jump to node %s failed: %v", targetNodeID, err)
 		// 跳转失败：优先尝试 Reject/Failure 边（设计师预留的错误分支），找不到才 terminate
-		n.fallbackRejection(ctx, msg, instanceID, "审批拒绝：跳转失败，降级处理")
+		n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：跳转失败，降级处理")
 		return
 	}
 	// 跳转成功后用空 relationType 收尾当前节点，避免触发 Failure 分支重复终止

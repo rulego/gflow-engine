@@ -14,6 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/rulego/gflow-engine/query"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 )
@@ -188,9 +189,9 @@ func (s *TaskServiceImpl) withdrawInternal(ctx context.Context, scope *InstanceS
 
 	// 终止整个流程实例：调用 runtimeService 的 InTx 版本，复用当前 tx（已持锁）
 	// ctx 标记来源为撤回，terminated 事件据此携带 Source=withdraw
-	terminateReason := "申请人撤回"
+	terminateReason := constants.EndReasonPrefixWithdrawn
 	if reason != "" {
-		terminateReason = fmt.Sprintf("申请人撤回：%s", reason)
+		terminateReason = fmt.Sprintf("%s：%s", constants.EndReasonPrefixWithdrawn, reason)
 	}
 	withdrawCtx := WithEventSource(ctx, EventSourceWithdraw)
 	terminatedEvt, err := terminateProcessInstanceInTx(withdrawCtx, runtimeService, scope.Tx(), *task.ProcessInstanceID, terminateReason)

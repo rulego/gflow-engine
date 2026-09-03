@@ -65,6 +65,12 @@ const (
 	VarsComment = "comment"
 )
 const (
+	// EndReasonPrefixRejected 拒绝终止写入 end_reason 的前缀
+	EndReasonPrefixRejected = "审批拒绝"
+	// EndReasonPrefixWithdrawn 发起人撤回写入 end_reason 的前缀
+	EndReasonPrefixWithdrawn = "申请人撤回"
+)
+const (
 	TaskTypeUserTask = "userTask"
 	TaskTypeDelay    = "delay"
 	TaskTypeCCTask   = "ccTask"

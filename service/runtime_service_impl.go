@@ -1574,7 +1574,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceUnionList(ctx context.Context, ac
 	}
 	size := request.GetPageSize()
 	offset := (request.GetPage() - 1) * size
-	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, request.TenantID, request.ProcessID, "", request.Status, request.Keyword, nil, nil, size, offset, request.InstanceID, request.BusinessKey)
+	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, request.TenantID, request.ProcessID, "", request.Status, request.Keyword, nil, nil, size, offset, request.InstanceID, request.BusinessKey, "")
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1651,7 +1651,8 @@ func (s *RuntimeServiceImpl) isUserCandidate(ctx context.Context, task *model.Wf
 
 // GetDoneProcessInstanceList 获取我的已办实例列表
 // 退回也是已办动作：returned 任务只在历史表，实例结束后经历史分支在此可见。
-func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
+// instanceStatus 实例状态筛选桶（active/completed/rejected/withdrawn），空为不过滤。
+func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool, instanceStatus string) ([]*model.WfInstance, int64, error) {
 	ctx = bindActor(ctx, actor)
 	userID, tenantID := actor.UserID, actor.TenantID
 	q := &dto.TaskQuery{
@@ -1667,12 +1668,29 @@ func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, act
 			Status:    []string{string(enums.TaskStatusCompleted), string(enums.TaskStatusReturned)},
 		},
 	}
+	q.InstanceStatuses, q.EndReasonPrefix = instanceStatusScope(instanceStatus)
 	instances, total, err := s.instanceDAO.ListByTaskConditions(ctx, q)
 	if err != nil {
 		return nil, 0, err
 	}
 	s.decorateCurrentActivityNames(ctx, instances)
 	return instances, total, nil
+}
+
+// instanceStatusScope 状态筛选桶翻译为实例状态集合与 end_reason 前缀。
+// 拒绝/撤回落库为 terminated + 固定前缀，无法用实例状态直接表达。
+func instanceStatusScope(bucket string) ([]string, string) {
+	switch bucket {
+	case string(enums.InstanceStatusActive):
+		return []string{bucket}, ""
+	case string(enums.InstanceStatusCompleted):
+		return []string{bucket}, ""
+	case "rejected":
+		return []string{string(enums.InstanceStatusTerminated)}, constants.EndReasonPrefixRejected
+	case "withdrawn":
+		return []string{string(enums.InstanceStatusTerminated)}, constants.EndReasonPrefixWithdrawn
+	}
+	return nil, ""
 }
 
 // GetCcProcessInstanceList 获取抄送给我的实例列表
@@ -1702,7 +1720,7 @@ func (s *RuntimeServiceImpl) GetCcProcessInstanceList(ctx context.Context, actor
 }
 
 // GetMyApplicationsProcessInstanceList 获取我发起的申请实例列表（按 start_user_id=发起人用户ID 过滤，与 token userId 同口径）
-func (s *RuntimeServiceImpl) GetMyApplicationsProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
+func (s *RuntimeServiceImpl) GetMyApplicationsProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword, orderBy string, orderDesc bool, instanceStatus string) ([]*model.WfInstance, int64, error) {
 	ctx = bindActor(ctx, actor)
 	userID, tenantID := actor.UserID, actor.TenantID
 	if page <= 0 {
@@ -1712,7 +1730,8 @@ func (s *RuntimeServiceImpl) GetMyApplicationsProcessInstanceList(ctx context.Co
 		pageSize = dto.DefaultPageSize
 	}
 	// 运行时+历史表合并查询（DAO 支持 tenantID/startUserID 条件）
-	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, "", userID, nil, keyword, nil, nil, pageSize, (page-1)*pageSize, "", "")
+	statuses, endReasonPrefix := instanceStatusScope(instanceStatus)
+	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, "", userID, statuses, keyword, nil, nil, pageSize, (page-1)*pageSize, "", "", endReasonPrefix)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1731,7 +1750,7 @@ func (s *RuntimeServiceImpl) CountMyApplications(ctx context.Context, actor Acto
 	if tenantID == "" {
 		return 0, fmt.Errorf("tenant ID cannot be empty")
 	}
-	_, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, "", userID, nil, "", from, to, 1, 0, "", "")
+	_, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, "", userID, nil, "", from, to, 1, 0, "", "", "")
 	if err != nil {
 		return 0, fmt.Errorf("failed to count my applications: %w", err)
 	}

@@ -130,7 +130,7 @@ func (s *TaskServiceImpl) GetApprovalStatistics(ctx context.Context, actor Actor
 
 	// 我发起的申请
 	var myApplicationCount int64
-	_, myApplicationCount, err = s.workflowEngine.GetRuntimeService().GetMyApplicationsProcessInstanceList(ctx, actor, 1, 1, "", "", false)
+	_, myApplicationCount, err = s.workflowEngine.GetRuntimeService().GetMyApplicationsProcessInstanceList(ctx, actor, 1, 1, "", "", false, "")
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to query my application count, defaulting to 0")
 		myApplicationCount = 0
@@ -344,7 +344,7 @@ func (s *TaskServiceImpl) GetApprovalStatisticsDetail(ctx context.Context, actor
 
 	// 我发起的申请数量（全局，口径与列表页一致）
 	var myApplicationCount int64
-	_, myApplicationCount, err = s.workflowEngine.GetRuntimeService().GetMyApplicationsProcessInstanceList(ctx, actor, 1, 1, "", "", false)
+	_, myApplicationCount, err = s.workflowEngine.GetRuntimeService().GetMyApplicationsProcessInstanceList(ctx, actor, 1, 1, "", "", false, "")
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to query my application count, defaulting to 0")
 		myApplicationCount = 0

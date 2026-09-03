@@ -309,7 +309,7 @@ func TestInstanceDAO_UnionPagination_ExcludesDeletedByDefault(t *testing.T) {
 	}
 
 	// 未指定状态：两表的 deleted 行都排除
-	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", "", "u1", nil, "", nil, nil, 10, 0, "", "")
+	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", "", "u1", nil, "", nil, nil, 10, 0, "", "", "")
 	if err != nil {
 		t.Fatalf("union query: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestInstanceDAO_UnionPagination_ExcludesDeletedByDefault(t *testing.T) {
 	}
 
 	// 显式传 deleted：按传入过滤，两表各一条均命中
-	list, total, err = d.GetInstancesUnionPagination(ctx, "t1", "", "u1", []string{"deleted"}, "", nil, nil, 10, 0, "", "")
+	list, total, err = d.GetInstancesUnionPagination(ctx, "t1", "", "u1", []string{"deleted"}, "", nil, nil, 10, 0, "", "", "")
 	if err != nil {
 		t.Fatalf("union query by status: %v", err)
 	}
@@ -336,5 +336,91 @@ func TestInstanceDAO_UnionPagination_ExcludesDeletedByDefault(t *testing.T) {
 	}
 	if !got["i-del"] || !got["hi-del"] {
 		t.Errorf("explicit deleted filter: got %v, want i-del + hi-del", got)
+	}
+}
+
+// 联合查询按 end_reason 前缀过滤。
+func TestInstanceDAO_UnionPagination_EndReasonPrefix(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfHiInstance)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	reasonRejected := "审批拒绝：终止流程"
+	reasonManual := "测试终止"
+	seed := []*model.WfInstance{
+		{ID: "i-rejected", ProcessID: "p1", Name: "rejected", Status: "terminated", EndReason: &reasonRejected, TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+		{ID: "i-manual", ProcessID: "p1", Name: "manual", Status: "terminated", EndReason: &reasonManual, TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+		{ID: "i-done", ProcessID: "p1", Name: "completed", Status: "completed", TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+	}
+	for _, in := range seed {
+		if err := d.Create(ctx, in); err != nil {
+			t.Fatalf("seed instance %s: %v", in.ID, err)
+		}
+	}
+
+	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", "", "u1", []string{"terminated"}, "", nil, nil, 10, 0, "", "", "审批拒绝")
+	if err != nil {
+		t.Fatalf("union query by end_reason prefix: %v", err)
+	}
+	if total != 1 || len(list) != 1 || list[0].ID != "i-rejected" {
+		t.Errorf("rejected prefix filter: total=%d, want i-rejected only", total)
+	}
+}
+
+// 已办列表按实例状态与 end_reason 前缀过滤。
+func TestInstanceDAO_ListByTaskConditions_InstanceStatusFilter(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfTask, ddlWfHiInstance, ddlWfHiTask)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	reasonRejected := "审批拒绝：终止流程"
+	assignee := "u1"
+	instActive, instRejected := "i-active", "i-rejected"
+	mkTask := func(id, instID string) *model.WfTask {
+		return &model.WfTask{ID: id, ProcessInstanceID: &instID, TaskDefKey: "n1", Name: "审批", TaskType: "user_task", Status: "completed", Assignee: &assignee, TenantID: "t1", CreatedAt: now}
+	}
+	seed := []struct {
+		inst *model.WfInstance
+		task *model.WfTask
+	}{
+		{&model.WfInstance{ID: instActive, ProcessID: "p1", Name: "active", Status: "active", TenantID: "t1", StartUserID: "u1", CreatedAt: now}, mkTask("t1", instActive)},
+		{&model.WfInstance{ID: instRejected, ProcessID: "p1", Name: "rejected", Status: "terminated", EndReason: &reasonRejected, TenantID: "t1", StartUserID: "u1", CreatedAt: now}, mkTask("t2", instRejected)},
+	}
+	for _, s := range seed {
+		if err := d.Create(ctx, s.inst); err != nil {
+			t.Fatalf("seed instance: %v", err)
+		}
+		if err := q.WfTask.Create(s.task); err != nil {
+			t.Fatalf("seed task: %v", err)
+		}
+	}
+
+	doneQuery := func(statuses []string, prefix string) map[string]bool {
+		t.Helper()
+		instances, _, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
+			Assignee: "u1", TenantID: "t1",
+			InstanceStatuses: statuses, EndReasonPrefix: prefix,
+			PageRequest: dto.PageRequest{Status: []string{"completed"}},
+		})
+		if err != nil {
+			t.Fatalf("ListByTaskConditions: %v", err)
+		}
+		got := map[string]bool{}
+		for _, in := range instances {
+			got[in.ID] = true
+		}
+		return got
+	}
+
+	if !doneQuery([]string{"terminated"}, "审批拒绝")["i-rejected"] {
+		t.Error("拒绝前缀过滤应命中 i-rejected")
+	}
+	if doneQuery([]string{"active"}, "")["i-rejected"] {
+		t.Error("active 过滤不应命中 i-rejected")
+	}
+	if got := doneQuery(nil, ""); !got["i-active"] || !got["i-rejected"] {
+		t.Errorf("不过滤时应两单都可见: %v", got)
 	}
 }
