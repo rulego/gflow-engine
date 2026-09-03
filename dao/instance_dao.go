@@ -451,6 +451,10 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 		conditions += " AND t.status IN (?)"
 		args = append(args, req.Status)
 	}
+	// 已删实例（删除时历史行标记 deleted）不进任何任务维度列表：
+	// 本条件由运行时/历史两分支共用，任一分支命中都被排除
+	conditions += " AND i.status <> ?"
+	args = append(args, string(enums.InstanceStatusDeleted))
 	if len(req.InstanceStatuses) > 0 {
 		conditions += " AND i.status IN (?)"
 		args = append(args, req.InstanceStatuses)

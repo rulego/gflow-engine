@@ -282,14 +282,16 @@ func (s *RuntimeServiceImpl) GetProcessInstance(ctx context.Context, actor Actor
 	return instance, nil
 }
 
-// DeleteProcessInstance 删除流程实例并归档到历史表
+// DeleteProcessInstance 删除流程实例并归档到历史表。
+// 实例已归档（活表无行）时改为把历史行标记 deleted——删除落在终态归档之后的
+// 实例是合法操作，仅剩历史行可标，标记后已办/抄送不再带出。
 func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Actor, processInstanceID, reason string) error {
 	ctx = bindActor(ctx, actor)
 	if processInstanceID == "" {
 		return fmt.Errorf("process instance ID cannot be empty")
 	}
 
-	return WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	err := WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
 		// 1. 在事务内读取实例（已持锁）
 		instance, err := tx.WfInstance.WithContext(ctx).Where(tx.WfInstance.ID.Eq(processInstanceID)).First()
@@ -378,6 +380,39 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 
 		return nil
 	})
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrInstanceNotFound) {
+		return s.markArchivedInstanceDeleted(ctx, processInstanceID, reason)
+	}
+	return err
+}
+
+// markArchivedInstanceDeleted 把已归档实例的历史行标为 deleted。
+func (s *RuntimeServiceImpl) markArchivedInstanceDeleted(ctx context.Context, processInstanceID, reason string) error {
+	q := s.instanceDAO.Query
+	hi, err := q.WfHiInstance.WithContext(ctx).Where(q.WfHiInstance.ID.Eq(processInstanceID)).First()
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("%w: process instance", ErrInstanceNotFound)
+		}
+		return fmt.Errorf("failed to get archived instance: %w", err)
+	}
+	if err := ensureTenantAccess(ctx, "process instance", hi.TenantID); err != nil {
+		return err
+	}
+	if _, err := q.WfHiInstance.WithContext(ctx).
+		Where(q.WfHiInstance.ID.Eq(processInstanceID)).
+		Where(q.WfHiInstance.Status.Neq(string(enums.InstanceStatusDeleted))).
+		Updates(map[string]interface{}{
+			"status":     string(enums.InstanceStatusDeleted),
+			"end_reason": reason,
+			"updated_at": time.Now(),
+		}); err != nil {
+		return fmt.Errorf("failed to mark archived instance deleted: %w", err)
+	}
+	return nil
 }
 
 // DeleteProcessInstances 批量删除流程实例

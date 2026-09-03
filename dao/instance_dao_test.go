@@ -424,3 +424,83 @@ func TestInstanceDAO_ListByTaskConditions_InstanceStatusFilter(t *testing.T) {
 		t.Errorf("不过滤时应两单都可见: %v", got)
 	}
 }
+
+// 已删实例不进任务维度列表：删除终态实例时历史行标为 deleted，
+// 已办/抄送经历史分支、待办经运行时分支，两分支都不得再带出。
+func TestInstanceDAO_ListByTaskConditions_ExcludesDeleted(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfTask, ddlWfTaskAssignee, ddlWfHiInstance, ddlWfHiTask)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	assignee := "u1"
+	liveInst := "i-live"
+	if err := q.WfInstance.Create(&model.WfInstance{
+		ID: liveInst, ProcessID: "p1", Name: "live", Status: "active",
+		TenantID: "t1", StartUserID: "u1", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed live instance: %v", err)
+	}
+	if err := q.WfTask.Create(&model.WfTask{
+		ID: "task-live", ProcessInstanceID: &liveInst, TaskDefKey: "n1", Name: "审批",
+		TaskType: "user_task", Status: "active", Assignee: &assignee, TenantID: "t1", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed live task: %v", err)
+	}
+
+	mkHi := func(id, status string) (*model.WfHiInstance, *model.WfHiTask) {
+		defKey := "n1"
+		return &model.WfHiInstance{
+				ID: id, ProcessID: "p1", Name: id, Status: status,
+				TenantID: "t1", StartUserID: "u1", CreatedAt: now,
+			}, &model.WfHiTask{
+				ID: "hitask-" + id, ProcessInstanceID: &id, TaskDefKey: &defKey, Name: "审批",
+				TaskType: "user_task", Status: "completed", Assignee: &assignee, TenantID: "t1", CreatedAt: now,
+			}
+	}
+	for _, tc := range []struct{ id, status string }{
+		{"hi-done", "completed"},
+		{"hi-del", "deleted"},
+	} {
+		inst, task := mkHi(tc.id, tc.status)
+		if err := q.WfHiInstance.WithContext(ctx).Create(inst); err != nil {
+			t.Fatalf("seed hi instance %s: %v", tc.id, err)
+		}
+		if err := q.WfHiTask.WithContext(ctx).Create(task); err != nil {
+			t.Fatalf("seed hi task %s: %v", tc.id, err)
+		}
+	}
+
+	ids := func(instances []*model.WfInstance) map[string]bool {
+		got := map[string]bool{}
+		for _, in := range instances {
+			got[in.ID] = true
+		}
+		return got
+	}
+
+	done, total, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
+		Assignee: "u1", TenantID: "t1",
+		PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
+	})
+	if err != nil {
+		t.Fatalf("done query: %v", err)
+	}
+	if total != 1 {
+		t.Errorf("done total = %d, want 1（已删实例不得计入）", total)
+	}
+	if !ids(done)["hi-done"] || ids(done)["hi-del"] {
+		t.Errorf("done 结果应含 hi-done、不含 hi-del: %v", ids(done))
+	}
+
+	todo, _, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
+		Assignee: "u1", CandidateUser: "u1", TenantID: "t1",
+		PageRequest: dto.PageRequest{Status: []string{"pending", "active"}},
+	})
+	if err != nil {
+		t.Fatalf("todo query: %v", err)
+	}
+	if !ids(todo)["i-live"] || len(todo) != 1 {
+		t.Errorf("todo 结果应仅含活表实例: %v", ids(todo))
+	}
+}
