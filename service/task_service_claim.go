@@ -267,10 +267,12 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 	}
 
 	// 更新 assignee，状态回退为 Pending。
-	// gorm Updates(struct) 忽略 nil 字段，清空 assignee 须用空串指针，残留办理人会挡住后续签收
+	// gorm Updates(struct) 忽略 nil 字段，清空 assignee 须用空串指针，残留办理人会挡住后续签收；
+	// claimed_at 是"已签收"的判定字段，回池必须一并置空，用 Select 强制写入 NULL。
 	emptyAssignee := ""
 	task.Assignee = &emptyAssignee
 	task.Status = string(enums.TaskStatusPending)
+	task.ClaimedAt = nil
 	now := time.Now()
 	username := ""
 	if u := GetUserFromCtx(ctx); u != nil {
@@ -279,7 +281,10 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 	task.UpdatedBy = &username
 	task.UpdatedAt = &now
 
-	if err := taskDAO.Update(ctx, task); err != nil {
+	qa := taskDAO.Query.WfTask
+	if _, err := qa.WithContext(ctx).Where(qa.ID.Eq(task.ID)).
+		Select(qa.Assignee, qa.Status, qa.ClaimedAt, qa.UpdatedBy, qa.UpdatedAt).
+		Updates(task); err != nil {
 		return fmt.Errorf("failed to unclaim task: %w", err)
 	}
 
