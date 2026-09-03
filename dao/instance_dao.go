@@ -489,13 +489,13 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 	// 合并运行时与历史两个来源。一个实例可能命中多个任务、甚至同时出现在
 	// 两个子查询里，用 UNION + COUNT(DISTINCT id) 去重，保证分页总数准确。
 
-	// 构建 Count SQL
+	// 构建 Count SQL。内联视图别名不带 AS，部分方言不允许。
 	countSQL := fmt.Sprintf(`
 		SELECT COUNT(DISTINCT id) FROM (
 			%s %s
 			UNION
 			%s %s
-		) AS combined
+		) combined
 	`, runSQL, conditions, histSQL, conditions)
 
 	// 复制参数用于 Count 查询 (因为 UNION 用了两次条件，参数也需要两份)
@@ -528,13 +528,14 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 			%s %s
 			UNION
 			%s %s
-		) AS combined
+		) combined
 		ORDER BY %s %s
-		LIMIT %d OFFSET %d
-	`, runSQL, conditions, histSQL, conditions, orderBy, orderDir, size, offset)
+		LIMIT ? OFFSET ?
+	`, runSQL, conditions, histSQL, conditions, orderBy, orderDir)
 
-	// 列表查询参数：两份条件参数
+	// 列表查询参数：两份条件参数 + 分页参数
 	listArgs := append(args, args...)
+	listArgs = append(listArgs, size, offset)
 
 	var list []*model.WfInstance
 	if err := db.Raw(listSQL, listArgs...).Scan(&list).Error; err != nil {
@@ -620,7 +621,7 @@ func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID,
 			%s %s
 			UNION ALL
 			%s %s
-		) AS combined
+		) combined
 	`, runSQL, conditions, histSQL, conditions)
 
 	countArgs := append(args, args...)
@@ -641,7 +642,7 @@ func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID,
 			%s %s
 			UNION ALL
 			%s %s
-		) AS combined
+		) combined
 		ORDER BY created_at DESC
 		LIMIT ? OFFSET ?
 	`, runSQL, conditions, histSQL, conditions)
