@@ -12,7 +12,7 @@ English | [简体中文](README_ZH.md)
 >
 > Need something ready to run? **GFlow Platform（极风工作流）** is the GFlow Enterprise Edition,
 > with a flow designer, form designer, approval UI and AI review built in.
-> Site: <https://gflow.rulego.cc/> · Docs: <https://gflow.rulego.cc/en/> · Live demo: <http://8.134.32.225:8081> (`admin` / `admin123`)
+> Site: <https://gflow.rulego.cc/en/> · Live demo: <http://8.134.32.225:8081> (`admin` / `admin123`)
 
 `GFlow Engine` is a lightweight, embeddable approval workflow engine built on [RuleGo](https://github.com/rulego/rulego). Process definitions reuse the `RuleGo` rule-chain DSL (JSON), while tasks, process instances and history are persisted to a relational database by the engine itself — no separate process middleware to deploy.
 
@@ -186,7 +186,7 @@ A complete runnable example (single sign-off, parallel and sequential countersig
 The engine does not bind to any user system. Tasks offered to roles, departments or managers resolve their assignees through the `service.IdentityService` interface — in production you must inject an implementation backed by your own user/role/department tables (the built-in in-memory mock is for tests only):
 
 ```go
-// Implement all 8 methods of service.IdentityService against your org tables
+// Implement all 9 methods of service.IdentityService against your org tables
 type OrgIdentityService struct {
 	db *gorm.DB // host application data source
 }
@@ -208,6 +208,7 @@ func (s *OrgIdentityService) GetUserIDsByRoleID(ctx context.Context, tenantID, r
 //   GetUserManagerHierarchy         manager hierarchy (multi_level_manager candidate tasks)
 //   GetUserDepartmentID             department of a user
 //   GetRoleIDsByUserID              roles of a user (todo visibility for role candidates)
+//   GetDepartmentIDsByUserID        departments of a user (todo visibility for dept candidates)
 //   GetUserIDsByGroupID             users by custom group (reserved extension)
 ```
 
@@ -227,10 +228,12 @@ Mapping from candidate configuration (`candidateType`) to interface methods:
 |---|---|
 | `user` | none (user IDs given directly via `candidateUsers`) |
 | `role` | `GetUserIDsByRoleID`; todo visibility via `GetRoleIDsByUserID` |
-| `dept` | `GetUserIDsByDepartmentID` / `GetDepartmentManagerUserID` |
+| `dept` | `GetUserIDsByDepartmentID` / `GetDepartmentManagerUserID`; todo visibility via `GetDepartmentIDsByUserID` |
 | `direct_manager` | `GetUserManagerID` |
 | `multi_level_manager` | `GetUserManagerHierarchy` |
 | `initiator_select` / `initiator_self` | none (chosen by initiator / the initiator) |
+
+> Optional hardening: if the implementation also implements `TenantMembershipChecker` (`IsUserInTenant`), the engine verifies that transfer/delegation/reassign targets belong to the task's tenant and blocks cross-tenant reassignment; without it the check is skipped (with a warning logged).
 
 ## Process DSL
 

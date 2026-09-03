@@ -3,7 +3,7 @@
 [![GoDoc](https://pkg.go.dev/badge/github.com/rulego/gflow-engine)](https://pkg.go.dev/github.com/rulego/gflow-engine)
 [![Go Report](https://goreportcard.com/badge/github.com/rulego/gflow-engine)](https://goreportcard.com/report/github.com/rulego/gflow-engine)
 
-[English](README.md)| 简体中文
+[English](README.md) | 简体中文
 
 > **GFlow** · 审批如风，极速流转
 >
@@ -12,7 +12,7 @@
 >
 > 需要开箱即用？**GFlow Platform（极风工作流）** 即 GFlow 企业版，
 > 提供流程设计器、表单设计器、审批界面与 AI 审批。
-> 官网 <https://gflow.rulego.cc/> · 文档 <https://gflow.rulego.cc/> · 在线演示 <http://8.134.32.225:8081>（`admin` / `admin123`）
+> 官网 <https://gflow.rulego.cc/> · 在线演示 <http://8.134.32.225:8081>（`admin` / `admin123`）
 
 `GFlow Engine` 是一个基于 [RuleGo](https://github.com/rulego/rulego) 的轻量级、可嵌入审批工作流引擎。流程定义复用 `RuleGo` 规则链 DSL（JSON），审批任务、流程实例、历史归档等状态由引擎持久化到关系数据库，无需部署独立的流程中间件。
 
@@ -181,7 +181,7 @@ err = engine.GetTaskService().CompleteWithApproval(ctx, service.Actor{
 引擎不绑定任何用户体系。按角色/部门/主管发起的审批任务，办理人统一通过 `service.IdentityService` 接口解析——生产环境必须注入宿主应用自己的实现（对接真实的用户/角色/部门表），内置的内存 Mock 仅供测试：
 
 ```go
-// 实现 service.IdentityService 的全部 8 个方法，对接你自己的组织架构表
+// 实现 service.IdentityService 的全部 9 个方法，对接你自己的组织架构表
 type OrgIdentityService struct {
 	db *gorm.DB // 宿主应用数据源
 }
@@ -203,6 +203,7 @@ func (s *OrgIdentityService) GetUserIDsByRoleID(ctx context.Context, tenantID, r
 //   GetUserManagerHierarchy         查多级主管（multi_level_manager 候选任务）
 //   GetUserDepartmentID             按用户反查部门
 //   GetRoleIDsByUserID              按用户反查角色（role 候选任务的待办可见性）
+//   GetDepartmentIDsByUserID        按用户反查部门列表（dept 候选任务的待办可见性）
 //   GetUserIDsByGroupID             按自定义组查用户（预留扩展）
 ```
 
@@ -222,10 +223,12 @@ engine, err := service.NewWorkflowEngineBuilder().
 |---|---|
 | `user` | 无需身份服务（`candidateUsers` 直接给用户 ID） |
 | `role` | `GetUserIDsByRoleID`；待办可见性走 `GetRoleIDsByUserID` |
-| `dept` | `GetUserIDsByDepartmentID` / `GetDepartmentManagerUserID` |
+| `dept` | `GetUserIDsByDepartmentID` / `GetDepartmentManagerUserID`；待办可见性走 `GetDepartmentIDsByUserID` |
 | `direct_manager` | `GetUserManagerID` |
 | `multi_level_manager` | `GetUserManagerHierarchy` |
 | `initiator_select` / `initiator_self` | 无需身份服务（发起人自选 / 发起人本人） |
+
+> 可选加固：宿主实现若同时实现 `TenantMembershipChecker` 接口（`IsUserInTenant`），引擎会在转办/委派/改派时校验目标用户属于任务租户，阻断跨租户转派；未实现时跳过校验并告警留痕。
 
 ## 流程 DSL
 
