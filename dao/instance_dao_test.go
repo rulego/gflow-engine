@@ -283,3 +283,58 @@ func TestInstanceDAO_ListByTaskConditions_DeptCandidate(t *testing.T) {
 		t.Error("仅 person/role 口径不应命中 department 候选")
 	}
 }
+
+// 联合查询未显式指定状态时排除软删除实例；显式状态查询不受影响。
+func TestInstanceDAO_UnionPagination_ExcludesDeletedByDefault(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfHiInstance)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	seed := []*model.WfInstance{
+		{ID: "i-active", ProcessID: "p1", Name: "active", Status: "active", TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+		{ID: "i-done", ProcessID: "p1", Name: "completed", Status: "completed", TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+		{ID: "i-del", ProcessID: "p1", Name: "deleted", Status: "deleted", TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+	}
+	for _, in := range seed {
+		if err := d.Create(ctx, in); err != nil {
+			t.Fatalf("seed instance %s: %v", in.ID, err)
+		}
+	}
+	// 历史表同样存在软删除行（终态实例归档后再删除的场景）
+	if err := d.Query.WfHiInstance.WithContext(ctx).Create(&model.WfHiInstance{
+		ID: "hi-del", ProcessID: "p1", Name: "hi deleted", Status: "deleted", TenantID: "t1", StartUserID: "u1", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed hi instance: %v", err)
+	}
+
+	// 未指定状态：两表的 deleted 行都排除
+	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", "", "u1", nil, "", nil, nil, 10, 0, "", "")
+	if err != nil {
+		t.Fatalf("union query: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	for _, in := range list {
+		if in.Status == "deleted" {
+			t.Errorf("instance %s (status=deleted) 不应出现在结果中", in.ID)
+		}
+	}
+
+	// 显式传 deleted：按传入过滤，两表各一条均命中
+	list, total, err = d.GetInstancesUnionPagination(ctx, "t1", "", "u1", []string{"deleted"}, "", nil, nil, 10, 0, "", "")
+	if err != nil {
+		t.Fatalf("union query by status: %v", err)
+	}
+	if total != 2 || len(list) != 2 {
+		t.Errorf("explicit deleted filter: total=%d len=%d, want 2/2", total, len(list))
+	}
+	got := map[string]bool{}
+	for _, in := range list {
+		got[in.ID] = true
+	}
+	if !got["i-del"] || !got["hi-del"] {
+		t.Errorf("explicit deleted filter: got %v, want i-del + hi-del", got)
+	}
+}

@@ -577,6 +577,10 @@ func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID,
 		if len(placeholders) > 0 {
 			conditions += " AND status IN (" + strings.Join(placeholders, ",") + ")"
 		}
+	} else {
+		// 未显式指定状态时排除软删除行：deleted 对用户不可见，任何列表不应带出
+		conditions += " AND status <> ?"
+		args = append(args, string(enums.InstanceStatusDeleted))
 	}
 	if keyword != "" {
 		// 申请编号即实例ID，纳入 keyword 匹配
