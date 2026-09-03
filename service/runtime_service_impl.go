@@ -1596,6 +1596,8 @@ func (s *RuntimeServiceImpl) GetProcessInstancesByTaskConditions(ctx context.Con
 // GetTodoProcessInstanceList 获取我的待办实例列表
 // 含：① assignee=userID 的任务；② status=Pending 且 user 在候选人池的未签收任务（候选组模式）。
 // 候选人池依赖 wf_task_assignee 表；表不存在时退化为仅 ①。
+// 过滤不含 returned：退回任务生成即归档进历史表（活表无此状态），
+// 列入过滤只会经 ListByTaskConditions 的历史分支把已结束实例捞回待办。
 func (s *RuntimeServiceImpl) GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	ctx = bindActor(ctx, actor)
 	userID, tenantID := actor.UserID, actor.TenantID
@@ -1612,7 +1614,7 @@ func (s *RuntimeServiceImpl) GetTodoProcessInstanceList(ctx context.Context, act
 			PageSize:  pageSize,
 			OrderBy:   orderBy,
 			OrderDesc: orderDesc,
-			Status:    []string{string(enums.TaskStatusPending), string(enums.TaskStatusActive), string(enums.TaskStatusReturned)},
+			Status:    []string{string(enums.TaskStatusPending), string(enums.TaskStatusActive)},
 		},
 	}
 	instances, total, err := s.instanceDAO.ListByTaskConditions(ctx, q)
@@ -1648,6 +1650,7 @@ func (s *RuntimeServiceImpl) isUserCandidate(ctx context.Context, task *model.Wf
 }
 
 // GetDoneProcessInstanceList 获取我的已办实例列表
+// 退回也是已办动作：returned 任务只在历史表，实例结束后经历史分支在此可见。
 func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	ctx = bindActor(ctx, actor)
 	userID, tenantID := actor.UserID, actor.TenantID
@@ -1661,7 +1664,7 @@ func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, act
 			PageSize:  pageSize,
 			OrderBy:   orderBy,
 			OrderDesc: orderDesc,
-			Status:    []string{string(enums.TaskStatusCompleted)},
+			Status:    []string{string(enums.TaskStatusCompleted), string(enums.TaskStatusReturned)},
 		},
 	}
 	instances, total, err := s.instanceDAO.ListByTaskConditions(ctx, q)
