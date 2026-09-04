@@ -269,6 +269,13 @@ func (s *TaskServiceImpl) Return(ctx context.Context, actor Actor, taskID, targe
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
 
+	// 租户隔离：跨租户任务按 not found 隐藏（对齐 Withdraw/Claim 口径）。
+	// Return 此前漏校验任务租户，其他租户用户拿到 taskID+targetActivityID 即可
+	// 把他人租户的任务退回到指定节点。
+	if u := GetUserFromCtx(ctx); u != nil && task.TenantID != u.TenantID {
+		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+
 	// 设计器显式禁用 return → 拒绝（actionPermissions 解析失败时降级放行）
 	if err := s.requireActionEnabled(ctx, task, "return"); err != nil {
 		return err

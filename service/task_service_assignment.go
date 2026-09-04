@@ -170,6 +170,13 @@ func (s *TaskServiceImpl) Delegate(ctx context.Context, actor Actor, taskID, use
 		return err
 	}
 
+	// 目标用户租户归属校验（IdentityService 实现 TenantMembershipChecker 时生效）。
+	// 转办/改派已校验目标租户，委派此前漏查——否则可把任务委派给其他租户用户，
+	// 导致跨租户任务被他人处理（审批越权）。
+	if err := s.ensureTargetUserInTenant(ctx, task, userID, "delegate"); err != nil {
+		return err
+	}
+
 	// 设计器显式禁用 delegate → 拒绝（actionPermissions 解析失败时降级放行）
 	if err := s.requireActionEnabled(ctx, task, "delegate"); err != nil {
 		return err

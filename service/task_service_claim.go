@@ -231,6 +231,12 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
 
+	// 租户隔离：取消认领与认领（claimInternal）同口径，跨租户按 not found 隐藏，
+	// 不泄露任务存在性。此前 Unclaim 漏校验，其他租户用户可通过 taskID 取消他人认领。
+	if u := GetUserFromCtx(ctx); u != nil && task.TenantID != u.TenantID {
+		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+
 	// 幂等：已经是 Pending 且无人认领
 	if task.Status == string(enums.TaskStatusPending) && (task.Assignee == nil || *task.Assignee == "") {
 		return nil
