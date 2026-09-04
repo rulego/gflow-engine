@@ -65,6 +65,65 @@ func resolveNodeActionPermissions(ctx context.Context, engine WorkflowEngine, in
 	return v
 }
 
+// resolveNodeActionPermissionsStrict 与上方的 lenient 版同源，但解析失败返回 error
+// 而非空 map。仅供 requireActionEnabled 做 fail-closed 校验：解析不出来说明无法判断
+// 设计器是否显式禁用了某动作，此时拒绝执行，避免解析失败绕过设计器的显式 disable。
+//
+// 返回值语义：
+//   - (nil, nil)：节点解析成功但未配置 actionPermissions 键 → 无显式禁用，放行；
+//   - (map, nil)：解析出 actionPermissions；
+//   - (nil, err)：实例/定义不存在、服务未注入、规则链解析失败、配置类型错误等。
+func resolveNodeActionPermissionsStrict(ctx context.Context, engine WorkflowEngine, instanceID, taskDefKey string) (map[string]interface{}, error) {
+	if instanceID == "" || taskDefKey == "" || engine == nil {
+		return nil, fmt.Errorf("resolve action permissions: invalid instance/defKey/engine")
+	}
+	runtimeService := engine.GetRuntimeService()
+	if runtimeService == nil {
+		return nil, fmt.Errorf("resolve action permissions: runtime service not injected")
+	}
+	instance, err := runtimeService.GetProcessInstance(ctx, ActorFromCtx(ctx), instanceID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve action permissions: get instance: %w", err)
+	}
+	if instance == nil {
+		return nil, fmt.Errorf("resolve action permissions: instance not found")
+	}
+	if instance.ProcessID == "" {
+		return nil, fmt.Errorf("resolve action permissions: instance has no process")
+	}
+	processService := engine.GetProcessService()
+	if processService == nil {
+		return nil, fmt.Errorf("resolve action permissions: process service not injected")
+	}
+	procDef, err := processService.Get(ctx, instance.ProcessID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve action permissions: get process: %w", err)
+	}
+	if procDef == nil {
+		return nil, fmt.Errorf("resolve action permissions: process not found")
+	}
+	rc, err := procDef.ToRuleChain()
+	if err != nil {
+		return nil, fmt.Errorf("resolve action permissions: parse rule chain: %w", err)
+	}
+	if rc == nil {
+		return nil, fmt.Errorf("resolve action permissions: rule chain is nil")
+	}
+	node, ok := rc.GetNode(taskDefKey)
+	if !ok {
+		return nil, fmt.Errorf("resolve action permissions: node %s not found", taskDefKey)
+	}
+	ap, ok := node.GetAdditionalInfo("actionPermissions")
+	if !ok {
+		return nil, nil
+	}
+	v, ok := ap.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("resolve action permissions: actionPermissions has wrong type")
+	}
+	return v, nil
+}
+
 // resolveNodeFormPermissions 返回某节点 additionalInfo.formPermissions（字段级权限 r/w/h）。
 // 必须传入事务 scope：本函数在 WithInstanceTx 回调内调用，若走全局连接，
 // SQLite 等单写锁数据库会与外层事务互等形成死锁。
@@ -100,12 +159,16 @@ func resolveNodeFormPermissions(ctx context.Context, scope *InstanceScope, insta
 }
 
 // requireActionEnabled 校验流程设计器是否在 actionPermissions 中显式禁用了某动作。
-// 仅当"明确解析到 actionPermissions 且动作 key 显式 false"才拒绝；其余一律放行。
+// 解析失败时 fail-closed（拒绝该动作）——原实现解析失败返回空 map 降级放行，会让
+// 设计器显式 disable 在定义损坏/服务不可用等场景被绕过。
 func (s *TaskServiceImpl) requireActionEnabled(ctx context.Context, task *model.WfTask, actionKey string) error {
 	if task == nil || task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
 		return nil
 	}
-	ap := resolveNodeActionPermissions(ctx, s.workflowEngine, *task.ProcessInstanceID, task.TaskDefKey)
+	ap, err := resolveNodeActionPermissionsStrict(ctx, s.workflowEngine, *task.ProcessInstanceID, task.TaskDefKey)
+	if err != nil {
+		return fmt.Errorf("cannot resolve action permissions for action %q: %w", actionKey, ErrPermissionDenied)
+	}
 	if designerDisabled(ap, actionKey) {
 		return fmt.Errorf("action %q disabled by designer on node %s: %w",
 			actionKey, task.TaskDefKey, ErrPermissionDenied)
@@ -169,7 +232,7 @@ func (s *TaskServiceImpl) requireReturnTarget(ctx context.Context, scope *Instan
 	instanceID := *task.ProcessInstanceID
 
 	// 1. 操作人须为当前任务受理人或候选人
-	if !s.isReturnOperator(ctx, task, userID) {
+	if !s.isReturnOperator(ctx, scope, task, userID) {
 		return fmt.Errorf("return by non-assignee/non-candidate %s: %w", userID, ErrPermissionDenied)
 	}
 
@@ -191,7 +254,9 @@ func (s *TaskServiceImpl) requireReturnTarget(ctx context.Context, scope *Instan
 }
 
 // isReturnOperator 判断 userID 是否为当前任务的受理人或候选人。
-func (s *TaskServiceImpl) isReturnOperator(ctx context.Context, task *model.WfTask, userID string) bool {
+// 候选池经 scope（tx-bound）读取——requireReturnTarget 在 WithInstanceTx 回调内执行，
+// 若走默认 DAO（s.taskAssigneeDAO）会 tx 逃逸，SQLite 等单写锁数据库与外层事务互等死锁。
+func (s *TaskServiceImpl) isReturnOperator(ctx context.Context, scope *InstanceScope, task *model.WfTask, userID string) bool {
 	if userID == "" {
 		return false
 	}
@@ -201,15 +266,31 @@ func (s *TaskServiceImpl) isReturnOperator(ctx context.Context, task *model.WfTa
 	if task.ProcessInstanceID == nil {
 		return false
 	}
-	candidates, err := s.GetTaskCandidates(ctx, *task.ProcessInstanceID, task.TaskDefKey)
-	if err != nil {
-		logrus.WithError(err).WithField("taskDefKey", task.TaskDefKey).
-			Warn("failed to query task candidates for return operator check; treating as non-candidate")
+	return s.isUserCandidateInScope(ctx, scope, task, userID)
+}
+
+// isUserCandidateInScope 在事务内展开候选池判断 userID 是否为候选人。
+// role/department 经 identity 展开；identity 缺失或展开失败按非候选处理（fail-closed，
+// 返回 false → 拒绝 return）。
+func (s *TaskServiceImpl) isUserCandidateInScope(ctx context.Context, scope *InstanceScope, task *model.WfTask, userID string) bool {
+	if scope == nil || task == nil || task.ProcessInstanceID == nil {
 		return false
 	}
-	for _, c := range candidates {
-		if c.EntityID == userID {
-			return true
+	rows, err := scope.TaskAssignees().GetByInstanceAndDefKey(ctx, task.TenantID, *task.ProcessInstanceID, task.TaskDefKey)
+	if err != nil {
+		logrus.WithError(err).WithField("taskDefKey", task.TaskDefKey).
+			Warn("failed to query task candidates in tx for return operator check; treating as non-candidate")
+		return false
+	}
+	identity := s.workflowEngine.GetIdentityService()
+	for _, c := range rows {
+		if c == nil {
+			continue
+		}
+		for _, m := range expandCandidateMembers(ctx, identity, task.TenantID, c.EntityType, c.EntityID) {
+			if m == userID {
+				return true
+			}
 		}
 	}
 	return false

@@ -196,10 +196,15 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 	}
 
 	u := GetUserFromCtx(ctx)
-	if u == nil {
+	if u == nil || u.UserID == "" {
 		return ErrAuthenticationRequired
 	}
-	if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != u.UserID {
+	// fail-closed：仅当前 assignee 可委派。未分配（pending）任务无从委派——此前
+	// assignee 为空时跳过校验，任意同租户用户可把未分配任务委派给他人。
+	if task.Assignee == nil || *task.Assignee == "" {
+		return fmt.Errorf("task is not assigned, cannot delegate: %w", ErrPermissionDenied)
+	}
+	if *task.Assignee != u.UserID {
 		return fmt.Errorf("task assigned to %s, current user %s: %w", *task.Assignee, u.UserID, ErrPermissionDenied)
 	}
 	// 禁止委派给自己:self-delegate 会让 Owner==Assignee==DelegateFrom,approve 时
@@ -424,8 +429,9 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 	if u := GetUserFromCtx(ctx); u != nil && task.TenantID != u.TenantID {
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
-	// 操作人以显式参数 fromUserID 为准：只有任务当前 assignee 能转办
-	if task.Assignee != nil && *task.Assignee != fromUserID {
+	// 操作人以显式参数 fromUserID 为准：只有任务当前 assignee 能转办；
+	// 未分配任务（assignee 为空/nil）无从转办，fail-closed 拒绝（此前空 assignee 跳过校验）。
+	if task.Assignee == nil || *task.Assignee != fromUserID {
 		return fmt.Errorf("only assigned user can transfer task: %w", ErrPermissionDenied)
 	}
 

@@ -170,11 +170,46 @@ func (s *TaskServiceImpl) DeleteTask(ctx context.Context, actor Actor, taskID, r
 	})
 }
 
+// recheckDeleteTaskAuthz 锁内复校验纯字段鉴权（租户 + assignee）。
+// initiator 校验（未分配任务的发起人）不在此复跑——instance.StartUserID 不可变，锁外已校验过；
+// 这里只防"廉价读后任务被并发改派（assignee 变化）"的 TOCTOU 窗口。
+func recheckDeleteTaskAuthz(ctx context.Context, task *model.WfTask) error {
+	u := GetUserFromCtx(ctx)
+	if u == nil || u.UserID == "" {
+		return ErrAuthenticationRequired
+	}
+	// 系统身份（引擎内部级联清理）跳过用户级校验：系统租户为空，无法与任务租户比照。
+	// 与 DeleteTask 顶部"系统身份免用户级校验"口径一致，也便于后续系统删除路径复用本方法。
+	if IsSystemActor(u) {
+		return nil
+	}
+	if task.TenantID != u.TenantID {
+		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+	if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != u.UserID {
+		return fmt.Errorf("task assigned to %s, operator %s: %w", *task.Assignee, u.UserID, ErrPermissionDenied)
+	}
+	return nil
+}
+
 // deleteTaskInternal 在已持有实例行锁的事务内执行 DeleteTask 实际逻辑。
-// 幂等：任务在持锁期间可能已被并发分支删除，再次 Delete 不应失败。
 // reason 当前未持久化（保留参数以匹配 public 签名），未来可写入审计日志。
 func (s *TaskServiceImpl) deleteTaskInternal(ctx context.Context, scope *InstanceScope, taskID string) error {
 	taskDAO := scope.Tasks()
+
+	// 锁内复校：廉价读发生在加锁之前，任务可能在锁外校验后被并发改派。
+	// 按持锁后的最新快照复跑纯字段鉴权，收窄 TOCTOU 窗口。
+	task, err := taskDAO.Get(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+	if task == nil {
+		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+	if err := recheckDeleteTaskAuthz(ctx, task); err != nil {
+		return err
+	}
+
 	if err := taskDAO.Delete(ctx, taskID); err != nil {
 		return fmt.Errorf("failed to delete task: %w", err)
 	}
