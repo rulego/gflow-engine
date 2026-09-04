@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS wf_instance (
     KEY idx_instance_created_at (created_at DESC),
     KEY idx_instance_priority (priority DESC, created_at ASC),
     KEY idx_instance_tenant_status (tenant_id, status, created_at DESC),
-    KEY idx_instance_tenant_starter (tenant_id, start_user_id)
+    KEY idx_instance_tenant_starter (tenant_id, start_user_id),
+    KEY idx_instance_process (process_id, created_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='运行时流程实例表';
 
 -- 3. 历史流程实例表
@@ -103,7 +104,8 @@ CREATE TABLE IF NOT EXISTS wf_hi_instance (
     KEY idx_hist_instance_ended (ended_at DESC),
     KEY idx_hist_instance_duration (duration),
     KEY idx_hist_inst_tenant_status (tenant_id, status, created_at DESC),
-    KEY idx_hist_inst_tenant_starter (tenant_id, start_user_id)
+    KEY idx_hist_inst_tenant_starter (tenant_id, start_user_id),
+    KEY idx_hist_instance_process (process_id, created_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='历史流程实例表';
 
 -- 4. 运行时任务表（仅进行中任务）
