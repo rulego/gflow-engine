@@ -236,10 +236,26 @@ func ensureEventTestSchema(t *testing.T, db *gorm.DB) {
 	db.Exec("DELETE FROM wf_process")
 }
 
+// seedProcessForEvents inserts a minimal resolvable "proc-test" process
+// definition. requireActionEnabled 的 strict 解析（fail-closed）需要找到流程定义
+// 与节点才能判定"未配置 actionPermissions → 放行"；否则判定为解析失败 → 拒绝 transfer/withdraw。
+// 这里塞一个含 userTask1 节点的扁平 RuleChain DSL。
+func seedProcessForEvents(t *testing.T, engine WorkflowEngine) {
+	t.Helper()
+	def := `{"ruleChain":{"id":"proc-test","name":"test"},"metadata":{"firstNodeIndex":0,"nodes":[{"id":"userTask1","name":"approve","type":"userTask"}],"connections":[]}}`
+	if err := engine.GetDB().Exec(
+		`INSERT OR IGNORE INTO wf_process (id, tenant_id, name, version, definition_json) VALUES (?, ?, ?, ?, ?)`,
+		"proc-test", "tenant-test", "test-proc", 1, def,
+	).Error; err != nil {
+		t.Fatalf("seed process: %v", err)
+	}
+}
+
 // seedInstance inserts a minimal Active process instance row using the
 // engine's gorm.DB so TaskService/RuntimeService operations can find it.
 func seedInstance(t *testing.T, engine WorkflowEngine, instanceID, startUser string) {
 	t.Helper()
+	seedProcessForEvents(t, engine)
 	inst := &model.WfInstance{
 		ID:          instanceID,
 		ProcessID:   "proc-test",
