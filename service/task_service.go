@@ -68,10 +68,12 @@ type TaskService interface {
 	// 委派中的任务（有 Owner）会归还给原审批人而非扔回候选池。
 	Unclaim(ctx context.Context, actor Actor, taskID string) error
 
-	// SetAssignee 设置任务分配人
+	// SetAssignee 设置任务分配人。管理操作：须管理员（SuperAdmin）或系统身份，
+	// 普通用户无权调用（否则可劫持他人任务或解除分配使任务回池）。
 	SetAssignee(ctx context.Context, actor Actor, taskID, userID string) error
 
-	// SetOwner 设置任务所有者
+	// SetOwner 设置任务所有者。管理操作：须管理员（SuperAdmin）或系统身份，
+	// Owner 驱动委派归还路径，普通用户无权改写。
 	SetOwner(ctx context.Context, actor Actor, taskID, userID string) error
 
 	// Delegate 委派任务给其他用户：assignee 转为目标用户，原 assignee 记为 Owner。
@@ -79,7 +81,8 @@ type TaskService interface {
 	// 不会直接完成流转。设计器显式禁用 delegate 时拒绝。
 	Delegate(ctx context.Context, actor Actor, taskID, userID, reason string) error
 
-	// Resolve 解决委派的任务（委派任务完成后返回给原分配人）
+	// Resolve 解决委派的任务（委派任务完成后返回给原分配人）。仅被委派人（assignee）、
+	// 原办理人（Owner）或管理员/系统身份可调用。
 	Resolve(ctx context.Context, actor Actor, taskID string) error
 
 	// GetHistoryTasksByProcessInstanceID 获取实例的全部已归档任务（wf_hi_task）

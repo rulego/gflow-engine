@@ -9,15 +9,21 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/enums"
 	utils2 "github.com/rulego/gflow-engine/utils"
 )
 
-// SetAssignee 设置任务分配人
+// SetAssignee 设置任务分配人。
+// 强制改派任意任务的办理人，与 Reassign 同属管理操作：必须管理员（SuperAdmin）
+// 或系统身份，普通用户无权调用（否则可劫持他人任务或解除分配使任务回池）。
 func (s *TaskServiceImpl) SetAssignee(ctx context.Context, actor Actor, taskID, userID string) error {
 	ctx = bindActor(ctx, actor)
 	if taskID == "" {
 		return fmt.Errorf("task ID cannot be empty")
+	}
+	if err := requireAdminIdentity(&actor); err != nil {
+		return err
 	}
 
 	task, err := s.taskDAO.Get(ctx, taskID)
@@ -79,11 +85,16 @@ func (s *TaskServiceImpl) setAssigneeInternal(ctx context.Context, scope *Instan
 	return nil
 }
 
-// SetOwner 设置任务所有者
+// SetOwner 设置任务所有者。
+// Owner 驱动委派归还路径，篡改即改写审批走向，属管理操作：必须管理员（SuperAdmin）
+// 或系统身份。
 func (s *TaskServiceImpl) SetOwner(ctx context.Context, actor Actor, taskID, userID string) error {
 	ctx = bindActor(ctx, actor)
 	if taskID == "" {
 		return fmt.Errorf("task ID cannot be empty")
+	}
+	if err := requireAdminIdentity(&actor); err != nil {
+		return err
 	}
 
 	task, err := s.taskDAO.Get(ctx, taskID)
@@ -301,6 +312,26 @@ func (s *TaskServiceImpl) Resolve(ctx context.Context, actor Actor, taskID strin
 	})
 }
 
+// authorizeResolveOperator 校验委派归还（Resolve）的操作人：须为任务当前办理人
+// （被委派人 assignee）、原办理人（owner）或管理员/系统身份。由 resolveInternal 在
+// 实例行锁内读的最新任务快照上执行，避免锁外读被并发改派绕过的 TOCTOU 窗口。
+func (s *TaskServiceImpl) authorizeResolveOperator(ctx context.Context, task *model.WfTask) error {
+	u := GetUserFromCtx(ctx)
+	if u == nil || u.UserID == "" {
+		return ErrAuthenticationRequired
+	}
+	if u.SuperAdmin || IsSystemActor(u) {
+		return nil
+	}
+	if task.Assignee != nil && *task.Assignee == u.UserID {
+		return nil
+	}
+	if task.Owner != nil && *task.Owner == u.UserID {
+		return nil
+	}
+	return fmt.Errorf("user %s is neither delegatee nor owner of task %s: %w", u.UserID, task.ID, ErrPermissionDenied)
+}
+
 func (s *TaskServiceImpl) resolveInternal(ctx context.Context, scope *InstanceScope, taskID string) error {
 	taskDAO := scope.Tasks()
 	task, err := taskDAO.Get(ctx, taskID)
@@ -309,6 +340,11 @@ func (s *TaskServiceImpl) resolveInternal(ctx context.Context, scope *InstanceSc
 	}
 	if task == nil {
 		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+
+	// 鉴权：仅被委派人（assignee）、原办理人（owner）或管理员/系统身份可归还。
+	if err := s.authorizeResolveOperator(ctx, task); err != nil {
+		return err
 	}
 
 	// 幂等：已经没有 Owner（说明已 resolve 过）

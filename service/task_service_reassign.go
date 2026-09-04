@@ -30,6 +30,12 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 		return "", fmt.Errorf("new assignee cannot be empty: %w", ErrValidation)
 	}
 
+	// 管理操作鉴权：Reassign 跳过 assignee/候选人校验，必须管理员（SuperAdmin）或系统身份，
+	// 否则任意同租户用户可强改派任意任务（任务劫持）。
+	if err := requireAdminIdentity(&actor); err != nil {
+		return "", err
+	}
+
 	// 廉价读：解析 instanceID 并做租户校验，无锁
 	task, err := s.taskDAO.Get(ctx, taskID)
 	if err != nil {

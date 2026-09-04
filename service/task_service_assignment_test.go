@@ -75,3 +75,67 @@ func TestSecFix_TransferCrossTenantRejected(t *testing.T) {
 	require.Error(t, err, "跨租户转办必须拒绝")
 	require.True(t, errors.Is(err, ErrNotFound), "跨租户应伪装成 not found，got %v", err)
 }
+
+func TestSecFix_SetAssigneeRequiresAdmin(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-sa", TaskDefKey: "approve", Name: "审批", TaskType: "user_task",
+		Status: string(enums.TaskStatusActive), Assignee: secFixStrPtr("userA"),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now(),
+	}))
+	taskSvc := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), workflowEngine: &testEngineDouble{}}
+
+	// 普通同租户用户非管理员 → 拒绝（改派他人任务是管理操作）
+	err := taskSvc.SetAssignee(ctx, Actor{UserID: "userB", TenantID: "t1"}, "task-sa", "userC")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+
+	// 空身份 → 拒绝
+	require.Error(t, taskSvc.SetAssignee(ctx, Actor{TenantID: "t1"}, "task-sa", "userC"))
+
+	// 管理员 → 放行
+	require.NoError(t, taskSvc.SetAssignee(ctx, Actor{UserID: "admin1", TenantID: "t1", SuperAdmin: true}, "task-sa", "userC"))
+	persisted, err := taskSvc.taskDAO.Get(ctx, "task-sa")
+	require.NoError(t, err)
+	require.Equal(t, "userC", *persisted.Assignee)
+}
+
+func TestSecFix_SetOwnerRequiresAdmin(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-so", TaskDefKey: "approve", Name: "审批", TaskType: "user_task",
+		Status: string(enums.TaskStatusActive), Assignee: secFixStrPtr("userA"),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now(),
+	}))
+	taskSvc := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), workflowEngine: &testEngineDouble{}}
+
+	// 普通同租户用户 → 拒绝
+	err := taskSvc.SetOwner(ctx, Actor{UserID: "userB", TenantID: "t1"}, "task-so", "userB")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+
+	// 管理员 → 放行
+	require.NoError(t, taskSvc.SetOwner(ctx, Actor{UserID: "admin1", TenantID: "t1", SuperAdmin: true}, "task-so", "userB"))
+}
+
+func TestSecFix_ResolveRequiresOperator(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	owner, delegatee := "owner-1", "delegatee-1"
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-rs", TaskDefKey: "approve", Name: "审批", TaskType: "user_task",
+		Status: string(enums.TaskStatusActive), Assignee: &delegatee, Owner: &owner,
+		TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now(),
+	}))
+	taskSvc := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), workflowEngine: &testEngineDouble{}}
+
+	// 无关同租户用户 → 拒绝（既非被委派人、非原办理人、也非管理员）
+	err := taskSvc.Resolve(ctx, Actor{UserID: "intruder", TenantID: "t1"}, "task-rs")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+
+	// 原办理人（owner）→ 放行
+	require.NoError(t, taskSvc.Resolve(ctx, Actor{UserID: owner, TenantID: "t1"}, "task-rs"))
+}
