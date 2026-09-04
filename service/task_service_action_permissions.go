@@ -19,14 +19,14 @@ import (
 )
 
 // resolveNodeActionPermissions 返回某节点 additionalInfo.actionPermissions。
-// 复用入口：GetProcessInstanceDetail（详情装配）与 requireActionEnabled（service 校验）。
+// lenient 版：任一加载/解析步骤失败都返回空 map，仅供 UI 装配等展示场景
+// （GetProcessInstanceDetail 详情按钮显隐）；安全校验走 resolveNodeActionPermissionsStrict。
 //
-// 任一加载/解析步骤失败都返回空 map（降级放行），避免解析 bug 挡住正常操作。
+// 服务未注入（嵌入式半装配场景）同样返回空 map 降级，不允许 panic。
 func resolveNodeActionPermissions(ctx context.Context, engine WorkflowEngine, instanceID, taskDefKey string) map[string]interface{} {
 	if instanceID == "" || taskDefKey == "" || engine == nil {
 		return map[string]interface{}{}
 	}
-	// 服务未注入（嵌入式半装配场景）同样降级放行，不允许 panic
 	runtimeService := engine.GetRuntimeService()
 	if runtimeService == nil {
 		return map[string]interface{}{}
@@ -159,8 +159,7 @@ func resolveNodeFormPermissions(ctx context.Context, scope *InstanceScope, insta
 }
 
 // requireActionEnabled 校验流程设计器是否在 actionPermissions 中显式禁用了某动作。
-// 解析失败时 fail-closed（拒绝该动作）——原实现解析失败返回空 map 降级放行，会让
-// 设计器显式 disable 在定义损坏/服务不可用等场景被绕过。
+// 解析失败一律 fail-closed 拒绝：解析不出即无法证明设计器未禁用，放行等于绕过显式 disable。
 func (s *TaskServiceImpl) requireActionEnabled(ctx context.Context, task *model.WfTask, actionKey string) error {
 	if task == nil || task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
 		return nil

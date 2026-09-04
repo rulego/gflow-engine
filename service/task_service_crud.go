@@ -123,11 +123,10 @@ func (s *TaskServiceImpl) DeleteTask(ctx context.Context, actor Actor, taskID, r
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
 
-	// 权限校验：操作人以显式参数 userID 为准。
+	// 权限校验：操作人取 actor.UserID。
 	// 系统身份（引擎内部回滚/清理路径，如候选写入失败删任务）免用户级校验，
-	// 但仍走下方同一条持锁删除路径（WithInstanceTx），与普通删除一致地串行化。
-	// 此前系统分支用字符串比对后直接 taskDAO.Delete，绕过实例行锁——与并发
-	// Complete 竞争会留下重复终止态记录或丢失审批历史（本方法顶部注释描述的问题）。
+	// 但与普通删除走同一条持锁删除路径（WithInstanceTx）串行化——绕过锁直删会与
+	// 并发 Complete 竞争，留下重复终止态记录或丢失审批历史（见本方法顶部注释）。
 	isSystem := IsSystemActor(&actor)
 	if !isSystem {
 		// 租户校验：ctx 带身份时任务必须同租户（防跨租户删除）

@@ -30,9 +30,8 @@ type Actor struct {
 	TenantID string `json:"tenantId"`
 	// SuperAdmin：工作流管理员（持 workflow:instance:view 的运营/管理角色）。
 	// 实例详情 IDOR 校验对其放行（管理侧需要查看所有实例）；普通审批用户不设此标记。
-	// 仅由宿主服务端按角色判定设置，不带 json tag：Actor 不得从请求体反序列化，
-	// 防止客户端伪造管理员标记。
-	SuperAdmin bool
+	// 仅由宿主服务端按角色判定设置；json:"-" 禁止反序列化，防止客户端伪造管理员标记。
+	SuperAdmin bool `json:"-"`
 }
 
 // SystemActor 引擎内部机制（节点自动推进/巡检等）代替用户执行时的操作人，
@@ -55,8 +54,8 @@ func IsSystemActor(a *Actor) bool {
 // 否则任意同租户用户可拿到 taskID 即劫持他人任务。
 //
 // 系统身份（IsSystemActor）放行，供定时巡检/跨服务级联等引擎内部机制使用；
-// 管理员身份由宿主服务端按角色判定后置 SuperAdmin 标记（Actor 无 json tag，
-// 不能从请求体反序列化伪造）。
+// 管理员身份由宿主服务端按角色判定后置 SuperAdmin 标记（该字段带 json:"-"，
+// 无法从请求体反序列化伪造）。
 func requireAdminIdentity(actor *Actor) error {
 	if actor == nil || actor.UserID == "" {
 		return fmt.Errorf("admin identity required: %w", ErrAuthenticationRequired)

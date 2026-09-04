@@ -170,14 +170,13 @@ func (s *TaskServiceImpl) Delegate(ctx context.Context, actor Actor, taskID, use
 		return err
 	}
 
-	// 目标用户租户归属校验（IdentityService 实现 TenantMembershipChecker 时生效）。
-	// 转办/改派已校验目标租户，委派此前漏查——否则可把任务委派给其他租户用户，
-	// 导致跨租户任务被他人处理（审批越权）。
+	// 目标用户租户归属校验（IdentityService 实现 TenantMembershipChecker 时生效），
+	// 与 Transfer/Reassign 同口径，防止把任务委派给其他租户用户。
 	if err := s.ensureTargetUserInTenant(ctx, task, userID, "delegate"); err != nil {
 		return err
 	}
 
-	// 设计器显式禁用 delegate → 拒绝（actionPermissions 解析失败时降级放行）
+	// 设计器显式禁用 delegate → 拒绝（actionPermissions 解析失败同样 fail-closed 拒绝）
 	if err := s.requireActionEnabled(ctx, task, "delegate"); err != nil {
 		return err
 	}
@@ -217,8 +216,7 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 	if u == nil || u.UserID == "" {
 		return ErrAuthenticationRequired
 	}
-	// fail-closed：仅当前 assignee 可委派。未分配（pending）任务无从委派——此前
-	// assignee 为空时跳过校验，任意同租户用户可把未分配任务委派给他人。
+	// fail-closed：仅当前 assignee 可委派；未分配（pending）任务无从委派，直接拒绝。
 	if task.Assignee == nil || *task.Assignee == "" {
 		return fmt.Errorf("task is not assigned, cannot delegate: %w", ErrPermissionDenied)
 	}
@@ -433,7 +431,7 @@ func (s *TaskServiceImpl) Transfer(ctx context.Context, actor Actor, taskID, toU
 		return err
 	}
 
-	// 设计器显式禁用 transfer → 拒绝（actionPermissions 解析失败时降级放行）
+	// 设计器显式禁用 transfer → 拒绝（actionPermissions 解析失败同样 fail-closed 拒绝）
 	if err := s.requireActionEnabled(ctx, task, "transfer"); err != nil {
 		return err
 	}
@@ -473,7 +471,7 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
 	// 操作人以显式参数 fromUserID 为准：只有任务当前 assignee 能转办；
-	// 未分配任务（assignee 为空/nil）无从转办，fail-closed 拒绝（此前空 assignee 跳过校验）。
+	// 未分配任务（assignee 为空/nil）无从转办，fail-closed 拒绝。
 	if task.Assignee == nil || *task.Assignee != fromUserID {
 		return fmt.Errorf("only assigned user can transfer task: %w", ErrPermissionDenied)
 	}
