@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/rulego/gflow-engine/model"
-	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 )
@@ -125,35 +124,35 @@ func (s *TaskServiceImpl) DeleteTask(ctx context.Context, actor Actor, taskID, r
 	}
 
 	// 权限校验：操作人以显式参数 userID 为准。
-	// 系统身份（引擎内部回滚/清理路径，如候选写入失败删任务）免用户级校验。
-	if userID == constants.UserSystem {
-		if err := s.taskDAO.Delete(ctx, taskID); err != nil {
-			return fmt.Errorf("failed to delete task: %w", err)
+	// 系统身份（引擎内部回滚/清理路径，如候选写入失败删任务）免用户级校验，
+	// 但仍走下方同一条持锁删除路径（WithInstanceTx），与普通删除一致地串行化。
+	// 此前系统分支用字符串比对后直接 taskDAO.Delete，绕过实例行锁——与并发
+	// Complete 竞争会留下重复终止态记录或丢失审批历史（本方法顶部注释描述的问题）。
+	isSystem := IsSystemActor(&actor)
+	if !isSystem {
+		// 租户校验：ctx 带身份时任务必须同租户（防跨租户删除）
+		if u := GetUserFromCtx(ctx); u != nil && task.TenantID != u.TenantID {
+			return fmt.Errorf("%w: task", ErrNotFound)
 		}
-		return nil
-	}
-	// 租户校验：ctx 带身份时任务必须同租户（防跨租户删除）
-	if u := GetUserFromCtx(ctx); u != nil && task.TenantID != u.TenantID {
-		return fmt.Errorf("%w: task", ErrNotFound)
-	}
-	isSuperAdmin := false
-	if u := GetUserFromCtx(ctx); u != nil {
-		isSuperAdmin = u.SuperAdmin
-	}
-	if task.Assignee != nil && *task.Assignee != "" {
-		// 已分配的任务：只有 assignee 可以删除
-		if *task.Assignee != userID {
-			return fmt.Errorf("task assigned to %s, operator %s: %w", *task.Assignee, userID, ErrPermissionDenied)
+		isSuperAdmin := false
+		if u := GetUserFromCtx(ctx); u != nil {
+			isSuperAdmin = u.SuperAdmin
 		}
-	} else if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
-		// 未分配的任务：只有流程发起人或管理员可以删除。
-		// 查不到实例（含查询失败）一律拒绝——放行会删掉无法溯源的任务。
-		instance, err := s.workflowEngine.GetRuntimeService().GetProcessInstance(ctx, ActorFromCtx(ctx), *task.ProcessInstanceID)
-		if err != nil || instance == nil {
-			return fmt.Errorf("cannot verify instance initiator, refuse to delete: %w", ErrPermissionDenied)
-		}
-		if instance.StartUserID != userID && !isSuperAdmin {
-			return fmt.Errorf("only the process initiator or admin can delete unassigned tasks: %w", ErrPermissionDenied)
+		if task.Assignee != nil && *task.Assignee != "" {
+			// 已分配的任务：只有 assignee 可以删除
+			if *task.Assignee != userID {
+				return fmt.Errorf("task assigned to %s, operator %s: %w", *task.Assignee, userID, ErrPermissionDenied)
+			}
+		} else if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
+			// 未分配的任务：只有流程发起人或管理员可以删除。
+			// 查不到实例（含查询失败）一律拒绝——放行会删掉无法溯源的任务。
+			instance, err := s.workflowEngine.GetRuntimeService().GetProcessInstance(ctx, ActorFromCtx(ctx), *task.ProcessInstanceID)
+			if err != nil || instance == nil {
+				return fmt.Errorf("cannot verify instance initiator, refuse to delete: %w", ErrPermissionDenied)
+			}
+			if instance.StartUserID != userID && !isSuperAdmin {
+				return fmt.Errorf("only the process initiator or admin can delete unassigned tasks: %w", ErrPermissionDenied)
+			}
 		}
 	}
 
