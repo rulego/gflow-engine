@@ -1,11 +1,10 @@
 package service
 
-// Tests for PR3: authz fail-closed boundary tightening.
-//
-// 覆盖四种边界放行漏洞的修复：
-//  1. Delegate/Transfer 对空 assignee 任务 fail-open（未分配任务被任意用户委派/转办）
-//  2. AddSign/ReduceSign 对空 UserID 操作者放行
-//  3. requireActionEnabled 解析失败降级放行（设计器显式 disable 可被绕过）
+// 鉴权 fail-closed 边界用例（覆盖 Delegate/Transfer/AddSign/ReduceSign/
+// requireActionEnabled 五条路径）：
+//  1. 未分配（assignee=nil）任务不可被委派/转办
+//  2. 空 UserID 操作者不可加签/减签
+//  3. requireActionEnabled 解析失败时拒绝动作（fail-closed）
 //  4. （锁内复校见 addSignInternal/reduceSignInternal/deleteTaskInternal 实现）
 
 import (
@@ -55,8 +54,7 @@ func seedFailClosedTask(t *testing.T, svc *TaskServiceImpl, id, tenant, assignee
 	require.NoError(t, svc.taskDAO.Create(context.Background(), task))
 }
 
-// TestFailClosed_DelegateUnassignedTaskRejected 验证：未分配（assignee=nil）任务
-// 不能被任意用户委派（此前空 assignee 跳过校验，fail-open）。
+// TestFailClosed_DelegateUnassignedTaskRejected 验证：未分配（assignee=nil）任务不可被委派。
 func TestFailClosed_DelegateUnassignedTaskRejected(t *testing.T) {
 	svc := newFailClosedSvc(t)
 	seedFailClosedTask(t, svc, "task-del-unassigned", "t1", "", "")
@@ -66,8 +64,7 @@ func TestFailClosed_DelegateUnassignedTaskRejected(t *testing.T) {
 	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
 }
 
-// TestFailClosed_TransferUnassignedTaskRejected 验证：未分配（assignee=nil）任务
-// 不能被任意用户转办（此前空 assignee 跳过校验，fail-open）。
+// TestFailClosed_TransferUnassignedTaskRejected 验证：未分配（assignee=nil）任务不可被转办。
 func TestFailClosed_TransferUnassignedTaskRejected(t *testing.T) {
 	svc := newFailClosedSvc(t)
 	seedFailClosedTask(t, svc, "task-tr-unassigned", "t1", "", "")
@@ -77,8 +74,7 @@ func TestFailClosed_TransferUnassignedTaskRejected(t *testing.T) {
 	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
 }
 
-// TestFailClosed_AddSignEmptyOperatorRejected 验证：空 UserID 的操作者无法加签
-// （此前空串 assignee 可与空串 operator 匹配，退化放行）。
+// TestFailClosed_AddSignEmptyOperatorRejected 验证：空 UserID 的操作者无法加签。
 func TestFailClosed_AddSignEmptyOperatorRejected(t *testing.T) {
 	svc := newFailClosedSvc(t)
 	seedFailClosedTask(t, svc, "task-sign", "t1", "userA", "")
@@ -100,7 +96,7 @@ func TestFailClosed_ReduceSignEmptyOperatorRejected(t *testing.T) {
 
 // TestFailClosed_ActionPermissionsResolutionFailureRejected 验证：任务关联了实例但
 // 设计器配置无法解析（这里 workflowEngine 未注入运行时服务）时，requireActionEnabled
-// 必须 fail-closed 拒绝，而非降级放行（此前解析失败返回空 map → 放行，可绕过设计器显式 disable）。
+// 必须 fail-closed 拒绝。
 func TestFailClosed_ActionPermissionsResolutionFailureRejected(t *testing.T) {
 	svc := newFailClosedSvc(t)
 	seedFailClosedTask(t, svc, "task-ap", "t1", "userA", "inst-x")

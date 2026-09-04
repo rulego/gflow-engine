@@ -1,6 +1,6 @@
 package service
 
-// PR2 租户隔离补齐用例：
+// 租户隔离用例（跨 Return/Unclaim/Delegate/AddSign 四条路径的跨文件不变量）：
 // Return / Unclaim 跨租户按 not found 隐藏；
 // Delegate / AddSign 的目标用户跨租户按 PermissionDenied 拒绝。
 
