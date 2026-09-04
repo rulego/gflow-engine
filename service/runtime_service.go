@@ -145,6 +145,13 @@ type RuntimeService interface {
 	// 时间段过滤；from/to 任一可为 nil 表示不设该侧边界）。统计页日期筛选用。
 	CountMyApplications(ctx context.Context, actor Actor, from, to *time.Time) (int64, error)
 
+	// CountMyApplicationsByBuckets 我的申请页状态桶计数（与列表同口径：本人发起、排除已删除，含 keyword）。
+	// 返回键为桶名（active/completed/rejected/withdrawn）加 total=未按状态过滤的全量。
+	CountMyApplicationsByBuckets(ctx context.Context, actor Actor, keyword string) (map[string]int64, error)
+
+	// CountDoneByBuckets 已办页状态桶计数（与已办列表同口径：我已办任务触达的实例，含 keyword 与申请人过滤）。
+	CountDoneByBuckets(ctx context.Context, actor Actor, keyword string, startUserIDs []string) (map[string]int64, error)
+
 	// GetProcessInstanceDetail 获取实例详情（审批进度列表 + 流程定义 + 表单等装配视图）。
 	// 权限：actor.UserID 必须是 发起人 / 该实例任一任务 assignee（含已办）/ CC 抄送归属，
 	// 否则返回 ErrPermissionDenied；Actor.SuperAdmin 放行。

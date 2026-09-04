@@ -1709,7 +1709,7 @@ func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, act
 			Status:    []string{string(enums.TaskStatusCompleted), string(enums.TaskStatusReturned)},
 		},
 	}
-	q.InstanceStatuses, q.EndReasonPrefix = instanceStatusScope(instanceStatus)
+	q.InstanceStatuses, q.EndReasonPrefix, q.EndReasonNotPrefixes = instanceStatusScope(instanceStatus)
 	instances, total, err := s.instanceDAO.ListByTaskConditions(ctx, q)
 	if err != nil {
 		return nil, 0, err
@@ -1718,20 +1718,76 @@ func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, act
 	return instances, total, nil
 }
 
-// instanceStatusScope 状态筛选桶翻译为实例状态集合与 end_reason 前缀。
-// 拒绝/撤回落库为 terminated + 固定前缀，无法用实例状态直接表达。
-func instanceStatusScope(bucket string) ([]string, string) {
+// instanceStatusScope 状态筛选桶翻译为实例状态集合与 end_reason 前缀条件。
+// 拒绝/撤回落库为 terminated + 固定前缀，无法用实例状态直接表达；
+// 「已终止」桶 = terminated 且排除拒绝/撤回前缀（手动终止、系统终止等其余原因）。
+func instanceStatusScope(bucket string) ([]string, string, []string) {
 	switch bucket {
 	case string(enums.InstanceStatusActive):
-		return []string{bucket}, ""
+		return []string{bucket}, "", nil
 	case string(enums.InstanceStatusCompleted):
-		return []string{bucket}, ""
+		return []string{bucket}, "", nil
+	case string(enums.InstanceStatusSuspended):
+		return []string{bucket}, "", nil
+	case string(enums.InstanceStatusDraft):
+		return []string{bucket}, "", nil
 	case "rejected":
-		return []string{string(enums.InstanceStatusTerminated)}, constants.EndReasonPrefixRejected
+		return []string{string(enums.InstanceStatusTerminated)}, constants.EndReasonPrefixRejected, nil
 	case "withdrawn":
-		return []string{string(enums.InstanceStatusTerminated)}, constants.EndReasonPrefixWithdrawn
+		return []string{string(enums.InstanceStatusTerminated)}, constants.EndReasonPrefixWithdrawn, nil
+	case string(enums.InstanceStatusTerminated):
+		return []string{string(enums.InstanceStatusTerminated)}, "", []string{constants.EndReasonPrefixRejected, constants.EndReasonPrefixWithdrawn}
 	}
-	return nil, ""
+	return nil, "", nil
+}
+
+// instanceStatusBuckets 状态桶全集：经 instanceStatusScope 翻译，保证桶条件与列表过滤同口径。
+// withDraft 为 true 时含草稿桶（草稿实例无任务，仅「我的申请」视角可见）。
+func instanceStatusBuckets(withDraft bool) []dao.InstanceStatusBucket {
+	names := []string{"active", "completed", "rejected", "withdrawn", "suspended", "terminated"}
+	if withDraft {
+		names = append(names, "draft")
+	}
+	out := make([]dao.InstanceStatusBucket, 0, len(names))
+	for _, name := range names {
+		statuses, prefix, notPrefixes := instanceStatusScope(name)
+		out = append(out, dao.InstanceStatusBucket{Name: name, Statuses: statuses, EndReasonPrefix: prefix, EndReasonNotPrefixes: notPrefixes})
+	}
+	return out
+}
+
+// CountMyApplicationsByBuckets 我的申请页状态桶计数（与列表同口径：本人发起、排除已删除，含 keyword）
+func (s *RuntimeServiceImpl) CountMyApplicationsByBuckets(ctx context.Context, actor Actor, keyword string) (map[string]int64, error) {
+	ctx = bindActor(ctx, actor)
+	userID, tenantID := actor.UserID, actor.TenantID
+	if userID == "" {
+		return nil, fmt.Errorf("user ID cannot be empty")
+	}
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant ID cannot be empty")
+	}
+	return s.instanceDAO.CountInstancesUnionByBuckets(ctx, tenantID, "", userID, keyword, nil, nil, instanceStatusBuckets(true))
+}
+
+// CountDoneByBuckets 已办页状态桶计数（与已办列表同口径：我已办任务触达的实例，含 keyword 与申请人过滤）
+func (s *RuntimeServiceImpl) CountDoneByBuckets(ctx context.Context, actor Actor, keyword string, startUserIDs []string) (map[string]int64, error) {
+	ctx = bindActor(ctx, actor)
+	if actor.UserID == "" {
+		return nil, fmt.Errorf("user ID cannot be empty")
+	}
+	if actor.TenantID == "" {
+		return nil, fmt.Errorf("tenant ID cannot be empty")
+	}
+	q := &dto.TaskQuery{
+		Assignee:     actor.UserID,
+		TenantID:     actor.TenantID,
+		Keyword:      keyword,
+		StartUserIDs: startUserIDs,
+		PageRequest: dto.PageRequest{
+			Status: []string{string(enums.TaskStatusCompleted), string(enums.TaskStatusReturned)},
+		},
+	}
+	return s.instanceDAO.CountTaskInstancesByBuckets(ctx, q, instanceStatusBuckets(false))
 }
 
 // GetCcProcessInstanceList 获取抄送给我的实例列表
@@ -1771,8 +1827,8 @@ func (s *RuntimeServiceImpl) GetMyApplicationsProcessInstanceList(ctx context.Co
 		pageSize = dto.DefaultPageSize
 	}
 	// 运行时+历史表合并查询（DAO 支持 tenantID/startUserID 条件）
-	statuses, endReasonPrefix := instanceStatusScope(instanceStatus)
-	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, "", userID, statuses, keyword, nil, nil, pageSize, (page-1)*pageSize, "", "", endReasonPrefix)
+	statuses, endReasonPrefix, endReasonNotPrefixes := instanceStatusScope(instanceStatus)
+	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, "", userID, statuses, keyword, nil, nil, pageSize, (page-1)*pageSize, "", "", endReasonPrefix, endReasonNotPrefixes...)
 	if err != nil {
 		return nil, 0, err
 	}

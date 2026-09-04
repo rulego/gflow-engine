@@ -143,6 +143,12 @@ func (r *testRuntimeDouble) GetMyApplicationsProcessInstanceList(ctx context.Con
 func (r *testRuntimeDouble) CountMyApplications(ctx context.Context, actor Actor, from, to *time.Time) (int64, error) {
 	return 0, nil
 }
+func (r *testRuntimeDouble) CountMyApplicationsByBuckets(ctx context.Context, actor Actor, keyword string) (map[string]int64, error) {
+	return nil, nil
+}
+func (r *testRuntimeDouble) CountDoneByBuckets(ctx context.Context, actor Actor, keyword string, startUserIDs []string) (map[string]int64, error) {
+	return nil, nil
+}
 func (r *testRuntimeDouble) GetProcessInstancesByTaskConditions(ctx context.Context, req *dto.TaskQuery) ([]*model.WfInstance, int64, error) {
 	return nil, 0, nil
 }

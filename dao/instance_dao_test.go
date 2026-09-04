@@ -504,3 +504,151 @@ func TestInstanceDAO_ListByTaskConditions_ExcludesDeleted(t *testing.T) {
 		t.Errorf("todo 结果应仅含活表实例: %v", ids(todo))
 	}
 }
+
+// 实例维度按桶计数：与 GetInstancesUnionPagination 同口径（排除 deleted、限定发起人、keyword 生效）
+func TestInstanceDAO_CountUnionByBuckets(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfHiInstance)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	reasonRejected := "审批拒绝：不同意"
+	reasonWithdrawn := "申请人撤回"
+	reasonManual := "系统终止"
+	mk := func(id, status, name string, reason *string, user string) *model.WfInstance {
+		return &model.WfInstance{ID: id, ProcessID: "p1", Name: name, Status: status, EndReason: reason, TenantID: "t1", StartUserID: user, CreatedAt: now}
+	}
+	seed := []*model.WfInstance{
+		mk("i-active", "active", "active", nil, "u1"),
+		mk("i-done", "completed", "completed", nil, "u1"),
+		mk("i-rejected", "terminated", "rejected", &reasonRejected, "u1"),
+		mk("i-withdrawn", "terminated", "withdrawn", &reasonWithdrawn, "u1"),
+		mk("i-manual", "terminated", "manual", &reasonManual, "u1"),
+		mk("i-suspended", "suspended", "suspended", nil, "u1"),
+		mk("i-draft", "draft", "draft", nil, "u1"),
+		mk("i-del", "deleted", "deleted", nil, "u1"),
+		mk("i-other", "active", "other", nil, "u2"),
+	}
+	for _, in := range seed {
+		if err := d.Create(ctx, in); err != nil {
+			t.Fatalf("seed instance %s: %v", in.ID, err)
+		}
+	}
+	if err := q.WfHiInstance.WithContext(ctx).Create(&model.WfHiInstance{
+		ID: "hi-del", ProcessID: "p1", Name: "hi deleted", Status: "deleted", TenantID: "t1", StartUserID: "u1", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed hi instance: %v", err)
+	}
+
+	// 与 service 层 instanceStatusBuckets(true) 同构的桶集：terminated 排除拒绝/撤回前缀
+	buckets := []InstanceStatusBucket{
+		{Name: "active", Statuses: []string{"active"}},
+		{Name: "completed", Statuses: []string{"completed"}},
+		{Name: "rejected", Statuses: []string{"terminated"}, EndReasonPrefix: "审批拒绝"},
+		{Name: "withdrawn", Statuses: []string{"terminated"}, EndReasonPrefix: "申请人撤回"},
+		{Name: "suspended", Statuses: []string{"suspended"}},
+		{Name: "terminated", Statuses: []string{"terminated"}, EndReasonNotPrefixes: []string{"审批拒绝", "申请人撤回"}},
+		{Name: "draft", Statuses: []string{"draft"}},
+	}
+
+	counts, err := d.CountInstancesUnionByBuckets(ctx, "t1", "", "u1", "", nil, nil, buckets)
+	if err != nil {
+		t.Fatalf("count by buckets: %v", err)
+	}
+	// total=7：deleted 两行排除、他人实例不计数；manual 终止落「已终止」桶，各桶之和=total
+	want := map[string]int64{
+		"total": 7, "active": 1, "completed": 1, "rejected": 1, "withdrawn": 1,
+		"suspended": 1, "terminated": 1, "draft": 1,
+	}
+	var sum int64
+	for k, v := range want {
+		if counts[k] != v {
+			t.Errorf("counts[%s] = %d, want %d", k, counts[k], v)
+		}
+		if k != "total" {
+			sum += counts[k]
+		}
+	}
+	if sum != counts["total"] {
+		t.Errorf("桶之和 %d != total %d（口径失衡）", sum, counts["total"])
+	}
+
+	// keyword 与列表同口径生效
+	counts, err = d.CountInstancesUnionByBuckets(ctx, "t1", "", "u1", "active", nil, nil, buckets)
+	if err != nil {
+		t.Fatalf("count by buckets with keyword: %v", err)
+	}
+	if counts["total"] != 1 || counts["active"] != 1 {
+		t.Errorf("keyword 计数 = %v, want total=1 active=1", counts)
+	}
+}
+
+// 任务维度按桶计数：与 ListByTaskConditions 同口径（UNION 去重、排除 deleted、候选人过滤生效）
+func TestInstanceDAO_CountTaskInstancesByBuckets(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfTask, ddlWfHiInstance, ddlWfHiTask)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	reasonRejected := "审批拒绝：不同意"
+	reasonManual := "系统终止"
+	assignee := "u1"
+	startU1, startU2 := "u1", "u2"
+	instA, instB, instC, instD, instE, instF := "i-a", "i-b", "i-c", "i-del", "i-hi", "i-manual"
+	seedInst := []*model.WfInstance{
+		{ID: instA, ProcessID: "p1", Name: "a", Status: "active", TenantID: "t1", StartUserID: startU1, CreatedAt: now},
+		{ID: instB, ProcessID: "p1", Name: "b", Status: "terminated", EndReason: &reasonRejected, TenantID: "t1", StartUserID: startU1, CreatedAt: now},
+		{ID: instC, ProcessID: "p1", Name: "c", Status: "active", TenantID: "t1", StartUserID: startU2, CreatedAt: now},
+		{ID: instD, ProcessID: "p1", Name: "del", Status: "deleted", TenantID: "t1", StartUserID: startU1, CreatedAt: now},
+		{ID: instF, ProcessID: "p1", Name: "manual", Status: "terminated", EndReason: &reasonManual, TenantID: "t1", StartUserID: startU1, CreatedAt: now},
+	}
+	for _, in := range seedInst {
+		if err := d.Create(ctx, in); err != nil {
+			t.Fatalf("seed instance %s: %v", in.ID, err)
+		}
+	}
+	mkTask := func(id, instID string) *model.WfTask {
+		inst := instID
+		return &model.WfTask{ID: id, ProcessInstanceID: &inst, TaskDefKey: "n1", Name: "审批", TaskType: "user_task", Status: "completed", Assignee: &assignee, TenantID: "t1", CreatedAt: now}
+	}
+	// 实例 A 两个已办任务：计数须按实例去重为 1
+	for _, tk := range []*model.WfTask{mkTask("t-a1", instA), mkTask("t-a2", instA), mkTask("t-b", instB), mkTask("t-del", instD), mkTask("t-manual", instF)} {
+		if err := q.WfTask.Create(tk); err != nil {
+			t.Fatalf("seed task %s: %v", tk.ID, err)
+		}
+	}
+	if err := q.WfHiInstance.WithContext(ctx).Create(&model.WfHiInstance{
+		ID: instE, ProcessID: "p1", Name: "hi", Status: "completed", TenantID: "t1", StartUserID: startU1, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed hi instance: %v", err)
+	}
+	defKey := "n1"
+	if err := q.WfHiTask.WithContext(ctx).Create(&model.WfHiTask{
+		ID: "hit-e", ProcessInstanceID: &instE, TaskDefKey: &defKey, Name: "审批", TaskType: "user_task", Status: "completed", Assignee: &assignee, TenantID: "t1", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed hi task: %v", err)
+	}
+
+	// 与 service 层 done 口径同构：terminated 排除拒绝/撤回前缀，与 rejected/withdrawn 互斥
+	buckets := []InstanceStatusBucket{
+		{Name: "active", Statuses: []string{"active"}},
+		{Name: "completed", Statuses: []string{"completed"}},
+		{Name: "rejected", Statuses: []string{"terminated"}, EndReasonPrefix: "审批拒绝"},
+		{Name: "terminated", Statuses: []string{"terminated"}, EndReasonNotPrefixes: []string{"审批拒绝", "申请人撤回"}},
+	}
+	counts, err := d.CountTaskInstancesByBuckets(ctx, &dto.TaskQuery{
+		Assignee: "u1", TenantID: "t1", StartUserIDs: []string{"u1"},
+		PageRequest: dto.PageRequest{Status: []string{"completed"}},
+	}, buckets)
+	if err != nil {
+		t.Fatalf("count task instances by buckets: %v", err)
+	}
+	// total=4：A(去重) + B(拒绝) + E(历史) + F(手动终止)；C 他人发起被 StartUserIDs 排除、D 已删排除；
+	// B 只落 rejected 不落 terminated（NOT LIKE 互斥）
+	want := map[string]int64{"total": 4, "active": 1, "completed": 1, "rejected": 1, "terminated": 1}
+	for k, v := range want {
+		if counts[k] != v {
+			t.Errorf("counts[%s] = %d, want %d", k, counts[k], v)
+		}
+	}
+}

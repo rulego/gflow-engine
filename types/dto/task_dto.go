@@ -59,12 +59,14 @@ type TaskQuery struct {
 	// StartUserIDs 发起人 ID 列表：与 Keyword 联动按申请人过滤。引擎不持有姓名，
 	// 由宿主按姓名/用户名解析后传入。
 	StartUserIDs []string `json:"startUserIDs" form:"startUserIDs"`
-	// InstanceStatus 列表状态筛选桶：active/completed/rejected/withdrawn，空为不过滤
+	// InstanceStatus 列表状态筛选桶：active/completed/rejected/withdrawn/suspended/terminated，空为不过滤
 	InstanceStatus string `json:"instanceStatus" form:"instanceStatus"`
 	// InstanceStatuses 实例状态过滤（i.status 层，区别于任务状态 Status），服务层内部设置
 	InstanceStatuses []string `json:"instanceStatuses"`
 	// EndReasonPrefix end_reason 前缀匹配，服务层内部设置
 	EndReasonPrefix string `json:"endReasonPrefix"`
+	// EndReasonNotPrefixes end_reason 排除前缀（NOT LIKE），「已终止」桶剔除拒绝/撤回用，服务层内部设置
+	EndReasonNotPrefixes []string `json:"endReasonNotPrefixes"`
 
 	// 时间范围查询条件
 	CreatedAfter  *time.Time `json:"createdAfter" form:"createdAfter"`   // 创建时间起始
