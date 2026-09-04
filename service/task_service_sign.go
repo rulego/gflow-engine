@@ -67,6 +67,14 @@ func (s *TaskServiceImpl) AddSign(ctx context.Context, actor Actor, taskID strin
 		return err
 	}
 
+	// 被加签人租户归属校验（IdentityService 实现 TenantMembershipChecker 时生效）。
+	// 此前漏校验：可把加签任务指派给其他租户用户，导致跨租户用户参与审批。
+	for _, uid := range userIDs {
+		if err := s.ensureTargetUserInTenant(ctx, task, uid, "addSign"); err != nil {
+			return err
+		}
+	}
+
 	// 设计器显式禁用 addSign → 拒绝（actionPermissions 解析失败时降级放行）
 	if err := s.requireActionEnabled(ctx, task, "addSign"); err != nil {
 		return err
