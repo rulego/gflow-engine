@@ -18,6 +18,7 @@ package components
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -373,8 +374,9 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 		}
 	}
 
-	// 对于会签类型，如果已经有拒绝的任务，立即终止流程（一票否决）
-	if n.Config.ApprovalType == string(enums.ApprovalTypeCountersign) && rejectedCount > 0 {
+	// 会签一票否决仅对"全员通过"规则成立；规则配置为 any/majority/percent/count 时
+	// 少数 reject 不定局，与 complete 路径的早否决判定（仅 CountersignTypeAll）同口径。
+	if n.Config.ApprovalType == string(enums.ApprovalTypeCountersign) && rejectedCount > 0 && countersignRequiresUnanimity(n.Config.ApprovalRule) {
 		newMsg := msg.Copy()
 		if newMsg.Metadata == nil {
 			newMsg.Metadata = types.NewMetadata()
@@ -540,6 +542,19 @@ func (n *UserTaskNode) evaluateApproval(tasks []*model.WfTask, approvedCount, re
 	default:
 		return rejectedCount == 0 && approvedCount > 0
 	}
+}
+
+// countersignRequiresUnanimity 判断会签规则是否要求全员通过（一票否决的适用前提）。
+// 规则为空/解析失败按默认的 all 处理；显式配置 any/majority/percent/count 时返回 false。
+func countersignRequiresUnanimity(ruleJSON string) bool {
+	type ruleShape struct {
+		Type string `json:"type"`
+	}
+	var r ruleShape
+	if strings.TrimSpace(ruleJSON) == "" || json.Unmarshal([]byte(ruleJSON), &r) != nil {
+		return true
+	}
+	return r.Type == "" || r.Type == string(enums.CountersignTypeAll)
 }
 
 // dueDateLayouts 任务到期时间支持的格式

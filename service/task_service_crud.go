@@ -208,6 +208,26 @@ func (s *TaskServiceImpl) deleteTaskInternal(ctx context.Context, scope *Instanc
 		return err
 	}
 
+	// 活跃任务承载未决审批流，删除后节点既无人可完成、汇合点也凑不齐票数，
+	// 实例就地卡死。用户删除仅允许终态任务；系统身份的回滚清理（候选写入失败、
+	// 会签主任务回退）删的是刚创建、从未对用户可见的暂态行，不受此限。
+	if !IsSystemActor(GetUserFromCtx(ctx)) {
+		switch task.Status {
+		case string(enums.TaskStatusActive), string(enums.TaskStatusPending), string(enums.TaskStatusSuspended):
+			return fmt.Errorf("task %s is %s and still part of a running flow; only terminal tasks can be deleted: %w",
+				task.ID, task.Status, ErrValidation)
+		}
+	}
+
+	// 删除前归档到历史表，保留审计痕迹（与驳回回跳 supersede 同口径）。
+	// 系统身份删的是刚创建、从未对用户可见的暂态行（候选写入失败回滚等），
+	// 不归档。归档失败的行不删除，避免运行表与历史表都无记录的孤儿。
+	if !IsSystemActor(GetUserFromCtx(ctx)) && task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
+		if err := scope.HiTasks().Create(ctx, taskToHiTask(task)); err != nil {
+			return fmt.Errorf("failed to archive task before delete: %w", err)
+		}
+	}
+
 	if err := taskDAO.Delete(ctx, taskID); err != nil {
 		return fmt.Errorf("failed to delete task: %w", err)
 	}

@@ -464,6 +464,14 @@ func (s *RuntimeServiceImpl) suspendProcessInstanceInternal(ctx context.Context,
 		return nil
 	}
 
+	// 草稿不可挂起：挂起后再激活会跳过草稿激活闸（创建者校验、发起人范围重查、
+	// 引擎首驱），实例以 Active 状态存在却从未创建过任何任务，成为无人可见的僵尸。
+	// 草稿的生命周期动作是编辑、提交（激活）与删除。
+	if instance.Status == string(enums.InstanceStatusDraft) {
+		return fmt.Errorf("draft instance %s cannot be suspended; submit or delete it instead: %w",
+			processInstanceID, ErrValidation)
+	}
+
 	if currentUser := GetUserFromCtx(ctx); currentUser != nil {
 		if err := ensureTenantAccess(ctx, "process instance", instance.TenantID); err != nil {
 			return err
@@ -1935,7 +1943,9 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 	// 与 CompleteProcessInstance 同口径用 int64 毫秒（int32 约 24.8 天溢出）
 	duration := now.Sub(instance.CreatedAt).Milliseconds()
 
-	// 终止所有未完结的任务
+	// 终止所有未完结的任务；同时收集这些任务的办理人——终止通知只发给
+	// 终止时尚有未决工作的办理人，已完成节点的历史审批人不再打扰。
+	liveAssignees := make([]string, 0, 4)
 	tasks, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ProcessInstanceID.Eq(processInstanceID)).Find()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tasks for termination: %w", err)
@@ -1945,6 +1955,9 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 		if t.Status == string(enums.TaskStatusActive) ||
 			t.Status == string(enums.TaskStatusPending) ||
 			t.Status == string(enums.TaskStatusSuspended) {
+			if t.Assignee != nil && *t.Assignee != "" {
+				liveAssignees = append(liveAssignees, *t.Assignee)
+			}
 			if _, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ID.Eq(t.ID)).Updates(map[string]interface{}{
 				tx.WfTask.Status.ColumnName().String():    enums.TaskStatusTerminated,
 				tx.WfTask.EndedAt.ColumnName().String():   &now,
@@ -2023,18 +2036,13 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 	// 传事务 tx：走全局连接会与本事务互等死锁。
 	s.evictStaleChain(ctx, tx, instance.TenantID, instance.ProcessID)
 
-	// 构造 terminated 事件（通知发起人 + 当前审批人），交给调用方提交后派发
+	// 构造 terminated 事件（通知发起人 + 终止时的活跃办理人），交给调用方提交后派发
 	if s.workflowEngine.GetTaskEventListener() != nil {
 		toUsers := []string{}
 		if instance.StartUserID != "" {
 			toUsers = append(toUsers, instance.StartUserID)
 		}
-		// 查询当前活跃任务的 assignee
-		for _, t := range tasks {
-			if t.Assignee != nil && *t.Assignee != "" {
-				toUsers = append(toUsers, *t.Assignee)
-			}
-		}
+		toUsers = append(toUsers, liveAssignees...)
 		toUsers = uniqueStrings(toUsers)
 		if len(toUsers) > 0 {
 			// FromUser 取 ctx Actor；Source 区分 api/withdraw/reject 来源

@@ -16,6 +16,9 @@ import (
 	"github.com/rulego/gflow-engine/types/enums"
 )
 
+// claimRoundTolerance 同一次签收内的时间比对容差（见 sameClaimRound）。
+const claimRoundTolerance = 2 * time.Second
+
 // Claim 声明任务（将任务分配给指定用户）
 func (s *TaskServiceImpl) Claim(ctx context.Context, actor Actor, taskID string) error {
 	ctx = bindActor(ctx, actor)
@@ -277,6 +280,10 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 	emptyAssignee := ""
 	task.Assignee = &emptyAssignee
 	task.Status = string(enums.TaskStatusPending)
+	// 本次签收的时间戳是"同一次签收轮次"的判定基准：claim 终止兄弟任务与写入
+	// claimed_at 用的是同一个时间值。恢复兄弟任务时只 revive 时间吻合的行，
+	// 更早轮次遗留的同原因终止行不在本次轮次内，复活即幽灵待办。
+	claimRoundAt := task.ClaimedAt
 	task.ClaimedAt = nil
 	now := time.Now()
 	username := ""
@@ -293,7 +300,7 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 		return fmt.Errorf("failed to unclaim task: %w", err)
 	}
 
-	// 恢复同组被终止的任务：将它们恢复为待认领
+	// 恢复同组被终止的任务：将它们恢复为待认领（仅限本次签收轮次内被终止的兄弟行）
 	if task.ProcessInstanceID != nil && task.TaskDefKey != "" {
 		query := &dto.TaskQuery{
 			InstanceID: task.ProcessInstanceID,
@@ -304,14 +311,21 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 		if err == nil {
 			userSystem := constants.UserSystem
 			for _, t := range otherTasks {
-				if t.EndReason != nil && *t.EndReason == string(enums.EndReasonClaimedByOther) {
-					t.Status = string(enums.TaskStatusPending)
-					t.EndReason = nil
-					t.UpdatedBy = &userSystem
-					t.UpdatedAt = &now
-					if err := taskDAO.Update(ctx, t); err != nil {
-						logrus.Warnf("failed to restore sibling task %s after unclaim: %v", t.ID, err)
-					}
+				if t.EndReason == nil || *t.EndReason != string(enums.EndReasonClaimedByOther) {
+					continue
+				}
+				// claim 与本任务写 claimed_at 是同一事务同一时间值；数据库落库可能有
+				// 精度截断，用小窗口容差。跨轮次的行与本轮 claimed_at 至少隔着一次
+				// 完整的签收-取消签收人工操作，窗口足以区分。
+				if !sameClaimRound(t.UpdatedAt, claimRoundAt) {
+					continue
+				}
+				t.Status = string(enums.TaskStatusPending)
+				t.EndReason = nil
+				t.UpdatedBy = &userSystem
+				t.UpdatedAt = &now
+				if err := taskDAO.Update(ctx, t); err != nil {
+					logrus.Warnf("failed to restore sibling task %s after unclaim: %v", t.ID, err)
 				}
 			}
 		}
@@ -343,4 +357,17 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 	}
 
 	return nil
+}
+
+// sameClaimRound 判断兄弟任务的终止时间与本次签收时间是否同轮次。
+// 两侧时间来自同一事务内的同一个 time.Now 值，容差只吸收数据库时间类型的精度截断。
+func sameClaimRound(terminatedAt, claimedAt *time.Time) bool {
+	if terminatedAt == nil || claimedAt == nil {
+		return false
+	}
+	diff := terminatedAt.Sub(*claimedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= claimRoundTolerance
 }

@@ -198,22 +198,16 @@ func (n *UserTaskNode) jumpToNode(ctx types.RuleContext, msg types.RuleMsg, inst
 		return
 	}
 	// 驳回回跳必须清理参与跳转节点上一轮的任务，否则：
-	//  1) 目标节点重入时 getExistingTasks 返回旧 Completed 任务，立即被判定已完成，
-	//     目标节点被静默自动通过，驳回语义被绕过；
+	//  1) 路径上节点重入时 getExistingTasks 返回旧 Completed 任务，立即被判定已完成，
+	//     节点被静默自动通过，驳回语义被绕过；
 	//  2) 驳回节点自身的 Completed(Rejected) 任务不清理时，流程回流到本节点会再次
 	//     触发 handleRejection，形成无限驳回回跳循环。
-	// 因此对目标节点与当前节点都做 supersede（归档到 wf_hi_task 保留审计，从 wf_task
-	// 删除使重入时 getExistingTasks 为空）。仅对 userTask 清理（startTask 是 marker）。
+	// 清理范围是"目标节点到当前节点"的重执行区域（目标+可达自身的所有 userTask），
+	// 只清 userTask（startTask 是 marker）。区域外的并行分支不受影响——清掉仍在
+	// 办理中的兄弟分支任务会让汇合点永远凑不齐。
 	if n.TaskService != nil {
-		nodesToReset := make([]string, 0, 2)
-		if n.isTargetUserTask(ctx, targetNodeID) {
-			nodesToReset = append(nodesToReset, targetNodeID)
-		}
-		// 当前驳回节点：跳转目标若就是自身（理论上 jump 不该如此，但防御性处理）则不重复
-		if selfID := n.GetSelfId(); selfID != "" && selfID != targetNodeID && n.isTargetUserTask(ctx, selfID) {
-			nodesToReset = append(nodesToReset, selfID)
-		}
-		for _, nodeID := range nodesToReset {
+		region := rejectResetNodes(nodeGraphFromDefinition(ctx), targetNodeID, n.GetSelfId())
+		for _, nodeID := range region {
 			if archived, err := n.TaskService.SupersedeNodeTasks(ctx.GetContext(), instanceID, nodeID, "superseded_by_reject_jump"); err != nil {
 				// 清理失败不阻断跳转（best-effort），但记录告警便于排查
 				logrus.WithError(err).WithField("node", nodeID).
@@ -237,18 +231,83 @@ func (n *UserTaskNode) jumpToNode(ctx types.RuleContext, msg types.RuleMsg, inst
 	ctx.DoOnEnd(msg, nil, "")
 }
 
-// isTargetUserTask 判断目标节点是否为 userTask（只有 userTask 才有需要被 supersede 的审批任务）。
-func (n *UserTaskNode) isTargetUserTask(ctx types.RuleContext, nodeID string) bool {
+// nodeGraph 流程定义的邻接表视图，供重执行区域计算使用。
+type nodeGraph struct {
+	nodeTypes map[string]string   // nodeID -> node type
+	forward   map[string][]string // nodeID -> 下游节点ID
+	backward  map[string][]string // nodeID -> 上游节点ID
+}
+
+// nodeGraphFromDefinition 把规则链定义转成邻接表。定义缺失时返回 nil。
+func nodeGraphFromDefinition(ctx types.RuleContext) *nodeGraph {
 	def := getRuleChainDefinition(ctx)
 	if def == nil {
-		return false
+		return nil
+	}
+	g := &nodeGraph{
+		nodeTypes: make(map[string]string, len(def.Metadata.Nodes)),
+		forward:   make(map[string][]string),
+		backward:  make(map[string][]string),
 	}
 	for _, nd := range def.Metadata.Nodes {
-		if nd.Id == nodeID {
-			return nd.Type == UserTaskNodeType
+		g.nodeTypes[nd.Id] = nd.Type
+	}
+	for _, conn := range def.Metadata.Connections {
+		g.forward[conn.FromId] = append(g.forward[conn.FromId], conn.ToId)
+		g.backward[conn.ToId] = append(g.backward[conn.ToId], conn.FromId)
+	}
+	return g
+}
+
+// rejectResetNodes 计算驳回回跳需要清理任务的重执行区域：
+// 从 target 正向可达、且能到达 self 的 userTask 节点（含 target 与 self 自身）。
+// 区域外节点（如另一条并行分支）不在回流路径上，其任务——尤其是仍在办理中的——
+// 必须保持原状，否则汇合点永远凑不齐。
+// 环路用 visited 集合防死循环；self 或 target 不在图中时退化为只清理两者自身。
+func rejectResetNodes(g *nodeGraph, target, self string) []string {
+	if g == nil {
+		return nil
+	}
+	reachableFromTarget := bfsSet(g.forward, target)
+	reachesSelf := bfsSet(g.backward, self)
+	seen := make(map[string]bool)
+	out := make([]string, 0, 4)
+	add := func(id string) {
+		if id == "" || seen[id] || g.nodeTypes[id] != UserTaskNodeType {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	add(target)
+	add(self)
+	for id := range reachableFromTarget {
+		if reachesSelf[id] {
+			add(id)
 		}
 	}
-	return false
+	return out
+}
+
+// bfsSet 从 start 沿邻接表可达的全部节点（含 start 自身，若存在于表中）。
+func bfsSet(adj map[string][]string, start string) map[string]bool {
+	visited := make(map[string]bool)
+	if start == "" {
+		return visited
+	}
+	queue := []string{start}
+	visited[start] = true
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, next := range adj[cur] {
+			if !visited[next] {
+				visited[next] = true
+				queue = append(queue, next)
+			}
+		}
+	}
+	return visited
 }
 
 // nodeExists 判断目标节点是否存在于当前流程定义。jumpToNode 跳转前校验，

@@ -676,9 +676,16 @@ func (s *TaskServiceImpl) Complete(ctx context.Context, actor Actor, taskID stri
 	}
 
 	// approved/comment 是控制面约定键（表达审批意图），提取完成后从业务变量中
-	// 移除，避免作为流程变量下传污染网关条件上下文。
-	delete(variables, "approved")
-	delete(variables, "comment")
+	// 移除，避免作为流程变量下传污染网关条件上下文。在副本上移除：调用方传入的
+	// map 往往还要复用（审计、重试、日志），不能被本次调用静默改写。
+	businessVars := make(map[string]interface{}, len(variables))
+	for k, v := range variables {
+		if k == "approved" || k == "comment" {
+			continue
+		}
+		businessVars[k] = v
+	}
+	request.Variables = businessVars
 
 	// 调用带审批的完成方法
 	return s.CompleteWithApproval(ctx, actor, request)

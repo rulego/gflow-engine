@@ -62,6 +62,19 @@ func secFixDB(t *testing.T) *query.Query {
 			ended_at DATETIME, comment TEXT, end_reason TEXT, duration INTEGER,
 			tenant_id TEXT, created_by TEXT, created_at DATETIME, updated_by TEXT, updated_at DATETIME
 		)`,
+		`CREATE TABLE IF NOT EXISTS wf_task_assignee (
+			id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+			entity_type TEXT NOT NULL DEFAULT 'person', entity_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS wf_hi_instance (
+			id TEXT PRIMARY KEY, process_id TEXT NOT NULL, business_key TEXT, name TEXT NOT NULL,
+			status TEXT NOT NULL, variables TEXT, current_activity TEXT,
+			priority INTEGER NOT NULL DEFAULT 50, parent_id TEXT, tenant_id TEXT NOT NULL,
+			created_by TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_by TEXT, updated_at DATETIME, end_reason TEXT, duration INTEGER, ended_at DATETIME,
+			start_user_id TEXT NOT NULL DEFAULT ''
+		)`,
 	}
 	for _, ddl := range ddls {
 		require.NoError(t, db.Exec(ddl).Error)
@@ -69,6 +82,7 @@ func secFixDB(t *testing.T) *query.Query {
 	db.Exec("DELETE FROM wf_instance")
 	db.Exec("DELETE FROM wf_task")
 	db.Exec("DELETE FROM wf_hi_task")
+	db.Exec("DELETE FROM wf_hi_instance")
 	return query.Use(db)
 }
 

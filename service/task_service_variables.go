@@ -107,7 +107,16 @@ func (s *TaskServiceImpl) setTaskVariablesInternal(ctx context.Context, scope *I
 	if err := s.authorizeTaskOperator(ctx, task); err != nil {
 		return err
 	}
-	variablesJSON, err := utils2.ToJSON(variables)
+	// 合并而非整体替换：任务变量里存有引擎的运行时状态（如顺序审批的
+	// _sequentialAssignees 缓存），整体覆盖会将其冲掉，后续推进丢失进度。
+	merged := map[string]interface{}{}
+	if task.Variables != nil && *task.Variables != "" {
+		_ = utils2.FromJSON(*task.Variables, &merged)
+	}
+	for k, v := range variables {
+		merged[k] = v
+	}
+	variablesJSON, err := utils2.ToJSON(merged)
 	if err != nil {
 		return fmt.Errorf("failed to serialize task variables: %w", err)
 	}
