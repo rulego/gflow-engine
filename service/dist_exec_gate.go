@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"sync"
 	"time"
 
+	"github.com/rulego/gflow-engine/utils/lock"
 	"github.com/sirupsen/logrus"
 )
 
@@ -22,6 +24,10 @@ var (
 	distExecGateTTL      = 3 * time.Minute
 	distExecGateInterval = 100 * time.Millisecond
 	distExecGateRetries  = 150 // 100ms × 150 ≈ 15s 等待预算，与 WithInstanceTx 锁超时同量级
+
+	// distExecGateExtendInterval 持锁期间的续期周期，须小于 distExecGateTTL：
+	// 含大模型调用的驱动可能超过 TTL，靠续期保持互斥。
+	distExecGateExtendInterval = 60 * time.Second
 )
 
 func distExecGateKey(instanceID string) string {
@@ -49,9 +55,48 @@ func (s *RuntimeServiceImpl) acquireDistExecGate(ctx context.Context, instanceID
 			Warn("dist exec gate: acquire failed, proceed without cross-replica mutual exclusion")
 		return nil
 	}
+	stopWatchdog := s.startGateWatchdog(locker, key, value, instanceID)
 	return func() {
+		stopWatchdog()
 		if err := locker.Unlock(context.Background(), key, value); err != nil {
 			logrus.WithError(err).WithField("instanceId", instanceID).Debug("dist exec gate: unlock failed")
 		}
 	}
+}
+
+// startGateWatchdog 持锁期间周期性续期；锁实现不支持续期（如进程内锁）时无操作。
+// 返回停止函数（幂等）。续期失败记警告下轮重试；凭证不匹配说明持有权已被
+// TTL 兜底转交，记错误后退出。
+func (s *RuntimeServiceImpl) startGateWatchdog(locker lock.Locker, key, value, instanceID string) func() {
+	extender, ok := locker.(lock.LockExtender)
+	if !ok {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(distExecGateExtendInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				renewed, err := extender.Extend(ctx, key, value, distExecGateTTL)
+				cancel()
+				if err != nil {
+					logrus.WithError(err).WithField("instanceId", instanceID).
+						Warn("dist exec gate: extend failed, will retry next tick")
+					continue
+				}
+				if !renewed {
+					logrus.WithField("instanceId", instanceID).
+						Error("dist exec gate: lock ownership lost, stop extending")
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(stop) }) }
 }

@@ -44,6 +44,14 @@ type Locker interface {
 	LockWithRetry(ctx context.Context, key string, expiration time.Duration, retryInterval time.Duration, maxRetries int) (string, error)
 }
 
+// LockExtender 可选的锁续期能力：凭证匹配时重置 TTL，供临界区执行超过 TTL 的
+// 持有方周期性调用。跨进程实现应提供；进程内锁同步持有，无须实现。
+type LockExtender interface {
+	// Extend 凭证匹配时把 TTL 重置为 expiration。返回 false 表示锁不存在或
+	// 凭证不匹配——持有权已丢失，调用方不应继续续期。
+	Extend(ctx context.Context, key, value string, expiration time.Duration) (bool, error)
+}
+
 // LocalLock 本地键锁实现（用于单节点）
 type LocalLock struct {
 	locks  sync.Map // key: string, value: *lockInfo

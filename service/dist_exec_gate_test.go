@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -101,4 +102,70 @@ func TestDistExecGate_Lifecycle(t *testing.T) {
 	assert.Nil(t, replica.acquireDistExecGate(context.Background(), ""))
 	nilLocker := newGateTestRuntime(nil)
 	assert.Nil(t, nilLocker.acquireDistExecGate(context.Background(), "inst-3"))
+}
+
+// countingExtender 在本地锁之上计数续期调用的替身。lost 置 true 后 Extend 返回
+// 持有权丢失，模拟锁 TTL 兜底转交他人。
+type countingExtender struct {
+	lock.Locker
+	mu      sync.Mutex
+	extends int
+	lost    bool
+}
+
+func (c *countingExtender) Extend(_ context.Context, _, _ string, _ time.Duration) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.extends++
+	return !c.lost, nil
+}
+
+func (c *countingExtender) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.extends
+}
+
+func shrinkWatchdogInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	old := distExecGateExtendInterval
+	distExecGateExtendInterval = d
+	t.Cleanup(func() { distExecGateExtendInterval = old })
+}
+
+// 持锁超过续期周期：看门狗按周期续期；释放后续期停止。
+func TestDistExecGate_WatchdogExtendsWhileHeld(t *testing.T) {
+	shared := lock.NewLocalLock()
+	defer shared.Close()
+	ext := &countingExtender{Locker: shared}
+	shrinkWatchdogInterval(t, 20*time.Millisecond)
+
+	replica := newGateTestRuntime(ext)
+	unlock := replica.acquireDistExecGate(context.Background(), "inst-4")
+	require.NotNil(t, unlock)
+
+	time.Sleep(70 * time.Millisecond)
+	assert.GreaterOrEqual(t, ext.count(), 2, "持锁期间应至少续期两次")
+
+	unlock()
+	base := ext.count()
+	time.Sleep(60 * time.Millisecond)
+	assert.Equal(t, base, ext.count(), "释放后看门狗应停止续期")
+}
+
+// 续期返回持有权丢失：看门狗退出。
+func TestDistExecGate_WatchdogStopsOnOwnershipLost(t *testing.T) {
+	shared := lock.NewLocalLock()
+	defer shared.Close()
+	ext := &countingExtender{Locker: shared, lost: true}
+	shrinkWatchdogInterval(t, 20*time.Millisecond)
+
+	replica := newGateTestRuntime(ext)
+	unlock := replica.acquireDistExecGate(context.Background(), "inst-5")
+	require.NotNil(t, unlock)
+	defer unlock()
+
+	time.Sleep(70 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	assert.Equal(t, 1, ext.count(), "持有权丢失后应只在首个周期续期一次即退出")
 }
