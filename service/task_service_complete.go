@@ -19,7 +19,8 @@ import (
 	utils2 "github.com/rulego/gflow-engine/utils"
 )
 
-// mergeVariables 合并任务变量
+// mergeVariables 合并任务变量。既有变量为合法 JSON 但非对象时（fork-join 后 end
+// 节点的 variables 是 join 收集的分支消息数组）无法按键合并，跳过既有值只用新变量。
 func (s *TaskServiceImpl) mergeVariables(existingVariables *string, newVariables map[string]interface{}) (*string, error) {
 	if newVariables == nil {
 		return existingVariables, nil
@@ -29,8 +30,14 @@ func (s *TaskServiceImpl) mergeVariables(existingVariables *string, newVariables
 
 	// 解析现有变量
 	if existingVariables != nil && *existingVariables != "" {
-		if err := utils2.FromJSON(*existingVariables, &merged); err != nil {
+		var existing any
+		if err := utils2.FromJSON(*existingVariables, &existing); err != nil {
 			return nil, fmt.Errorf("failed to parse existing variables: %w", err)
+		}
+		if m, ok := existing.(map[string]interface{}); ok {
+			merged = m
+		} else {
+			merged = make(map[string]interface{})
 		}
 	} else {
 		merged = make(map[string]interface{})

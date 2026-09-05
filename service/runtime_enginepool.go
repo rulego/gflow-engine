@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
@@ -11,6 +12,69 @@ import (
 	"github.com/rulego/rulego"
 	"github.com/rulego/rulego/api/types"
 )
+
+// runtimeServiceRegistry 已创建的 RuntimeServiceImpl 注册表。enginePool（已装载的
+// 规则链）挂在每个服务实例上，失效时须逐个清理；池缓存按 processID 键且不回读 DB
+// （见 GetExecution 快路径），Update 就地改 definition_json 后若不驱逐，本副本会
+// 继续用旧链推进实例。
+var runtimeServiceRegistry sync.Map // *RuntimeServiceImpl -> struct{}
+
+// enginePoolInvalidateHook 跨副本失效广播钩子（多副本部署由 gflow 注入：PUBLISH 到
+// redis），语义与 forkGraph 的同名机制一致（见 fork_aware_resume.go）。
+var (
+	enginePoolHookMu         sync.RWMutex
+	enginePoolInvalidateHook func(processID string)
+)
+
+// SetEnginePoolInvalidateHook 注入跨副本 enginePool 失效广播钩子（gflow 启动时调）。
+func SetEnginePoolInvalidateHook(h func(processID string)) {
+	enginePoolHookMu.Lock()
+	defer enginePoolHookMu.Unlock()
+	enginePoolInvalidateHook = h
+}
+
+func getEnginePoolHook() func(processID string) {
+	enginePoolHookMu.RLock()
+	defer enginePoolHookMu.RUnlock()
+	return enginePoolInvalidateHook
+}
+
+// InvalidateExecutionCache 驱逐所有引擎池（含各租户池）中 processID 的已装载链，
+// 并触发跨副本失效广播。ProcessService.Update / Delete（就地改 definition_json、
+// processID 不变）调用；Deploy 走新版本新 processID，不命中旧缓存。
+func InvalidateExecutionCache(processID string) {
+	if processID == "" {
+		return
+	}
+	invalidateExecutionCacheLocal(processID)
+	if hook := getEnginePoolHook(); hook != nil {
+		hook(processID)
+	}
+}
+
+// ApplyRemoteExecutionInvalidate 仅清本地（不广播），供跨副本订阅方收到远程失效
+// 消息时调用，避免广播循环。
+func ApplyRemoteExecutionInvalidate(processID string) {
+	if processID == "" {
+		return
+	}
+	invalidateExecutionCacheLocal(processID)
+}
+
+func invalidateExecutionCacheLocal(processID string) {
+	runtimeServiceRegistry.Range(func(k, _ any) bool {
+		if s, ok := k.(*RuntimeServiceImpl); ok && s != nil {
+			s.enginePool.Del(processID)
+			s.enginePools.Range(func(_, v any) bool {
+				if p, ok := v.(types.RuleEnginePool); ok {
+					p.Del(processID)
+				}
+				return true
+			})
+		}
+		return true
+	})
+}
 
 // GetExecution 根据ID获取执行实例（租户感知：先查 processID→tenant 缓存定位租户池）。
 func (s *RuntimeServiceImpl) GetExecution(ctx context.Context, processID string) (types.RuleEngine, error) {

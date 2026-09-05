@@ -165,8 +165,7 @@ func (s *RuntimeServiceImpl) StartProcessInstanceByID(ctx context.Context, actor
 		return "", err
 	}
 	if engine != nil {
-		// 初始驱动与对端副本的恢复/AfterCommit 驱动共用同一把跨副本门闩，避免
-		// 启动驱动与启动期恢复巡检并发重入同一实例重复建首任务。
+		// 与对端副本的恢复/AfterCommit 驱动共用同一把门闩，避免并发重入同一实例重复建首任务
 		if unlock := s.acquireDistExecGate(ctx, instanceID); unlock != nil {
 			defer unlock()
 		}
@@ -1144,8 +1143,7 @@ func (s *RuntimeServiceImpl) ExecuteNext(ctx context.Context, processInstanceID,
 	release, reentrant := s.acquireExecGate(processInstanceID)
 	defer release()
 	if !reentrant {
-		// 跨副本互斥：execGate 只串行化本进程；多副本共享库时由 Locker（宿主注入
-		// Redis 锁，单机 LocalLock 无感）串行化两副本对同一实例的并发驱动。
+		// 跨副本互斥：execGate 只管本进程，副本间由 Locker 串行化（单机 LocalLock 无感）
 		if unlock := s.acquireDistExecGate(ctx, processInstanceID); unlock != nil {
 			defer unlock()
 		}
@@ -1297,8 +1295,7 @@ func (s *RuntimeServiceImpl) ForceResumeInstance(ctx context.Context, actor Acto
 		return fmt.Errorf("process instance is in terminal status: %s", inst.Status)
 	}
 
-	// 跨副本门闩：强制恢复是管理员手动触发的 multi-restore，同样须与对端副本的
-	// AfterCommit 驱动互斥（读-判-驱窗口与 RestoreProcessInstance 同构）。
+	// 与 RestoreProcessInstance 同一读-判-驱窗口，同样须与对端副本的驱动互斥
 	if unlock := s.acquireDistExecGate(ctx, processInstanceID); unlock != nil {
 		defer unlock()
 	}
@@ -1439,8 +1436,7 @@ func (s *RuntimeServiceImpl) RestoreProcessInstance(ctx context.Context, actor A
 		return err
 	}
 
-	// 跨副本门闩：恢复的"读任务 → 判定 → 驱动"窗口须与对端副本的 AfterCommit
-	// 驱动互斥，否则可能基于过期任务快照重复 restore。
+	// 恢复的读-判-驱窗口须与对端副本的驱动互斥，避免基于过期任务快照重复 restore
 	if unlock := s.acquireDistExecGate(ctx, processInstanceID); unlock != nil {
 		defer unlock()
 	}

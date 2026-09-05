@@ -317,3 +317,53 @@ func TestInitExecution_MigratesLegacyRouteGateway(t *testing.T) {
 		t.Fatal("engine should not be nil")
 	}
 }
+
+// TestEnginePool_InvalidateExecutionCache: Update/Delete 就地改 definition_json 后，
+// InvalidateExecutionCache 必须驱逐注册表内所有服务实例的池条目（默认池+各租户池）
+// 并触发跨副本广播钩子；ApplyRemoteExecutionInvalidate 只清本地、不再广播（防循环）；
+// 驱逐后 GetExecution 按需自愈重装载。
+func TestEnginePool_InvalidateExecutionCache(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	// 测试直构的 rs 不经 NewRuntimeService，手动登记进失效注册表
+	runtimeServiceRegistry.Store(rs, struct{}{})
+	t.Cleanup(func() { runtimeServiceRegistry.Delete(rs) })
+	const tenant = "tenant-inval"
+	require := assert.New(t)
+
+	seedProcess(db, "proc-inval", "inval-key", 1, tenant, "chain-inval")
+	require.NoError(rs.PreloadChain(tenant, "proc-inval", poolTestChainDef("chain-inval")))
+	_, ok := rs.poolFor(tenant).Get("proc-inval")
+	require.True(ok, "预加载后应在租户池")
+
+	broadcast := make(chan string, 1)
+	oldHook := getEnginePoolHook()
+	SetEnginePoolInvalidateHook(func(processID string) { broadcast <- processID })
+	t.Cleanup(func() { SetEnginePoolInvalidateHook(oldHook) })
+
+	InvalidateExecutionCache("proc-inval")
+
+	_, ok = rs.poolFor(tenant).Get("proc-inval")
+	require.False(ok, "失效后应从租户池驱逐")
+	select {
+	case got := <-broadcast:
+		require.Equal("proc-inval", got)
+	default:
+		t.Fatal("InvalidateExecutionCache 应触发跨副本广播钩子")
+	}
+
+	// 自愈：驱逐后 GetExecution 慢路径从 DB 重装载最新定义
+	_, err := rs.GetExecution(context.Background(), "proc-inval")
+	require.NoError(err)
+	_, ok = rs.poolFor(tenant).Get("proc-inval")
+	require.True(ok, "驱逐后 GetExecution 应自愈重装载")
+
+	// 远程失效路径：只清本地、不触发钩子
+	ApplyRemoteExecutionInvalidate("proc-inval")
+	_, ok = rs.poolFor(tenant).Get("proc-inval")
+	require.False(ok)
+	select {
+	case got := <-broadcast:
+		t.Fatalf("ApplyRemoteExecutionInvalidate 不应再广播，却收到 %q", got)
+	default:
+	}
+}

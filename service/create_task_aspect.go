@@ -65,6 +65,21 @@ func (aspect *TaskCreator) Type() string {
 // 持锁方崩溃后锁永不释放（实例完成后 end 不应再执行，TTL 到期释放无副作用）。
 var endNodeDedupLock = lock.DefaultKeyLock
 
+// endDedupTTL end 去重锁 TTL：持锁方崩溃后兜底释放；须覆盖 CompleteProcessInstance
+// 与 onCompleted 规则链（可能含 LLM 调用）的执行时长，锁先过期会让对端副本重复执行 end。
+const endDedupTTL = 2 * time.Minute
+
+// endDedupLocker 取 end 去重锁实现：宿主注入了分布式锁（多副本部署）则跨副本
+// 生效，否则退回进程内 LocalLock（单机部署）。
+func (aspect *TaskCreator) endDedupLocker() lock.Locker {
+	if aspect.workflowEngine != nil {
+		if l := aspect.workflowEngine.GetLocker(); l != nil {
+			return l
+		}
+	}
+	return endNodeDedupLock
+}
+
 func endNodeLockKey(instanceID string) string {
 	return "bpm:end-dedup:" + instanceID
 }
@@ -106,7 +121,7 @@ func (aspect *TaskCreator) Before(ctx types.RuleContext, msg types.RuleMsg, rela
 	// 未抢到的重复执行直接返回（不建任务、不更新 current activity），保证
 	// end 任务只创建一条、CompleteProcessInstance / onCompleted 规则链只触发一次。
 	if ctx.Self().Type() == types.NodeTypeEnd {
-		lockVal, ok, err := endNodeDedupLock.TryLock(ctx.GetContext(), endNodeLockKey(instanceId), time.Minute)
+		lockVal, ok, err := aspect.endDedupLocker().TryLock(ctx.GetContext(), endNodeLockKey(instanceId), endDedupTTL)
 		if err != nil {
 			// 锁服务异常时保守放行（宁可重复执行也不能卡死流程）
 			logrus.WithError(err).Warnf("end-node dedup TryLock error, allow execution, instanceId: %s", instanceId)
@@ -217,7 +232,7 @@ func (aspect *TaskCreator) After(ctx types.RuleContext, msg types.RuleMsg, err e
 	if ctx.Self().Type() == types.NodeTypeEnd {
 		lockVal := msg.GetMetadata().GetValue(constants.KeyEndExecLock)
 		defer func() {
-			if err := endNodeDedupLock.Unlock(context.Background(), endNodeLockKey(instanceId), lockVal); err != nil {
+			if err := aspect.endDedupLocker().Unlock(context.Background(), endNodeLockKey(instanceId), lockVal); err != nil {
 				logrus.WithError(err).Debugf("end-node dedup unlock failed, instanceId: %s", instanceId)
 			}
 		}()
