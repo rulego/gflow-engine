@@ -107,6 +107,38 @@ type scopeIdentityEngine struct {
 
 func (e scopeIdentityEngine) GetIdentityService() IdentityService { return e.identity }
 
+// 发起入口的定义状态校验：retired/draft 定义拒绝发起新实例（ErrValidation → 400），
+// active 定义放行。
+func TestStartProcessInstanceByID_DefinitionStatusGuard(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	def := `{"ruleChain":{"id":"st_g","name":"st_g","root":true},"metadata":{"nodes":[{"id":"n1","type":"functions","name":"n","configuration":{"functionName":"pooltest_noop"}}],"connections":[]}}`
+	seed := func(id, key, status string) {
+		t.Helper()
+		if err := db.Exec(`INSERT INTO wf_process (id, process_key, name, version, definition_json, status, tenant_id, created_by, process_type, icon) VALUES (?,?,?,1,?,?, 't1', 'tester', 'main', '')`,
+			id, key, key, def, status).Error; err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("p_retired", "stg_retired", "retired")
+	seed("p_draftdef", "stg_draft", "draft")
+
+	for _, id := range []string{"p_retired", "p_draftdef"} {
+		if _, err := rs.StartProcessInstanceByID(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, id, "", nil); !errors.Is(err, ErrValidation) {
+			t.Errorf("%s: expected ErrValidation for non-active definition, got: %v", id, err)
+		}
+	}
+
+	// active 定义须放行（裸 RS 后续装配缺失会 panic/报错，但不应是状态校验拒绝）
+	func() {
+		seed("p_active", "stg_active", "active")
+		defer func() { _ = recover() }()
+		_, err := rs.StartProcessInstanceByID(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, "p_active", "", nil)
+		if errors.Is(err, ErrValidation) {
+			t.Errorf("active definition should pass the status check, got: %v", err)
+		}
+	}()
+}
+
 // TestStartProcessInstanceByID_StarterScopeRoleDeny role 范围端到端：
 // 用户角色经 IdentityService 解析，命中放行、未命中/解析为空一律拒绝。
 func TestStartProcessInstanceByID_StarterScopeRoleDeny(t *testing.T) {

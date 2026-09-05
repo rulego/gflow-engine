@@ -57,7 +57,7 @@ type RuntimeServiceImpl struct {
 
 // NewRuntimeService 创建RuntimeService实例
 func NewRuntimeService(workflowEngine WorkflowEngine) RuntimeService {
-	return &RuntimeServiceImpl{
+	s := &RuntimeServiceImpl{
 		instanceDAO:    dao.NewInstanceDAO(),
 		hiInstanceDAO:  dao.NewHiInstanceDAO(),
 		processDAO:     dao.NewProcessDAO(),
@@ -66,11 +66,13 @@ func NewRuntimeService(workflowEngine WorkflowEngine) RuntimeService {
 		enginePool:     rulego.NewRuleGo(),
 		workflowEngine: workflowEngine,
 	}
+	runtimeServiceRegistry.Store(s, struct{}{})
+	return s
 }
 
 // NewRuntimeServiceWithQuery 创建带Query参数的RuntimeService实例
 func NewRuntimeServiceWithQuery(query *query.Query, workflowEngine WorkflowEngine) RuntimeService {
-	return &RuntimeServiceImpl{
+	s := &RuntimeServiceImpl{
 		instanceDAO:    dao.NewInstanceDAOWithQuery(query),
 		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(query),
 		processDAO:     dao.NewProcessDAOWithQuery(query),
@@ -79,6 +81,8 @@ func NewRuntimeServiceWithQuery(query *query.Query, workflowEngine WorkflowEngin
 		enginePool:     rulego.NewRuleGo(),
 		workflowEngine: workflowEngine,
 	}
+	runtimeServiceRegistry.Store(s, struct{}{})
+	return s
 }
 
 // StartProcessInstanceByKey 根据流程定义Key启动流程实例
@@ -126,6 +130,13 @@ func (s *RuntimeServiceImpl) StartProcessInstanceByID(ctx context.Context, actor
 		return "", err
 	}
 
+	// 仅 active 可发起新实例；停用/草稿定义的存量实例继续办理不经此处。
+	// subProcess 子实例走 startInstanceCore 直调，不受此限制。
+	if processDef.Status != string(enums.ProcessStatusActive) {
+		return "", fmt.Errorf("process definition %s is %s and cannot start new instances: %w",
+			processDef.ProcessKey, processDef.Status, ErrValidation)
+	}
+
 	// 发起人范围强校验（流程级 additionalInfo.starterScope；未配置=全员可发起）
 	if err := s.checkStarterScope(ctx, processDef, initiator); err != nil {
 		return "", err
@@ -154,6 +165,11 @@ func (s *RuntimeServiceImpl) StartProcessInstanceByID(ctx context.Context, actor
 		return "", err
 	}
 	if engine != nil {
+		// 初始驱动与对端副本的恢复/AfterCommit 驱动共用同一把跨副本门闩，避免
+		// 启动驱动与启动期恢复巡检并发重入同一实例重复建首任务。
+		if unlock := s.acquireDistExecGate(ctx, instanceID); unlock != nil {
+			defer unlock()
+		}
 		engine.OnMsg(msg) // 父实例同步驱动
 	}
 	// 发起事件：非草稿实例启动后派发（草稿在激活时发 activated）
@@ -1127,12 +1143,17 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 func (s *RuntimeServiceImpl) ExecuteNext(ctx context.Context, processInstanceID, startNodeId string, variables map[string]interface{}) error {
 	release, reentrant := s.acquireExecGate(processInstanceID)
 	defer release()
-	// 等门闩期间实例可能已被先到的驱动完成（实例行已删除）：幂等返回 nil，
-	// 让并发审批的尾随 ExecuteNext 安静退出而不是报 instance not found。
-	// 同 goroutine 重入不重复查库（外层驱动刚查过状态）。
-	// 注意 Get 对不存在的行返回 (nil, nil)，真实 DB 错误须向上抛，
-	// 否则会把故障误判为"实例已完成"而静默吞掉。
 	if !reentrant {
+		// 跨副本互斥：execGate 只串行化本进程；多副本共享库时由 Locker（宿主注入
+		// Redis 锁，单机 LocalLock 无感）串行化两副本对同一实例的并发驱动。
+		if unlock := s.acquireDistExecGate(ctx, processInstanceID); unlock != nil {
+			defer unlock()
+		}
+		// 等门闩期间实例可能已被先到的驱动完成（实例行已删除）：幂等返回 nil，
+		// 让并发审批的尾随 ExecuteNext 安静退出而不是报 instance not found。
+		// 同 goroutine 重入不重复查库（外层驱动刚查过状态）。
+		// 注意 Get 对不存在的行返回 (nil, nil)，真实 DB 错误须向上抛，
+		// 否则会把故障误判为"实例已完成"而静默吞掉。
 		inst, err := s.instanceDAO.Get(ctx, processInstanceID)
 		if err != nil {
 			return err
@@ -1276,6 +1297,12 @@ func (s *RuntimeServiceImpl) ForceResumeInstance(ctx context.Context, actor Acto
 		return fmt.Errorf("process instance is in terminal status: %s", inst.Status)
 	}
 
+	// 跨副本门闩：强制恢复是管理员手动触发的 multi-restore，同样须与对端副本的
+	// AfterCommit 驱动互斥（读-判-驱窗口与 RestoreProcessInstance 同构）。
+	if unlock := s.acquireDistExecGate(ctx, processInstanceID); unlock != nil {
+		defer unlock()
+	}
+
 	e, err := s.GetExecution(ctx, inst.ProcessID)
 	if err != nil {
 		return err
@@ -1410,6 +1437,12 @@ func (s *RuntimeServiceImpl) RestoreProcessInstance(ctx context.Context, actor A
 	}
 	if err := ensureTenantAccess(ctx, "process instance", instance.TenantID); err != nil {
 		return err
+	}
+
+	// 跨副本门闩：恢复的"读任务 → 判定 → 驱动"窗口须与对端副本的 AfterCommit
+	// 驱动互斥，否则可能基于过期任务快照重复 restore。
+	if unlock := s.acquireDistExecGate(ctx, processInstanceID); unlock != nil {
+		defer unlock()
 	}
 
 	// 2. 获取该实例的所有任务
