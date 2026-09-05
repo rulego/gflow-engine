@@ -119,8 +119,9 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 
 	// Complete 与 Suspend 的竞态保护：管理员挂起实例时任务会被批量改成 Suspended，
 	// 这里拒绝避免 aspect 在已挂起实例上推进 ExecuteNext 导致状态错乱。
+	// 包一层 ErrConflict 让宿主映射 409（裸 error 会被当成 500"内部错误"）。
 	if task.Status == string(enums.TaskStatusSuspended) {
-		return fmt.Errorf("task is suspended, cannot complete until instance is resumed")
+		return fmt.Errorf("task is suspended, cannot complete until instance is resumed: %w", ErrConflict)
 	}
 	// Complete 与同节点清理的竞态保护：或签另一分支先通过（cancelSiblingActiveTasks）、
 	// 会签/票签阈值达成（cancelRemainingCountersignSubTasks）、认领互斥都会把本任务置
