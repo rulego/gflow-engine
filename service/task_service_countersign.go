@@ -311,8 +311,11 @@ func (s *TaskServiceImpl) checkCountersignSubTaskCompletionInternal(ctx context.
 		isCompleted = completedCount == totalCount
 		isApproved = approvedCount == completedCount
 	case enums.CountersignTypeAny:
-		isCompleted = completedCount > 0
+		// 任意一人同意即通过：首人 reject 不定局（其余人仍可能投同意），
+		// 全部投完仍无同意票才判拒绝。completedCount>0 即完成会把首票 reject
+		// 定局成拒绝并终止其余投票人，一票否决被误用到了 any 规则。
 		isApproved = approvedCount > 0
+		isCompleted = isApproved || completedCount == totalCount
 	case enums.CountersignTypeMajority:
 		// 严格过半(>50%)：N=4 需 3 票，N=3 需 2 票。(N+1)/2 对偶数 N 会差一(N=4 得 2)。
 		required := totalCount/2 + 1

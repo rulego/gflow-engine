@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/gflow-engine/utils"
@@ -315,6 +318,64 @@ func TestCheckCountersignSubTaskCompletion_NoDAO(t *testing.T) {
 		}
 	}()
 	_, _, _ = s.CheckCountersignSubTaskCompletion(context.Background(), "parent-1", "")
+}
+
+// any 规则=任意一人同意即通过：首人 reject 不能定局（其余人仍可能投同意），
+// 全员投完仍无同意票才判拒绝。
+func TestCheckCountersignSubTaskCompletion_AnyRule(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+
+	newSub := func(id, endReason string) *model.WfTask {
+		st := &model.WfTask{
+			ID: id, TaskDefKey: "approve", Name: "会签", TaskType: "user_task",
+			Status:   string(enums.TaskStatusActive),
+			TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now(),
+		}
+		if endReason != "" {
+			st.Status = string(enums.TaskStatusCompleted)
+			st.EndReason = &endReason
+		}
+		return st
+	}
+
+	// 场景1：3 人 any，首人 reject → 不定局
+	for _, st := range []*model.WfTask{
+		newSub("any1-sub1", string(enums.ApprovalResultRejected)),
+		newSub("any1-sub2", ""),
+		newSub("any1-sub3", ""),
+	} {
+		st.ParentID = secFixStrPtr("any1-parent")
+		require.NoError(t, q.WfTask.Create(st))
+	}
+	s := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), workflowEngine: &testEngineDouble{}}
+	isCompleted, isApproved, err := s.CheckCountersignSubTaskCompletion(ctx, "any1-parent", `{"type":"any"}`)
+	require.NoError(t, err)
+	assertEqual(t, "any 首人 reject 后 isCompleted", isCompleted, false)
+	assertEqual(t, "any 首人 reject 后 isApproved", isApproved, false)
+
+	// 场景2：第二人 approve → 立即通过
+	updated, err := s.taskDAO.Get(ctx, "any1-sub2")
+	require.NoError(t, err)
+	updated.Status = string(enums.TaskStatusCompleted)
+	approved := string(enums.ApprovalResultApproved)
+	updated.EndReason = &approved
+	require.NoError(t, s.taskDAO.Update(ctx, updated))
+	isCompleted, isApproved, err = s.CheckCountersignSubTaskCompletion(ctx, "any1-parent", `{"type":"any"}`)
+	require.NoError(t, err)
+	assertEqual(t, "any 有一人同意后 isCompleted", isCompleted, true)
+	assertEqual(t, "any 有一人同意后 isApproved", isApproved, true)
+
+	// 场景3：全员 reject → 完成且拒绝
+	for _, id := range []string{"any2-sub1", "any2-sub2"} {
+		st := newSub(id, string(enums.ApprovalResultRejected))
+		st.ParentID = secFixStrPtr("any2-parent")
+		require.NoError(t, q.WfTask.Create(st))
+	}
+	isCompleted, isApproved, err = s.CheckCountersignSubTaskCompletion(ctx, "any2-parent", `{"type":"any"}`)
+	require.NoError(t, err)
+	assertEqual(t, "any 全员拒绝后 isCompleted", isCompleted, true)
+	assertEqual(t, "any 全员拒绝后 isApproved", isApproved, false)
 }
 
 // ---------------------------------------------------------------------------

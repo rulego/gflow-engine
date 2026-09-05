@@ -238,7 +238,9 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 			task.DelegateFrom = &currentUser.UserID
 		}
 	}
-	if task.Assignee != nil && *task.Assignee != "" {
+	// 仅首次委派记录 Owner；链式委派（A→B→C）不得覆盖，否则 C 审完归还 B、
+	// B 通过即完成节点，最初的 A 被静默跳过。
+	if (task.Owner == nil || *task.Owner == "") && task.Assignee != nil && *task.Assignee != "" {
 		task.Owner = task.Assignee
 	}
 
@@ -477,6 +479,11 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 	}
 
 	task.Assignee = &toUserID
+	// 清委派上下文：转办后新受理人即最终办理人，残留 Owner 会让其 approve 走
+	// resolveDelegatedApproval 变成"归还旧 owner"而不流转（与 applyReassign 同口径）。
+	// gorm struct Updates 忽略 nil 字段，用空串指针强制写入（owner=="" 语义等同无 owner）。
+	emptyOwner := ""
+	task.Owner = &emptyOwner
 	username := ""
 	if u := GetUserFromCtx(ctx); u != nil {
 		username = u.UserName
