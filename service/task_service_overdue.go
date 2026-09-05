@@ -35,13 +35,19 @@ func (s *TaskServiceImpl) GetOverdueTasks(ctx context.Context, actor Actor, quer
 	now := time.Now()
 	q.DueDateBefore = &now
 
-	tasks, _, err := s.taskDAO.List(ctx, q)
+	// total 用 DAO 计数而非当页行数，否则超时任务超过一页时分页器只剩一页。
+	tasks, total, err := s.taskDAO.List(ctx, q)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to query overdue tasks: %w", err)
 	}
 
-	// 兜底：纯逻辑二次过滤，防御 DAO 条件未命中（如自定义方言）。
+	// 兜底：纯逻辑二次过滤，防御 DB 条件未命中（如自定义方言）。
+	// 过滤为零操作时（MySQL/PG 时间列下推判准）用 DAO 精确 total；
+	// 真滤掉了行（sqlite 文本时间跨时区误序等）才退回当页行数。
 	overdue := filterOverdueTasks(tasks, now)
+	if len(overdue) == len(tasks) {
+		return overdue, total, nil
+	}
 	return overdue, int64(len(overdue)), nil
 }
 

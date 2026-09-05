@@ -98,8 +98,10 @@ func overdueTestDB(t *testing.T) *dao.TaskDAO {
 func TestGetOverdueTasks_DBFilter(t *testing.T) {
 	d := overdueTestDB(t)
 	ctx := context.Background()
-	// 用 time.Now() 锚点（服务侧 GetOverdueTasks 用 time.Now() 判过期），避免硬编码日期随时间失效。
-	now := time.Now().UTC()
+	// 用 time.Now() 锚点（服务侧用 time.Now() 判过期），避免硬编码日期随时间失效。
+	// 种子须用本地时区：sqlite 把时间存成带时区偏移的文本，与服务端本地时区参数
+	// 做字典序比较，UTC 种子会跨时区误序使 due_date 下推失灵（MySQL/PG 无此问题）。
+	now := time.Now()
 	past := now.Add(-2 * time.Hour)
 	future := now.Add(2 * time.Hour)
 	statusActive := string(enums.TaskStatusActive)
@@ -129,6 +131,34 @@ func TestGetOverdueTasks_DBFilter(t *testing.T) {
 	require.False(t, ids["no-due"], "should exclude task without due_date")
 	require.False(t, ids["other-tenant"], "should exclude other tenant")
 	require.EqualValues(t, 2, total)
+}
+
+// TestGetOverdueTasks_TotalAcrossPages 回归：total 用 DAO 计数而非当页行数，
+// 超时任务超过一页时第二页必须可达。
+func TestGetOverdueTasks_TotalAcrossPages(t *testing.T) {
+	d := overdueTestDB(t)
+	ctx := context.Background()
+	// 本地时区种子，理由同 TestGetOverdueTasks_DBFilter
+	now := time.Now()
+	past := now.Add(-2 * time.Hour)
+	future := now.Add(2 * time.Hour)
+	statusActive := string(enums.TaskStatusActive)
+
+	seed := []*model.WfTask{
+		{ID: "page-overdue-1", Status: statusActive, DueDate: &past, TenantID: "t1", TaskDefKey: "n", Name: "n", TaskType: "user_task", CreatedAt: now, CreatedBy: "s"},
+		{ID: "page-overdue-2", Status: statusActive, DueDate: &past, TenantID: "t1", TaskDefKey: "n", Name: "n", TaskType: "user_task", CreatedAt: now, CreatedBy: "s"},
+		{ID: "page-overdue-3", Status: statusActive, DueDate: &past, TenantID: "t1", TaskDefKey: "n", Name: "n", TaskType: "user_task", CreatedAt: now, CreatedBy: "s"},
+		{ID: "page-future", Status: statusActive, DueDate: &future, TenantID: "t1", TaskDefKey: "n", Name: "n", TaskType: "user_task", CreatedAt: now, CreatedBy: "s"},
+	}
+	for _, tk := range seed {
+		require.NoError(t, d.Create(ctx, tk))
+	}
+
+	svc := &TaskServiceImpl{taskDAO: d, workflowEngine: noopBacklogEngine{}}
+	got, total, err := svc.GetOverdueTasks(ctx, Actor{TenantID: "t1"}, &dto.TaskQuery{PageRequest: dto.PageRequest{Page: 1, PageSize: 2}})
+	require.NoError(t, err)
+	require.Len(t, got, 2, "第一页只返回 pageSize 条")
+	require.EqualValues(t, 3, total, "total 应为全部超时任务数而非当页行数")
 }
 
 func TestGetOverdueTasks_EmptyTenant(t *testing.T) {
