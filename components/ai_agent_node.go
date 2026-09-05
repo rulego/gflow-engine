@@ -339,6 +339,11 @@ func (n *AIAgentNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 		return
 	}
 
+	// 重驱/恢复重入本节点时，实例变量里已有输出则直接续跑，不再调用 LLM
+	if !n.Config.Async && n.reuseCachedOutput(ctx, msg) {
+		return
+	}
+
 	payload, err := n.assembleInput(ctx, msg)
 	if err != nil {
 		ctx.TellFailure(msg, fmt.Errorf("failed to assemble input: %w", err))
@@ -374,6 +379,9 @@ func (n *AIAgentNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 		n.handleFailure(ctx, msg, runErr)
 		return
 	}
+
+	// 成功输出落实例变量，重驱/恢复重入本节点时直接复用，不再调用 LLM
+	n.persistOutputForReuse(ctx, msg, output.GetData())
 
 	// 合并智能体输出的 metadata + data 到主流程 msg
 	wrapperMsg := msg.Copy()
@@ -765,6 +773,88 @@ func (n *AIAgentNode) routeByHumanDecision(ctx types.RuleContext, msg types.Rule
 	msg.Metadata.PutValue(MetaKeyAIDecision, string(AIDecisionHumanPass))
 	logrus.Infof("AIAgentNode %s: human approved on fallback task → continue to next node, instance=%s", n.GetSelfId(), instanceID)
 	ctx.TellSuccess(msg)
+	return true
+}
+
+// aiOutputVarKey 节点结果缓存的实例变量键（按节点隔离）。
+func (n *AIAgentNode) aiOutputVarKey() string {
+	return "ai_out_" + n.GetSelfId()
+}
+
+// actorFromCtxOrMeta 取节点回调用身份：ctx 无身份（内部驱动）时按系统动作处理，
+// 并从链元数据补齐租户（实例变量的租户校验依赖 TenantID）。
+func actorFromCtxOrMeta(ctx types.RuleContext, msg types.RuleMsg) service.Actor {
+	actor := service.ActorFromCtx(ctx.GetContext())
+	if actor.TenantID == "" {
+		actor.TenantID = metaValue(msg, constants.KeyTenantID)
+	}
+	return actor
+}
+
+// persistOutputForReuse 把同步调用的成功输出写入实例变量（引擎实例锁事务内合并）。
+// 空输出不落：无法与未执行过区分。写失败仅告警，不阻断本轮流转。
+func (n *AIAgentNode) persistOutputForReuse(ctx types.RuleContext, msg types.RuleMsg, output string) {
+	if n.RuntimeService == nil {
+		return
+	}
+	if strings.TrimSpace(output) == "" {
+		return
+	}
+	instanceID := metaValue(msg, constants.KeyInstanceID)
+	if instanceID == "" {
+		return
+	}
+	if err := n.RuntimeService.SetProcessInstanceVariable(
+		ctx.GetContext(), actorFromCtxOrMeta(ctx, msg), instanceID, n.aiOutputVarKey(), output); err != nil {
+		logrus.WithError(err).Warnf("AIAgentNode %s: persist output for reuse failed", n.GetSelfId())
+	}
+}
+
+// reuseCachedOutput 实例变量里已有本节点的成功输出时跳过 LLM 调用，把缓存
+// 输出与消息合并后按首次成功路径继续流转（启用裁决时同样重新提取裁决路由）。
+// 返回 true 表示本轮 OnMsg 已终结。
+func (n *AIAgentNode) reuseCachedOutput(ctx types.RuleContext, msg types.RuleMsg) bool {
+	if n.RuntimeService == nil {
+		return false
+	}
+	instanceID := metaValue(msg, constants.KeyInstanceID)
+	if instanceID == "" {
+		return false
+	}
+	v, err := n.RuntimeService.GetProcessInstanceVariable(
+		ctx.GetContext(), actorFromCtxOrMeta(ctx, msg), instanceID, n.aiOutputVarKey())
+	if err != nil {
+		logrus.WithError(err).Warnf("AIAgentNode %s: read cached output failed, proceed to AI call", n.GetSelfId())
+		return false
+	}
+	cached, ok := v.(string)
+	if !ok || strings.TrimSpace(cached) == "" {
+		return false
+	}
+	logrus.Infof("AIAgentNode %s: reuse cached output, skip LLM call, instance=%s", n.GetSelfId(), instanceID)
+
+	wrapperMsg := msg.Copy()
+	if wrapperMsg.Metadata == nil {
+		wrapperMsg.Metadata = types.NewMetadata()
+	}
+	if err := MergeAgentOutput(&wrapperMsg, []byte(cached), n.Config.OutputMappings,
+		n.reservedKey(), n.flattenOutput()); err != nil {
+		// 合并失败时保留原 msg（避免冲掉表单），缓存仍视为已消费，继续流转
+		logrus.WithError(err).Warn("AIAgentNode reuse cached output merge failed, keep original msg")
+	}
+	if n.decisionEnabled() {
+		decision := ExtractDecision(cached)
+		wrapperMsg.Metadata.PutValue(MetaKeyAIDecision, string(decision))
+		switch decision {
+		case AIDecisionReject:
+			n.handleReject(ctx, wrapperMsg)
+			return true
+		case AIDecisionUnresolved:
+			n.handleUnresolved(ctx, wrapperMsg, types.NewMsg(0, "wf_ai_reuse", types.JSON, nil, cached))
+			return true
+		}
+	}
+	ctx.TellSuccess(wrapperMsg)
 	return true
 }
 

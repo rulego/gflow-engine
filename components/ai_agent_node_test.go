@@ -64,6 +64,87 @@ func (f *fakeAgentExecutor) ExecuteAndCollect(chainId string, msg types.RuleMsg,
 
 var _ service.RuleChainExecutor = (*fakeAgentExecutor)(nil)
 
+// fakeVarRuntime 实现 RuntimeServiceInternal 的变量读写与终止（其余方法嵌入
+// nil 接口，被测路径不应触碰）：供 aiAgent 结果复用（实例变量缓存）测试使用。
+type fakeVarRuntime struct {
+	service.RuntimeServiceInternal
+	mu         sync.Mutex
+	vars       map[string]interface{}
+	terminated []string
+}
+
+func (f *fakeVarRuntime) GetProcessInstanceVariable(_ context.Context, _ service.Actor, _, name string) (interface{}, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.vars == nil {
+		return nil, nil
+	}
+	return f.vars[name], nil
+}
+
+func (f *fakeVarRuntime) SetProcessInstanceVariable(_ context.Context, _ service.Actor, _, name string, value interface{}) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.vars == nil {
+		f.vars = make(map[string]interface{})
+	}
+	f.vars[name] = value
+	return nil
+}
+
+func (f *fakeVarRuntime) TerminateProcessInstance(_ context.Context, _ service.Actor, instanceID, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminated = append(f.terminated, instanceID)
+	return nil
+}
+
+func (f *fakeVarRuntime) reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.vars = nil
+	f.terminated = nil
+}
+
+func (f *fakeVarRuntime) varValue(name string) (interface{}, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.vars[name]
+	return v, ok
+}
+
+func (f *fakeVarRuntime) terminatedSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.terminated))
+	copy(out, f.terminated)
+	return out
+}
+
+var (
+	// testRuntimeSvc 注册进 aiAgent 原型的变量运行时替身（全局 registry 只注册一次）
+	testRuntimeSvc = &fakeVarRuntime{}
+)
+
+var (
+	testTaskSvc    = &fakeTaskService{}
+	aiRegisterOnce sync.Once
+	aiTestTimeout  = 5 * time.Second
+)
+
+// registerAIAgentForTest 注册带 fakeTaskService/fakeVarRuntime 的 AIAgentNode 原型（全局 registry 只注册一次）。
+// Executor 由 New() 从 globalAutomationExecutor 读取，用例在实例化前 SetAutomationExecutor 切换。
+func registerAIAgentForTest(t *testing.T) {
+	t.Helper()
+	aiRegisterOnce.Do(func() {
+		if err := rulego.Registry.Register(&AIAgentNode{TaskService: testTaskSvc, RuntimeService: testRuntimeSvc}); err != nil {
+			if !strings.Contains(err.Error(), "already exists") {
+				require.NoError(t, err)
+			}
+		}
+	})
+}
+
 // fakeTaskService 实现 CreateTask + GetTaskList：
 // 前者捕获 handleFailure/handleUnresolved 创建的兜底任务，后者供人工重入守卫查询。
 type fakeTaskService struct {
@@ -95,30 +176,12 @@ func (f *fakeTaskService) reset() {
 	f.tasks = nil
 }
 
-var (
-	testTaskSvc    = &fakeTaskService{}
-	aiRegisterOnce sync.Once
-	aiTestTimeout  = 5 * time.Second
-)
-
-// registerAIAgentForTest 注册带 fakeTaskService 的 AIAgentNode 原型（全局 registry 只注册一次）。
-// Executor 由 New() 从 globalAutomationExecutor 读取，用例在实例化前 SetAutomationExecutor 切换。
-func registerAIAgentForTest(t *testing.T) {
-	t.Helper()
-	aiRegisterOnce.Do(func() {
-		if err := rulego.Registry.Register(&AIAgentNode{TaskService: testTaskSvc}); err != nil {
-			if !strings.Contains(err.Error(), "already exists") {
-				require.NoError(t, err)
-			}
-		}
-	})
-}
-
 // useFakeExec 设置全局执行器并注册节点，返回 fake 供用例配置。
-// 同时清空 fake 任务服务的存量数据，避免人工守卫被上一用例残留任务劫持。
+// 同时清空 fake 任务服务与变量运行时的存量数据，避免人工守卫/结果复用被上一用例残留劫持。
 func useFakeExec(t *testing.T) *fakeAgentExecutor {
 	t.Helper()
 	testTaskSvc.reset()
+	testRuntimeSvc.reset()
 	exec := &fakeAgentExecutor{}
 	SetAutomationExecutor(exec)
 	registerAIAgentForTest(t)
@@ -276,7 +339,7 @@ func TestAIAgentNode_SyncDecisionPass(t *testing.T) {
 	require.Contains(t, endMsg.GetData(), "contractName", "form fields must survive")
 }
 
-// 同步 + 裁决 REJECT → handleReject；RuntimeService 未注入时降级 TellFailure → Failure。
+// 同步 + 裁决 REJECT → handleReject → 终止实例（DoOnEnd 收尾，不走 Success/Failure）。
 func TestAIAgentNode_SyncDecisionReject(t *testing.T) {
 	exec := useFakeExec(t)
 	exec.collectFn = func(_ string, _ types.RuleMsg, _ time.Duration) (types.RuleMsg, error) {
@@ -288,9 +351,12 @@ func TestAIAgentNode_SyncDecisionReject(t *testing.T) {
 	}`
 	engine := buildAIEngine(t, "decision_reject_flow", cfg)
 
-	_, rel, err := runChain(t, engine, types.NewMsg(0, "t", types.JSON, types.NewMetadata(), `{}`))
-	require.Equal(t, types.Failure, rel)
-	require.Error(t, err)
+	meta := types.NewMetadata()
+	meta.PutValue(constants.KeyInstanceID, "inst-reject")
+	_, rel, err := runChain(t, engine, types.NewMsg(0, "t", types.JSON, meta, `{}`))
+	require.NoError(t, err)
+	require.Equal(t, "", rel, "reject terminate ends via DoOnEnd, not Success/Failure")
+	require.Equal(t, []string{"inst-reject"}, testRuntimeSvc.terminatedSnapshot())
 }
 
 // 未裁决 + 默认策略 human + 有兜底人 → 创建 userTask 待办并以 DoOnEnd 收尾（不挂链）。
@@ -344,7 +410,7 @@ func TestAIAgentNode_UnresolvedPass(t *testing.T) {
 	require.Equal(t, "UNRESOLVED", endMsg.GetMetadata().GetValue(MetaKeyAIDecision))
 }
 
-// 未裁决 + 策略 reject → 走拒绝策略（RuntimeService 缺失时 TellFailure）。
+// 未裁决 + 策略 reject → 走拒绝策略终止实例（DoOnEnd 收尾）。
 func TestAIAgentNode_UnresolvedReject(t *testing.T) {
 	exec := useFakeExec(t)
 	exec.collectFn = func(_ string, _ types.RuleMsg, _ time.Duration) (types.RuleMsg, error) {
@@ -356,9 +422,12 @@ func TestAIAgentNode_UnresolvedReject(t *testing.T) {
 	}`
 	engine := buildAIEngine(t, "unresolved_reject_flow", cfg)
 
-	_, rel, err := runChain(t, engine, types.NewMsg(0, "t", types.JSON, types.NewMetadata(), `{}`))
-	require.Equal(t, types.Failure, rel)
-	require.Error(t, err)
+	meta := types.NewMetadata()
+	meta.PutValue(constants.KeyInstanceID, "inst-unres-reject")
+	_, rel, err := runChain(t, engine, types.NewMsg(0, "t", types.JSON, meta, `{}`))
+	require.NoError(t, err)
+	require.Equal(t, "", rel, "unresolved→reject ends via DoOnEnd, not Success/Failure")
+	require.Equal(t, []string{"inst-unres-reject"}, testRuntimeSvc.terminatedSnapshot())
 }
 
 // 未裁决 + 默认 human 但未配兜底人 → 放行并标记（不静默挂链）。
@@ -497,7 +566,7 @@ func TestAIAgentNode_GuardApprovedSkipsAI(t *testing.T) {
 	require.Equal(t, int32(0), exec.collectCalls.Load(), "AI must not be re-called after human approval")
 }
 
-// 守卫：人工已拒绝 → 走拒绝策略（RuntimeService 缺失 → TellFailure）。
+// 守卫：人工已拒绝 → 走拒绝策略终止实例（DoOnEnd 收尾，不再调用 AI）。
 func TestAIAgentNode_GuardRejected(t *testing.T) {
 	exec := useFakeExec(t)
 	rejected := string(enums.ApprovalResultRejected)
@@ -509,9 +578,10 @@ func TestAIAgentNode_GuardRejected(t *testing.T) {
 
 	engine := buildAIEngine(t, "guard_rejected_flow", `{"agentId": "fake_agent", "timeoutSec": 5, "decision": {"rejectStrategy": "terminate"}}`)
 	_, rel, err := runChain(t, engine, newAIInstanceMsg())
-	require.Equal(t, types.Failure, rel)
-	require.Error(t, err)
+	require.NoError(t, err)
+	require.Equal(t, "", rel, "guard reject ends via DoOnEnd, not Failure")
 	require.Equal(t, int32(0), exec.collectCalls.Load(), "AI must not be re-called after human rejection")
+	require.Equal(t, []string{"inst-001"}, testRuntimeSvc.terminatedSnapshot())
 }
 
 // 守卫：TaskCreator 切面产生的 aiAgent 型自动任务不参与判定，正常调用 AI。
@@ -802,4 +872,86 @@ func TestAIAgentNode_AssembleMultimodalAttachments(t *testing.T) {
 		require.Contains(t, content, "invoice.png")
 		require.Contains(t, content, "/uploads/t1/approval/20260902/f.png")
 	})
+}
+
+// ---------------------------------------------------------------------------
+// 结果复用（实例变量缓存）
+// ---------------------------------------------------------------------------
+
+// 同步调用成功后，输出写入实例变量 ai_out_{nodeId}。
+func TestAIAgentNode_PersistOutputOnSuccess(t *testing.T) {
+	exec := useFakeExec(t)
+	exec.collectFn = func(_ string, _ types.RuleMsg, _ time.Duration) (types.RuleMsg, error) {
+		return newAgentOutput(`{"summary":"ok"}`), nil
+	}
+	engine := buildAIEngine(t, "ai_persist", `{"agentId":"a","timeoutSec":5}`)
+	runChain(t, engine, newAIInstanceMsg())
+
+	v, ok := testRuntimeSvc.varValue("ai_out_ai_node")
+	require.True(t, ok, "sync success must persist output to instance variable")
+	require.Equal(t, `{"summary":"ok"}`, v)
+}
+
+// 实例变量已有本节点输出时，重入跳过 LLM 调用，输出按原规则合并进消息续跑。
+func TestAIAgentNode_ReuseCachedOutputSkipsLLM(t *testing.T) {
+	exec := useFakeExec(t)
+	require.NoError(t, testRuntimeSvc.SetProcessInstanceVariable(
+		context.Background(), service.Actor{}, "inst-001", "ai_out_ai_node", `{"summary":"cached"}`))
+
+	engine := buildAIEngine(t, "ai_reuse", `{"agentId":"a","timeoutSec":5}`)
+	endMsg, rel, err := runChain(t, engine, newAIInstanceMsg())
+
+	require.NoError(t, err)
+	require.Equal(t, types.Success, rel)
+	require.Equal(t, int32(0), exec.collectCalls.Load(), "cached output must skip the LLM call")
+
+	// 输出注回消息：完整输出挂保留键 _ai，平铺模式下顶层字段并入 msg.Data
+	data := endMsg.GetData()
+	require.Contains(t, data, `"summary"`)
+	ai, ok := dataVarsFromMsg(endMsg)[AIAgentReservedKey]
+	require.True(t, ok, "reserved key must carry the cached output")
+	require.Contains(t, fmt.Sprint(ai), "cached")
+}
+
+// 复用路径同样重放裁决：缓存输出含拒绝标记 → 拒绝策略生效（默认 terminate）。
+func TestAIAgentNode_ReuseCachedOutputReplaysDecision(t *testing.T) {
+	exec := useFakeExec(t)
+	require.NoError(t, testRuntimeSvc.SetProcessInstanceVariable(
+		context.Background(), service.Actor{}, "inst-001", "ai_out_ai_node", "分析：金额超限\nAI_DECISION: REJECT"))
+
+	engine := buildAIEngine(t, "ai_reuse_reject", `{"agentId":"a","timeoutSec":5,"decision":{"rejectStrategy":"terminate"}}`)
+	_, _, err := runChain(t, engine, newAIInstanceMsg())
+
+	require.NoError(t, err)
+	require.Equal(t, int32(0), exec.collectCalls.Load(), "reuse must skip the LLM call")
+	require.Equal(t, []string{"inst-001"}, testRuntimeSvc.terminatedSnapshot(),
+		"cached REJECT marker must route to the reject strategy")
+}
+
+// 异步模式不落缓存也不复用（fire-and-forget 无同步输出可复用）。
+func TestAIAgentNode_AsyncNoPersistNoReuse(t *testing.T) {
+	exec := useFakeExec(t)
+	require.NoError(t, testRuntimeSvc.SetProcessInstanceVariable(
+		context.Background(), service.Actor{}, "inst-001", "ai_out_ai_node", `{"summary":"cached"}`))
+
+	engine := buildAIEngine(t, "ai_async_reuse", `{"agentId":"a","async":true}`)
+	runChain(t, engine, newAIInstanceMsg())
+
+	require.Equal(t, int32(1), exec.executeCalls.Load(), "async mode must not reuse the cache")
+	_, ok := testRuntimeSvc.varValue("ai_out_async_node")
+	require.False(t, ok)
+}
+
+// 失败路径不落缓存（只有成功输出才可复用）。
+func TestAIAgentNode_FailureDoesNotPersist(t *testing.T) {
+	exec := useFakeExec(t)
+	exec.collectFn = func(_ string, _ types.RuleMsg, _ time.Duration) (types.RuleMsg, error) {
+		return types.RuleMsg{}, fmt.Errorf("agent down")
+	}
+	// 无 failureHandler：走 TellFailure，链失败结束
+	engine := buildAIEngine(t, "ai_fail_persist", `{"agentId":"a","timeoutSec":5}`)
+	runChain(t, engine, newAIInstanceMsg())
+
+	_, ok := testRuntimeSvc.varValue("ai_out_ai_node")
+	require.False(t, ok, "failed call must not persist output cache")
 }
