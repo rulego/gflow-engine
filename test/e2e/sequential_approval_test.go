@@ -15,6 +15,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -1034,6 +1035,114 @@ func TestE2E_OrApproval_ConcurrentApprovals_NoCorruption(t *testing.T) {
 		instID).Scan(&endCount).Error)
 	assert.Equal(t, int64(1), endCount,
 		"end node should run exactly once — duplicate ExecuteNext would create multiple end tasks")
+}
+
+// deployOrThenSingleProcess 部署 或签节点 → 单人终审节点 → end 的三节点流程。
+// 或签节点多人各一条 Active 任务，用于确定性复现"或签并发审批"竞态：
+// 先通过者触发 cancelSiblingActiveTasks 终止其余任务，迟到的审批在锁内
+// 重读到的就是 Terminated。
+func (e *e2eTestEnv) deployOrThenSingleProcess(processKey, name string, orApprovers []string, finalApprover string) {
+	e.t.Helper()
+	orConfig := map[string]interface{}{
+		"candidateType":   "user",
+		"candidateConfig": map[string]interface{}{"userIds": orApprovers},
+		"approvalType":    "or",
+	}
+	finalConfig := map[string]interface{}{
+		"candidateType":   "user",
+		"candidateConfig": map[string]interface{}{"userIds": []string{finalApprover}},
+		"approvalType":    "single",
+	}
+	def := map[string]interface{}{
+		"ruleChain": map[string]interface{}{
+			"id":   processKey,
+			"name": name,
+			"root": true,
+		},
+		"metadata": map[string]interface{}{
+			"firstNodeIndex": 0,
+			"nodes": []map[string]interface{}{
+				{"id": "approval_or", "type": "userTask", "name": name + "-or", "configuration": orConfig},
+				{"id": "approval_final", "type": "userTask", "name": name + "-final", "configuration": finalConfig},
+				{"id": "end", "type": "end", "name": "End"},
+			},
+			"connections": []map[string]interface{}{
+				{"fromId": "approval_or", "toId": "approval_final", "type": "Success"},
+				{"fromId": "approval_or", "toId": "approval_final", "type": "Failure"},
+				{"fromId": "approval_final", "toId": "end", "type": "Success"},
+				{"fromId": "approval_final", "toId": "end", "type": "Failure"},
+			},
+		},
+	}
+	raw, err := json.Marshal(def)
+	require.NoError(e.t, err, "marshal def")
+
+	ctx := e.userCtx("admin")
+	_, err = e.engine.GetProcessService().Deploy(ctx, service.Actor{UserID: "admin", TenantID: e2eTenantID}, &model.WfProcess{
+		ProcessKey:     processKey,
+		Name:           name,
+		DefinitionJSON: string(raw),
+		Status:         string(enums.ProcessStatusActive),
+		TenantID:       e2eTenantID,
+		CreatedBy:      "admin",
+	}, true)
+	require.NoError(e.t, err, "deploy process")
+}
+
+// TestE2E_OrApproval_TerminatedSiblingRejected 确定性回归：或签另一分支已通过
+// （本任务被 cancelSiblingActiveTasks 置 Terminated）后，迟到的审批必须被拒绝，
+// 而不是把已终止任务翻回 Completed+approved 并二次驱动流转。
+// 与 TestE2E_OrApproval_ConcurrentApprovals_NoCorruption 的差别：那条用例靠真并发
+// + end 节点去重兜底，本用例把竞态窗口展开成确定性时序（先通过 → 任务 Terminated →
+// 迟到提交），实例保持 active（或签后还有终审节点），因此真正走到 complete 的
+// 任务状态守卫，而不是被实例归档/SQLite 锁错误掩护。
+func TestE2E_OrApproval_TerminatedSiblingRejected(t *testing.T) {
+	env := newE2EEnv(t)
+	env.deployOrThenSingleProcess("or_term_guard_e2e", "Or Terminated Guard",
+		[]string{"a_user", "b_user"}, "c_user")
+	instID := env.startInstance("or_term_guard_e2e", "starter")
+
+	require.Eventually(t, func() bool {
+		return len(env.activeTasksFor(instID, "")) >= 2
+	}, 2*time.Second, 50*time.Millisecond)
+	a := env.activeTasksFor(instID, "a_user")
+	b := env.activeTasksFor(instID, "b_user")
+	require.Len(t, a, 1)
+	require.Len(t, b, 1)
+
+	// a_user 先通过：或签即节点完成，b_user 的任务被终止，流程推进到终审节点
+	env.approveAs(a[0].ID, "a_user", "first")
+	require.Eventually(t, func() bool {
+		return len(env.activeTasksFor(instID, "c_user")) == 1
+	}, 2*time.Second, 50*time.Millisecond, "flow should advance to final approver")
+
+	bTask := env.taskByID(b[0].ID)
+	require.Equal(t, string(enums.TaskStatusTerminated), bTask.Status,
+		"sibling task should be terminated by or-sign completion")
+
+	// 迟到的 b_user 审批：必须被 ErrTaskTerminated 拒绝
+	ctx := env.userCtxAs("b_user")
+	err := env.engine.GetTaskService().Approve(ctx, service.Actor{UserID: "b_user", UserName: "b_user", TenantID: e2eTenantID},
+		b[0].ID, "late", map[string]interface{}{"approved": true, "approvedBy": "b_user"})
+	require.Error(t, err, "completing a terminated sibling task must be rejected")
+	assert.True(t, errors.Is(err, service.ErrTaskTerminated), "error should wrap ErrTaskTerminated, got: %v", err)
+
+	// 任务终态不被翻盘，终审任务不重复，实例仍等 c_user
+	require.Equal(t, string(enums.TaskStatusTerminated), env.taskByID(b[0].ID).Status,
+		"terminated task must not be resurrected to completed")
+	require.Len(t, env.activeTasksFor(instID, "c_user"), 1, "final approver must have exactly one task")
+
+	// 终审正常走完：实例完成、end 只执行一次
+	final := env.activeTasksFor(instID, "c_user")
+	env.approveAs(final[0].ID, "c_user", "final")
+	require.Eventually(t, func() bool {
+		return env.instanceStatus(instID) == string(enums.InstanceStatusCompleted)
+	}, 2*time.Second, 50*time.Millisecond, "instance should complete after final approval")
+	var endCount int64
+	require.NoError(t, env.db.Raw(
+		"SELECT COUNT(*) FROM wf_hi_task WHERE process_instance_id = ? AND task_type = 'end'",
+		instID).Scan(&endCount).Error)
+	assert.Equal(t, int64(1), endCount, "end node should run exactly once")
 }
 
 // ---------------------------------------------------------------------------

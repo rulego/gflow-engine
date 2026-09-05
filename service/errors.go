@@ -40,6 +40,13 @@ var (
 	// ErrTaskNotClaimable — Claim called on a task in a non-claimable state.
 	ErrTaskNotClaimable = errors.New("task not claimable in current state")
 
+	// ErrTaskTerminated — Complete called on a task that has been terminated
+	// (or-sign sibling completion, countersign threshold reached, claim race,
+	// instance teardown). Completing a terminated task would resurrect it in
+	// history and re-trigger flow advancement. Map to HTTP 400 like
+	// ErrTaskAlreadyCompleted.
+	ErrTaskTerminated = errors.New("task is terminated")
+
 	// ErrCountersignRule — countersign approval rule could not be parsed.
 	ErrCountersignRule = errors.New("invalid countersign rule")
 
@@ -67,6 +74,7 @@ func IsUserError(err error) bool {
 		errors.Is(err, ErrNotFound),
 		errors.Is(err, ErrTaskAlreadyCompleted),
 		errors.Is(err, ErrTaskNotClaimable),
+		errors.Is(err, ErrTaskTerminated),
 		errors.Is(err, ErrCountersignRule),
 		errors.Is(err, ErrAuthenticationRequired),
 		errors.Is(err, ErrInstanceNotFound),

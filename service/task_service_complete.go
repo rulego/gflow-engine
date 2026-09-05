@@ -122,6 +122,18 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	if task.Status == string(enums.TaskStatusSuspended) {
 		return fmt.Errorf("task is suspended, cannot complete until instance is resumed")
 	}
+	// Complete 与同节点清理的竞态保护：或签另一分支先通过（cancelSiblingActiveTasks）、
+	// 会签/票签阈值达成（cancelRemainingCountersignSubTasks）、认领互斥都会把本任务置
+	// Terminated。迟到的 complete 在锁内重读到的就是终态——放行会把已终止任务翻回
+	// Completed+approved（审计失真）并二次触发 ExecuteNext。与实例级 ErrInstanceTerminal
+	// 同口径，任何调用模式一律拒绝。
+	if task.Status == string(enums.TaskStatusTerminated) {
+		reason := ""
+		if task.EndReason != nil {
+			reason = *task.EndReason
+		}
+		return fmt.Errorf("%w (reason: %s), cannot complete", ErrTaskTerminated, reason)
+	}
 	// 检查所属实例状态：实例若处于非活跃态，需区分 API vs 内部调用
 	// - API 路径：实例 Suspended/Terminated/Cancelled/Failed 都拒绝（用户操作）
 	// - 内部路径（end-node aspect 推进 Completed 实例的尾任务）：允许，否则会卡住流程归档
