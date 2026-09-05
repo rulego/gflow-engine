@@ -11,7 +11,7 @@ GFlow Engine 是**以 Go 库形式被宿主应用嵌入**的审批工作流引�
 
 ## 交流语言
 
-Issue、PR、commit、代码注释、docs/ 目录文档均使用中文；代码标识符、错误消息使用英文。README.md（英文）与 README_ZH.md（中文）成对维护，改动需同步。
+Issue、PR、commit、代码注释、docs/ 目录文档均使用中文；代码标识符、错误消息使用英文。README.md（中文）与 README_EN.md（英文）成对维护，改动需同步。
 
 ## 开发环境
 
