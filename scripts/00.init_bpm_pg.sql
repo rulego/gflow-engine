@@ -94,7 +94,11 @@ CREATE TABLE IF NOT EXISTS wf_instance
 
     end_reason        VARCHAR(2000),         -- 完成/终止原因（包含错误信息）
     duration          BIGINT,                -- 运行时长（毫秒）
-    ended_at          TIMESTAMPTZ            -- 结束时间
+    ended_at          TIMESTAMPTZ,           -- 结束时间
+
+    -- businessKey 唯一兜底：同租户下 (tenant_id, business_key) 唯一，拦截并发
+    -- 双发起（先查+插入的竞态窗口）。空 business_key 不参与唯一（引擎自动生成）。
+    CONSTRAINT uq_wf_instance_tenant_bizkey UNIQUE (tenant_id, business_key)
 );
 
 COMMENT ON TABLE  wf_instance IS '运行时流程实例表';

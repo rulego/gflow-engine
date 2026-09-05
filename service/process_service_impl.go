@@ -475,11 +475,12 @@ func (s *ProcessServiceImpl) IsFormReferenced(ctx context.Context, tenantID, for
 	return count > 0, nil
 }
 
-// isUniqueViolation 判断是否唯一约束冲突（跨方言：PG 23505 / MySQL 1062）。
+// isUniqueViolation 判断是否唯一约束冲突（跨方言：PG 23505 / MySQL 1062 / SQLite UNIQUE）。
 func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "23505") || strings.Contains(msg, "1062") || strings.Contains(msg, "duplicate key")
+	return strings.Contains(msg, "23505") || strings.Contains(msg, "1062") ||
+		strings.Contains(msg, "duplicate key") || strings.Contains(msg, "UNIQUE constraint failed")
 }

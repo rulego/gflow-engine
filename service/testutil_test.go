@@ -61,6 +61,12 @@ func (r *testRuntimeDouble) UpdateInstanceCurrentActivity(ctx context.Context, i
 func (r *testRuntimeDouble) GetStuckProcessInstances(ctx context.Context, tenantID string) ([]*model.WfInstance, error) {
 	return nil, nil
 }
+func (r *testRuntimeDouble) GetExpiredDelayTasks(ctx context.Context, tenantID string) ([]*model.WfTask, error) {
+	return nil, nil
+}
+func (r *testRuntimeDouble) RescueExpiredDelayTask(ctx context.Context, actor Actor, taskID string) error {
+	return nil
+}
 func (r *testRuntimeDouble) ReDriveProcessInstance(ctx context.Context, actor Actor, id string) error {
 	return nil
 }

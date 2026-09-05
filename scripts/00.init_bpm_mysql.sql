@@ -73,7 +73,10 @@ CREATE TABLE IF NOT EXISTS wf_instance (
     KEY idx_instance_priority (priority DESC, created_at ASC),
     KEY idx_instance_tenant_status (tenant_id, status, created_at DESC),
     KEY idx_instance_tenant_starter (tenant_id, start_user_id),
-    KEY idx_instance_process (process_id, created_at DESC)
+    KEY idx_instance_process (process_id, created_at DESC),
+    -- businessKey 唯一兜底：同租户下 (tenant_id, business_key) 唯一，拦截并发
+    -- 双发起（先查+插入的竞态窗口）。空 business_key 不参与唯一（引擎自动生成）。
+    UNIQUE KEY uq_wf_instance_tenant_bizkey (tenant_id, business_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='运行时流程实例表';
 
 -- 3. 历史流程实例表

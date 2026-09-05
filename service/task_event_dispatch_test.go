@@ -108,7 +108,8 @@ func ensureEventTestSchema(t *testing.T, db *gorm.DB) {
 			end_reason TEXT,
 			duration INTEGER,
 			ended_at DATETIME,
-			start_user_id TEXT NOT NULL
+			start_user_id TEXT NOT NULL,
+			UNIQUE (tenant_id, business_key)
 		)`,
 		`CREATE TABLE IF NOT EXISTS wf_task (
 			id TEXT PRIMARY KEY,

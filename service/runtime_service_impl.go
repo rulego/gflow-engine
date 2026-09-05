@@ -240,6 +240,12 @@ func (s *RuntimeServiceImpl) startInstanceCore(ctx context.Context, processDef *
 
 	// 保存流程实例
 	if err := s.instanceDAO.Create(ctx, instance); err != nil {
+		// 唯一约束兜底：并发同 businessKey 双发起时先查会双双通过，靠数据库
+		// 唯一索引拦下后到者，映射为与先查一致的冲突友好错误
+		if isUniqueViolation(err) {
+			return "", nil, types.RuleMsg{}, fmt.Errorf(
+				"active process instance with business key '%s' already exists: %w", businessKey, ErrConflict)
+		}
 		return "", nil, types.RuleMsg{}, fmt.Errorf("failed to create process instance: %w", err)
 	}
 
@@ -1577,6 +1583,156 @@ func (s *RuntimeServiceImpl) GetStuckProcessInstances(ctx context.Context, tenan
 	// raw SQL 无 Preload，这里统一补 Process 并装配当前节点名（宿主同口径序列化）
 	s.decorateCurrentActivityNames(ctx, list)
 	return list, nil
+}
+
+// expiredDelayGracePeriod 超期判定的宽限期：过线未满宽限期的任务可能仍由
+// 在途计时器正常收尾，不视为计时器丢失。
+const expiredDelayGracePeriod = 60 * time.Second
+
+// GetExpiredDelayTasks 找出超期未完成的 delay 任务。
+//
+// delay 计时器活在驱动它的副本进程内，副本崩溃后任务行停在未终态；due_date
+// 早于当前时间减宽限期即视为计时器丢失。引擎建的 delay 行无办理人、初始即
+// Pending，Active/Pending 一并纳入。
+func (s *RuntimeServiceImpl) GetExpiredDelayTasks(ctx context.Context, tenantID string) ([]*model.WfTask, error) {
+	db := s.taskDAO.Query.WfTask.UnderlyingDB().WithContext(ctx)
+	q := db.Table("wf_task").
+		Where("task_type = ?", constants.TaskTypeDelay).
+		Where("status IN (?, ?)", string(enums.TaskStatusActive), string(enums.TaskStatusPending)).
+		Where("due_date IS NOT NULL AND due_date < ?", time.Now().Add(-expiredDelayGracePeriod))
+	if tenantID != "" {
+		q = q.Where("tenant_id = ?", tenantID)
+	}
+	var list []*model.WfTask
+	if err := q.Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// RescueExpiredDelayTask 救援超期的 delay 任务。
+//
+// 与 RestoreProcessInstance 同款注入：metadata 携带既有任务的 task_id
+// （TaskCreator 见 task_id 跳过建行）与 _delayOffsetMs=now-CreatedAt，重入该
+// delay 节点。已超期则节点立即放行、完成既有任务行继续流转；未超期则按
+// "时长-偏移"重挂剩余计时器。经跨副本执行门闩与对端驱动互斥，拿到门闩后
+// 重读任务，已被在途计时器收尾的幂等返回 nil。
+func (s *RuntimeServiceImpl) RescueExpiredDelayTask(ctx context.Context, actor Actor, taskID string) error {
+	ctx = bindActor(ctx, actor)
+	if taskID == "" {
+		return fmt.Errorf("task ID cannot be empty")
+	}
+	task, err := s.taskDAO.Get(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+	if task == nil {
+		return fmt.Errorf("%w: task %s", ErrNotFound, taskID)
+	}
+	if err := ensureTenantAccess(ctx, "task", task.TenantID); err != nil {
+		return err
+	}
+	if task.TaskType != constants.TaskTypeDelay {
+		return fmt.Errorf("task %s is %s, only delay tasks can be rescued", taskID, task.TaskType)
+	}
+	if !isDelayTaskWaiting(task.Status) {
+		return fmt.Errorf("delay task %s is %s, only waiting tasks can be rescued", taskID, task.Status)
+	}
+	if task.DueDate == nil {
+		return fmt.Errorf("delay task %s has no due date, cannot determine expiry", taskID)
+	}
+	if !task.DueDate.Before(time.Now().Add(-expiredDelayGracePeriod)) {
+		return fmt.Errorf("delay task %s is not expired yet (due at %s)", taskID, task.DueDate.Format(time.RFC3339))
+	}
+
+	instanceID := ""
+	if task.ProcessInstanceID != nil {
+		instanceID = *task.ProcessInstanceID
+	}
+	if instanceID == "" {
+		return fmt.Errorf("delay task %s has no process instance, cannot rescue", taskID)
+	}
+	instance, err := s.instanceDAO.Get(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("failed to get process instance: %w", err)
+	}
+	if instance == nil {
+		return fmt.Errorf("%w: process instance %s", ErrInstanceNotFound, instanceID)
+	}
+	if instance.Status != string(enums.InstanceStatusActive) {
+		return fmt.Errorf("process instance %s is %s, only active instances can be rescued", instanceID, instance.Status)
+	}
+
+	// 判定与重驱须与对端副本的驱动互斥（同 RestoreProcessInstance）
+	if unlock := s.acquireDistExecGate(ctx, instanceID); unlock != nil {
+		defer unlock()
+	}
+	// 等门闩期间任务可能已被在途计时器正常完成：重读确认仍是计时中状态
+	fresh, err := s.taskDAO.Get(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to re-check task: %w", err)
+	}
+	if fresh == nil || !isDelayTaskWaiting(fresh.Status) {
+		logrus.WithField("taskId", taskID).
+			Info("delay task already settled while waiting for exec gate, skip rescue")
+		return nil
+	}
+
+	// 变量优先取任务变量，回退实例变量（同 RestoreProcessInstance）
+	var variablesStr string
+	if task.Variables != nil && *task.Variables != "" {
+		variablesStr = *task.Variables
+	} else if instance.Variables != nil {
+		variablesStr = *instance.Variables
+	} else {
+		variablesStr = "{}"
+	}
+	md := types.NewMetadata()
+	md.PutValue(constants.KeyTenantID, instance.TenantID)
+	md.PutValue(constants.KeyInstanceID, instance.ID)
+	if instance.BusinessKey != nil {
+		md.PutValue(constants.KeyBusinessKey, *instance.BusinessKey)
+	}
+	md.PutValue(constants.KeyOwner, instance.CreatedBy)
+	md.PutValue(constants.KeyProcessID, instance.ProcessID)
+	// 注入既有 task_id：重入节点时不重复建行，完成的是这条既有任务
+	md.PutValue(constants.KeyTaskID, task.ID)
+	// 已等待时长作为恢复偏移：超期则节点立即放行，未超期则重挂剩余计时
+	offsetMs := int64(0)
+	if !task.CreatedAt.IsZero() {
+		if offset := time.Since(task.CreatedAt).Milliseconds(); offset > 0 {
+			offsetMs = offset
+		}
+	}
+	md.PutValue(constants.KeyDelayOffsetMs, fmt.Sprintf("%d", offsetMs))
+	msg := types.NewMsg(0, "wf_delay_rescue", types.JSON, md, variablesStr)
+
+	logrus.WithFields(logrus.Fields{
+		"instanceId": instanceID,
+		"taskId":     taskID,
+		"node":       task.TaskDefKey,
+		"offsetMs":   offsetMs,
+	}).Warn("rescue expired delay task")
+
+	processDef, err := s.processDAO.Get(ctx, instance.ProcessID)
+	if err != nil {
+		return fmt.Errorf("failed to get process definition: %w", err)
+	}
+	if processDef == nil {
+		return fmt.Errorf("%w: process definition %s", ErrNotFound, instance.ProcessID)
+	}
+	engine, err := s.initExecution(processDef.TenantID, processDef.ID, processDef.DefinitionJSON)
+	if err != nil {
+		return err
+	}
+	engine.OnMsg(msg, types.WithRestoreNodes(restoreNodeRequest(task.TaskDefKey, msg)))
+	return nil
+}
+
+// isDelayTaskWaiting 判断 delay 任务是否处于计时中（未终态且未挂起）。
+// Suspended 的任务随实例挂起，救援须先恢复实例，不在本入口处理。
+func isDelayTaskWaiting(status string) bool {
+	return status == string(enums.TaskStatusActive) || status == string(enums.TaskStatusPending)
 }
 
 // ReDriveProcessInstance 重驱动卡死实例：从实例记录的当前节点重新执行引擎推进。

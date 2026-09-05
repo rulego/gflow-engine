@@ -19,15 +19,19 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/gflow-engine/utils/lock"
 	"github.com/rulego/rulego/api/types"
+	"github.com/rulego/rulego/utils/el"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cast"
-	"time"
 )
 
 var (
@@ -137,9 +141,11 @@ func (aspect *TaskCreator) Before(ctx types.RuleContext, msg types.RuleMsg, rela
 	if ctx.Self().Type() != constants.TaskTypeUserTask {
 		data := msg.GetData()
 		var name, desc string
+		var nodeConfig types.Configuration
 		if chainCtx, ok := ctx.RuleChain().(types.ChainCtx); ok {
 			if ruleNode, ok := chainCtx.Definition().GetNode(ctx.GetSelfId()); ok {
 				name = ruleNode.Name
+				nodeConfig = ruleNode.Configuration
 				if v, ok := ruleNode.GetAdditionalInfo(constants.KeyDescription); ok {
 					desc = cast.ToString(v)
 				}
@@ -158,6 +164,7 @@ func (aspect *TaskCreator) Before(ctx types.RuleContext, msg types.RuleMsg, rela
 		}
 		processId := msg.GetMetadata().GetValue(constants.KeyProcessID)
 		// 记录任务
+		createdAt := time.Now()
 		task := &model.WfTask{
 			ProcessInstanceID: &instanceId,
 			ProcessID:         processId,
@@ -166,11 +173,16 @@ func (aspect *TaskCreator) Before(ctx types.RuleContext, msg types.RuleMsg, rela
 			Name:              name,
 			Description:       &desc,
 			Assignee:          nil,
-			CreatedAt:         time.Now(),
+			CreatedAt:         createdAt,
 			CreatedBy:         constants.UserSystem,
 			Status:            string(enums.TaskStatusPending),
 			Variables:         &data,
 			TenantID:          msg.GetMetadata().GetValue(constants.KeyTenantID),
+		}
+		// delay 任务建行时落到期时间：模板表达式只有此刻能求值，
+		// 超期检测与救援据此判定
+		if dueDate := delayTaskDueDate(ctx, msg, ctx.Self().Type(), nodeConfig, createdAt); dueDate != nil {
+			task.DueDate = dueDate
 		}
 		// 节点自动创建任务：系统动作，操作人取 SystemActor
 		_, err = aspect.workflowEngine.GetTaskService().CreateTask(ctx.GetContext(), SystemActor(), task)
@@ -353,4 +365,44 @@ func (aspect *TaskCreator) nodeHasFailureEdge(ctx types.RuleContext, msg types.R
 		}
 	}
 	return false
+}
+
+// delayTaskDueDate 计算 delay 任务行的到期时间（base + 时长）；非 delay 节点
+// 或求不出时长时返回 nil，DueDate 留空。时长来源与 delay 节点自身口径一致：
+// delayMs 优先（纯数字直取，模板表达式用消息上下文求值），兼容已废弃的
+// periodInSeconds（×1000）。
+func delayTaskDueDate(ctx types.RuleContext, msg types.RuleMsg, nodeType string, nodeConfig types.Configuration, base time.Time) *time.Time {
+	if nodeType != constants.NodeTypeDelay {
+		return nil
+	}
+	if ms, ok := delayDurationMs(ctx, msg, nodeConfig); ok {
+		due := base.Add(time.Duration(ms) * time.Millisecond)
+		return &due
+	}
+	logrus.Debugf("delay task due date unresolved, nodeId: %s", ctx.GetSelfId())
+	return nil
+}
+
+// delayDurationMs 从节点配置解析延迟毫秒数：delayMs 纯数字直接取，模板表达式
+// 按节点消息上下文求值后取整；均不可用时回退 periodInSeconds。解析失败返回 false。
+func delayDurationMs(ctx types.RuleContext, msg types.RuleMsg, nodeConfig types.Configuration) (int64, bool) {
+	delayMs := strings.TrimSpace(cast.ToString(nodeConfig["delayMs"]))
+	if delayMs != "" {
+		if v, err := strconv.ParseInt(delayMs, 10, 64); err == nil {
+			return v, true
+		}
+		tmpl, err := el.NewTemplate(delayMs)
+		if err != nil {
+			return 0, false
+		}
+		rendered := strings.TrimSpace(tmpl.ExecuteAsString(ctx.GetEnv(msg, true)))
+		if v, err := strconv.ParseInt(rendered, 10, 64); err == nil {
+			return v, true
+		}
+		return 0, false
+	}
+	if seconds := cast.ToInt(nodeConfig["periodInSeconds"]); seconds > 0 {
+		return int64(seconds) * 1000, true
+	}
+	return 0, false
 }

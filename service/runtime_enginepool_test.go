@@ -68,7 +68,8 @@ func newPoolTestRS(t *testing.T) (*RuntimeServiceImpl, *gorm.DB) {
 			current_activity TEXT, priority INTEGER NOT NULL DEFAULT 50, parent_id TEXT,
 			tenant_id TEXT NOT NULL, created_by TEXT NOT NULL,
 			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_by TEXT, updated_at DATETIME,
-			end_reason TEXT, duration INTEGER, ended_at DATETIME)`,
+			end_reason TEXT, duration INTEGER, ended_at DATETIME,
+			UNIQUE (tenant_id, business_key))`,
 	} {
 		if err := db.Exec(ddl).Error; err != nil {
 			t.Fatalf("create table: %v", err)

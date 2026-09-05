@@ -39,7 +39,8 @@ func candGroupDB(t *testing.T) *query.Query {
 			priority INTEGER NOT NULL DEFAULT 50, parent_id TEXT, tenant_id TEXT NOT NULL,
 			created_by TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_by TEXT, updated_at DATETIME, end_reason TEXT, duration INTEGER, ended_at DATETIME,
-			start_user_id TEXT NOT NULL
+			start_user_id TEXT NOT NULL,
+			UNIQUE (tenant_id, business_key)
 		)`,
 		`CREATE TABLE IF NOT EXISTS wf_task (
 			id TEXT PRIMARY KEY, process_instance_id TEXT, process_id TEXT, parent_id TEXT,

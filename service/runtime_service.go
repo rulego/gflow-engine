@@ -62,6 +62,13 @@ type RuntimeService interface {
 	// GetStuckProcessInstances 找出 active 但无未决任务的卡死实例（对账巡检/管理端救援）
 	GetStuckProcessInstances(ctx context.Context, tenantID string) ([]*model.WfInstance, error)
 
+	// GetExpiredDelayTasks 找出超期未完成的 delay 任务（计时器丢失检测）
+	GetExpiredDelayTasks(ctx context.Context, tenantID string) ([]*model.WfTask, error)
+
+	// RescueExpiredDelayTask 救援超期的 delay 任务：携带既有 task_id 与已等待
+	// 偏移重入 delay 节点，完成后继续流转，不新建任务行。
+	RescueExpiredDelayTask(ctx context.Context, actor Actor, taskID string) error
+
 	// ReDriveProcessInstance 重驱动卡死实例：从当前节点补跑引擎推进
 	ReDriveProcessInstance(ctx context.Context, actor Actor, processInstanceID string) error
 

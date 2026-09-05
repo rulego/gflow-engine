@@ -130,7 +130,8 @@ const (
 		end_reason TEXT,
 		duration INTEGER,
 		ended_at DATETIME,
-		start_user_id TEXT NOT NULL DEFAULT ''
+		start_user_id TEXT NOT NULL DEFAULT '',
+		UNIQUE (tenant_id, business_key)
 	)`
 
 	ddlWfProcess = `CREATE TABLE IF NOT EXISTS wf_process (

@@ -88,7 +88,8 @@ var ddls = []string{
 		updated_at DATETIME,
 		end_reason TEXT,
 		duration INTEGER,
-		ended_at DATETIME
+		ended_at DATETIME,
+		UNIQUE (tenant_id, business_key)
 	)`,
 	`CREATE TABLE IF NOT EXISTS wf_task (
 		id TEXT PRIMARY KEY,

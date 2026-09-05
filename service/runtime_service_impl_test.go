@@ -356,7 +356,8 @@ func rtImplTestDB(t *testing.T) *query.Query {
 		priority INTEGER NOT NULL DEFAULT 50, parent_id TEXT, tenant_id TEXT NOT NULL,
 		created_by TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_by TEXT, updated_at DATETIME, end_reason TEXT, duration INTEGER,
-		ended_at DATETIME, start_user_id TEXT NOT NULL)`).Error)
+		ended_at DATETIME, start_user_id TEXT NOT NULL,
+		UNIQUE (tenant_id, business_key))`).Error)
 	require.NoError(t, db.Exec("DELETE FROM wf_instance").Error)
 	return query.Use(db)
 }
