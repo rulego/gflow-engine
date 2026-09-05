@@ -483,3 +483,59 @@ func TestActivateDraftInternal_ReportsDraftStartOnlyOnce(t *testing.T) {
 		t.Fatal("second activation must not report a draft start (would double-drive the engine)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// DeleteProcessInstance：草稿硬删 / 非草稿归档（SQLite 内存库）
+// ---------------------------------------------------------------------------
+
+// 草稿未流转，删除即物理删除：运行时行删除，不落历史行
+func TestDeleteProcessInstance_DraftHardDelete(t *testing.T) {
+	engine := buildEngineForEvents(t, &recordingListener{})
+	rs := engine.GetRuntimeService()
+	db := engine.GetDB()
+
+	require.NoError(t, db.Create(&model.WfInstance{
+		ID: "inst-del-draft", ProcessID: "proc-test", Name: "draft",
+		Status: string(enums.InstanceStatusDraft), TenantID: "tenant-test",
+		StartUserID: "starter", CreatedBy: "starter", CreatedAt: time.Now(),
+	}).Error)
+
+	count := func(table, where string, args ...interface{}) int64 {
+		var n int64
+		require.NoError(t, db.Table(table).Where(where, args...).Count(&n).Error)
+		return n
+	}
+
+	actor := *newUserIdentity("starter")
+	ctx := SetUserToCtx(context.Background(), newUserIdentity("starter"))
+	require.NoError(t, rs.DeleteProcessInstance(ctx, actor, "inst-del-draft", "用户手动删除"))
+
+	require.Equal(t, int64(0), count("wf_instance", "id = ?", "inst-del-draft"))
+	require.Equal(t, int64(0), count("wf_hi_instance", "id = ?", "inst-del-draft"))
+}
+
+// 非草稿删除维持归档语义：运行时行删除，历史行 status=deleted，任务归档后删除
+func TestDeleteProcessInstance_ActiveArchivesAsDeleted(t *testing.T) {
+	engine := buildEngineForEvents(t, &recordingListener{})
+	rs := engine.GetRuntimeService()
+	db := engine.GetDB()
+
+	seedInstance(t, engine, "inst-del-act", "starter")
+	seedActiveTask(t, engine, "inst-del-act", "userTask1", "alice")
+
+	count := func(table, where string, args ...interface{}) int64 {
+		var n int64
+		require.NoError(t, db.Table(table).Where(where, args...).Count(&n).Error)
+		return n
+	}
+
+	actor := *newUserIdentity("starter")
+	ctx := SetUserToCtx(context.Background(), newUserIdentity("starter"))
+	require.NoError(t, rs.DeleteProcessInstance(ctx, actor, "inst-del-act", "用户手动删除"))
+
+	require.Equal(t, int64(0), count("wf_instance", "id = ?", "inst-del-act"))
+	require.Equal(t, int64(1), count("wf_hi_instance", "id = ? AND status = ? AND end_reason = ?",
+		"inst-del-act", string(enums.InstanceStatusDeleted), "用户手动删除"))
+	require.Equal(t, int64(1), count("wf_hi_task", "process_instance_id = ?", "inst-del-act"))
+	require.Equal(t, int64(0), count("wf_task", "process_instance_id = ?", "inst-del-act"))
+}

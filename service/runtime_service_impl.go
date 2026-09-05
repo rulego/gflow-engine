@@ -306,7 +306,17 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 			return err
 		}
 
-		// 2. 终止活跃任务并归档所有任务到历史表
+		// 2. 草稿未进入流转，无历史可归档，直接物理删除
+		if instance.Status == string(enums.InstanceStatusDraft) {
+			if _, err := tx.WfInstance.WithContext(ctx).Where(tx.WfInstance.ID.Eq(processInstanceID)).Delete(); err != nil {
+				return fmt.Errorf("failed to delete draft instance: %w", err)
+			}
+			// 草稿创建可能已装载租户池，best-effort 驱逐
+			s.evictStaleChain(ctx, tx, instance.TenantID, instance.ProcessID)
+			return nil
+		}
+
+		// 3. 终止活跃任务并归档所有任务到历史表
 		tasks, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ProcessInstanceID.Eq(processInstanceID)).Find()
 		if err != nil {
 			return fmt.Errorf("failed to get tasks for archiving: %w", err)
@@ -331,7 +341,7 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 			}
 		}
 
-		// 3. 归档实例到历史表
+		// 4. 归档实例到历史表
 		now := time.Now()
 		hiInstance := &model.WfHiInstance{
 			ID:              instance.ID,
@@ -357,7 +367,7 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 			return fmt.Errorf("failed to archive instance to history: %w", err)
 		}
 
-		// 4. 清理候选池 wf_task_assignee（避免孤儿，参照 TaskDAO.DeleteByProcessInstanceID）
+		// 5. 清理候选池 wf_task_assignee（避免孤儿，参照 TaskDAO.DeleteByProcessInstanceID）
 		taskIDs := make([]string, 0, len(tasks))
 		for _, t := range tasks {
 			taskIDs = append(taskIDs, t.ID)
@@ -368,12 +378,12 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 			}
 		}
 
-		// 5. 删除原始任务记录
+		// 6. 删除原始任务记录
 		if _, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ProcessInstanceID.Eq(processInstanceID)).Delete(); err != nil {
 			return fmt.Errorf("failed to delete tasks: %w", err)
 		}
 
-		// 6. 删除原始实例记录
+		// 7. 删除原始实例记录
 		if _, err := tx.WfInstance.WithContext(ctx).Where(tx.WfInstance.ID.Eq(processInstanceID)).Delete(); err != nil {
 			return fmt.Errorf("failed to delete instance: %w", err)
 		}
