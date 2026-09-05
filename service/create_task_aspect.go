@@ -256,8 +256,14 @@ func (aspect *TaskCreator) handleProcessInstanceFailure(ctx types.RuleContext, m
 		reason = err.Error()
 	}
 
-	// 终止流程实例
-	if terminateErr := aspect.instanceDAO.TerminateInstance(ctx.GetContext(), instanceId, reason); terminateErr != nil {
+	// 走完整终止链路（级联终止任务+归档+事件）：只改实例状态会把活跃任务留在
+	// 候选人待办里（后续操作全被实例终态守卫拒绝），实例行也不归档
+	internalCtx := WithInternalCallingMode(ctx.GetContext())
+	actor := ActorFromCtx(internalCtx)
+	if actor.TenantID == "" {
+		actor.TenantID = msg.GetMetadata().GetValue(constants.KeyTenantID)
+	}
+	if terminateErr := aspect.workflowEngine.GetRuntimeService().TerminateProcessInstance(internalCtx, actor, instanceId, reason); terminateErr != nil {
 		logrus.WithError(terminateErr).Errorf("Failed to terminate process instance: %s", instanceId)
 	} else {
 		logrus.Infof("Process instance terminated due to failure: %s, reason: %s", instanceId, reason)

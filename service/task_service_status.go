@@ -166,6 +166,10 @@ func (s *TaskServiceImpl) suspendTaskInternal(ctx context.Context, scope *Instan
 	if task.Status == string(enums.TaskStatusSuspended) {
 		return nil
 	}
+	// 终态任务是既成事实的审批记录：挂起再激活可把已办任务翻回可操作集合，二次推进下游节点
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, cannot suspend: %w", task.Status, ErrConflict)
+	}
 	if u := GetUserFromCtx(ctx); u != nil {
 		if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != u.UserID {
 			return fmt.Errorf("task assigned to %s, current user %s: %w", *task.Assignee, u.UserID, ErrPermissionDenied)
@@ -231,6 +235,11 @@ func (s *TaskServiceImpl) activateTaskInternal(ctx context.Context, scope *Insta
 		return nil
 	}
 
+	// 激活只用于唤醒挂起任务；终态任务翻回 active 会二次推进已流转的节点
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, cannot activate: %w", task.Status, ErrConflict)
+	}
+
 	if u := GetUserFromCtx(ctx); u != nil {
 		if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != u.UserID {
 			return fmt.Errorf("task assigned to %s, current user %s: %w", *task.Assignee, u.UserID, ErrPermissionDenied)
@@ -253,4 +262,14 @@ func (s *TaskServiceImpl) activateTaskInternal(ctx context.Context, scope *Insta
 		return fmt.Errorf("failed to activate task: %w", err)
 	}
 	return nil
+}
+
+// isTerminalTaskStatus 终态任务：completed/terminated/returned/withdrawn，状态不可再变更。
+func isTerminalTaskStatus(status string) bool {
+	switch enums.TaskStatus(status) {
+	case enums.TaskStatusCompleted, enums.TaskStatusTerminated,
+		enums.TaskStatusReturned, enums.TaskStatusWithdrawn:
+		return true
+	}
+	return false
 }

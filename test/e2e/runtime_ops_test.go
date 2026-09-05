@@ -465,20 +465,22 @@ func TestE2E_SubProcess_ChildTerminated_NoFailureEdge_TerminatesParent(t *testin
 	require.NoError(t, env.engine.GetRuntimeService().TerminateProcessInstance(
 		env.userCtx("admin"), adminActor(), childID, "子流程被运营终止"))
 
-	// 无 Failure 分支兜底：父实例被终止（aspect 失败处理直改 wf_instance，不走归档事务），
-	// end_reason 携带子流程终止原因供排障。
+	// 无 Failure 分支兜底：父实例走完整终止链路（终止活跃任务+归档），运行时表
+	// 不再保留该行，end_reason 携带子流程终止原因供排障。
+	var hiStatus, hiReason string
 	require.Eventually(t, func() bool {
 		var row struct {
 			Status string
 			Reason string
 		}
 		if err := env.db.Raw(
-			"SELECT status AS status, IFNULL(end_reason,'') AS reason FROM wf_instance WHERE id = ?",
+			"SELECT status AS status, IFNULL(end_reason,'') AS reason FROM wf_hi_instance WHERE id = ?",
 			parentID).Scan(&row).Error; err != nil {
 			return false
 		}
+		hiStatus, hiReason = row.Status, row.Reason
 		return row.Status == string(enums.InstanceStatusTerminated) && row.Reason != ""
 	}, 5*time.Second, 50*time.Millisecond,
-		"parent without Failure edge should be terminated with explanatory reason; status=%q",
-		env.instanceStatus(parentID))
+		"parent without Failure edge should be terminated with explanatory reason; status=%q reason=%q",
+		hiStatus, hiReason)
 }

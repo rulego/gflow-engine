@@ -503,10 +503,10 @@ func TestFindFirstSuspendNode_EmptyRoot(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// allRowsCompleted
+// allRowsSettled
 // ---------------------------------------------------------------------------
 
-func TestAllRowsCompleted(t *testing.T) {
+func TestAllRowsSettled(t *testing.T) {
 	completed := string(enums.ApprovalResultApproved)
 
 	cases := []struct {
@@ -530,10 +530,23 @@ func TestAllRowsCompleted(t *testing.T) {
 			{Status: string(enums.TaskStatusCompleted), EndReason: &completed},
 			{Status: string(enums.TaskStatusCompleted), EndReason: &completed},
 		}, true},
+		{"or-sign: completed plus terminated siblings", []*model.WfTask{
+			{Status: string(enums.TaskStatusCompleted), EndReason: &completed},
+			{Status: string(enums.TaskStatusTerminated)},
+			{Status: string(enums.TaskStatusTerminated)},
+		}, true},
+		{"all terminated, no completed vote", []*model.WfTask{
+			{Status: string(enums.TaskStatusTerminated)},
+			{Status: string(enums.TaskStatusTerminated)},
+		}, false},
+		{"completed plus pending sequential row", []*model.WfTask{
+			{Status: string(enums.TaskStatusCompleted), EndReason: &completed},
+			{Status: string(enums.TaskStatusPending)},
+		}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			assert.Equal(t, c.want, allRowsCompleted(c.rows))
+			assert.Equal(t, c.want, allRowsSettled(c.rows))
 		})
 	}
 }

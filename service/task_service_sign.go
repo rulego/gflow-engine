@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -113,6 +114,11 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 	// 锁内复校：任务可能在锁外廉价校验后被并发改派，按最新快照复跑操作者鉴权。
 	if err := s.authorizeSignOperatorWithDAO(ctx, taskDAO, task); err != nil {
 		return err
+	}
+
+	// 或签互斥/兄弟完成会置 Terminated 而 assignee 还在：不加拦会产出挂在已终结节点上的幽灵子任务
+	if task.Status != string(enums.TaskStatusActive) {
+		return fmt.Errorf("task is %s, can only add sign to an active task: %w", task.Status, ErrConflict)
 	}
 
 	now := time.Now()
@@ -309,7 +315,10 @@ func (s *TaskServiceImpl) reevaluateCountersignAfterReduce(ctx context.Context, 
 	rule := s.getApprovalRuleString(parentTask.ApprovalRule)
 	isCompleted, approved, err := s.checkCountersignSubTaskCompletionInternal(ctx, scope, parentTask.ID, rule)
 	if err != nil {
-		// 无剩余子任务(减到 0)：无人能审，终止实例避免永久卡死
+		// 只有真减光（ErrNoSubTasks）才终止实例；DAO/规则解析故障向上返回，不能误判成无人可审
+		if !errors.Is(err, ErrNoSubTasks) {
+			return err
+		}
 		if parentTask.ProcessInstanceID != nil && *parentTask.ProcessInstanceID != "" {
 			evt, terr := terminateProcessInstanceInTx(ctx, s.workflowEngine.GetRuntimeService(), scope.Tx(), *parentTask.ProcessInstanceID, "all approvers reduced during reduce-sign")
 			if terr != nil {

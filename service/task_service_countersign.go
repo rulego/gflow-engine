@@ -273,7 +273,7 @@ func (s *TaskServiceImpl) checkCountersignSubTaskCompletionInternal(ctx context.
 	}
 
 	if len(subTasks) == 0 {
-		return false, false, fmt.Errorf("no sub tasks found for parent task %s", parentTaskID)
+		return false, false, fmt.Errorf("%w: no sub tasks found for parent task %s", ErrNoSubTasks, parentTaskID)
 	}
 
 	// 解析审批规则
@@ -282,11 +282,20 @@ func (s *TaskServiceImpl) checkCountersignSubTaskCompletionInternal(ctx context.
 		return false, false, fmt.Errorf("%w: parse approval rule: %v", ErrCountersignRule, err)
 	}
 
+	// 被取消的子任务（Terminated）不再是有效票，从分母剔除，否则节点重新驱动时永远凑不齐阈值
+	voters := make([]*model.WfTask, 0, len(subTasks))
+	for _, st := range subTasks {
+		if st.Status == string(enums.TaskStatusTerminated) {
+			continue
+		}
+		voters = append(voters, st)
+	}
+
 	// 统计完成情况
-	totalCount := len(subTasks)
+	totalCount := len(voters)
 	completedCount := 0
 	approvedCount := 0
-	for _, subTask := range subTasks {
+	for _, subTask := range voters {
 		if subTask.Status == string(enums.TaskStatusCompleted) {
 			completedCount++
 			if subTask.EndReason != nil && *subTask.EndReason == string(enums.ApprovalResultApproved) {

@@ -50,6 +50,11 @@ var (
 	// ErrCountersignRule — countersign approval rule could not be parsed.
 	ErrCountersignRule = errors.New("invalid countersign rule")
 
+	// ErrNoSubTasks — countersign/vote parent has no sub tasks left (all
+	// reduced via reduce-sign). Callers must not treat DAO or rule-parse
+	// errors as this condition. Map to HTTP 400.
+	ErrNoSubTasks = errors.New("no sub tasks")
+
 	// ErrForceResumeActiveBranches — ForceResumeInstance called on an instance
 	// whose fork branches still have non-completed tasks. ForceResume is meant
 	// for the "last approve silently failed and the join never fired" scenario

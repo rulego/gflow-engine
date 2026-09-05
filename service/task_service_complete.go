@@ -135,6 +135,12 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 		}
 		return fmt.Errorf("%w (reason: %s), cannot complete", ErrTaskTerminated, reason)
 	}
+	// Pending 是"还没轮到"（顺序会签未激活子任务、待认领池），放行会越序审批；
+	// 仅拦 API——end/start 等系统节点任务初始即 Pending，After aspect 的内部
+	// Complete 靠它收尾归档
+	if task.Status == string(enums.TaskStatusPending) && GetCallingMode(ctx) == CallingModeAPI {
+		return fmt.Errorf("task is pending, cannot complete until it is activated or claimed: %w", ErrConflict)
+	}
 	// 检查所属实例状态：实例若处于非活跃态，需区分 API vs 内部调用
 	// - API 路径：实例 Suspended/Terminated/Cancelled/Failed 都拒绝（用户操作）
 	// - 内部路径（end-node aspect 推进 Completed 实例的尾任务）：允许，否则会卡住流程归档
@@ -365,6 +371,10 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 					}
 					parentInst := parentTask.ProcessInstanceID
 					parentKey := parentTask.TaskDefKey
+					// 父任务已定局，剩余未决子任务一并终止，否则留下幽灵待办且 fork 分支凑不齐
+					if cerr := s.cancelRemainingCountersignSubTasks(ctx, scope, parentTask.ID); cerr != nil {
+						logrus.WithError(cerr).WithField("parentTaskID", parentTask.ID).Warn("failed to cancel remaining sub-tasks after early veto")
+					}
 					scope.AfterCommit(func() error {
 						return s.workflowEngine.GetRuntimeServiceInternal().ExecuteNext(ctx, *parentInst, parentKey, vars)
 					})

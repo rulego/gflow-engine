@@ -292,7 +292,7 @@ func (s *RuntimeServiceImpl) analyzeForkResume(
 		}
 		for _, suspendNodeId := range allSuspends {
 			rows, ok := tasksByKey[suspendNodeId]
-			if !ok || len(rows) == 0 || !allRowsCompleted(rows) {
+			if !ok || len(rows) == 0 || !allRowsSettled(rows) {
 				pendingBranches = append(pendingBranches, suspendNodeId)
 			}
 		}
@@ -391,18 +391,24 @@ func (s *RuntimeServiceImpl) buildBranchResumeMsg(
 	return types.NewMsg(0, "wf_fork_resume", types.JSON, md, variablesStr)
 }
 
-// allRowsCompleted 检查一个 taskDefKey 下所有 wf_task 是否都 Completed。
-// 用于会签/顺序审批场景下判断"节点整体完成"。
-func allRowsCompleted(rows []*model.WfTask) bool {
+// allRowsSettled 判断一个 taskDefKey 的 wf_task 是否整体了结：全部行终态且至少
+// 一张 completed。或签/票签的取消票置 Terminated 但行保留，只认 completed 会让
+// fork 分支永远凑不齐、join 收不齐消息。
+func allRowsSettled(rows []*model.WfTask) bool {
 	if len(rows) == 0 {
 		return false
 	}
+	completed := 0
 	for _, r := range rows {
-		if r.Status != string(enums.TaskStatusCompleted) {
+		if r.Status == string(enums.TaskStatusCompleted) {
+			completed++
+			continue
+		}
+		if !isTerminalTaskStatus(r.Status) {
 			return false
 		}
 	}
-	return true
+	return completed > 0
 }
 
 // forkGraph is a parsed view of the rule chain definition with just enough

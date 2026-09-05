@@ -2,9 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
+	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
@@ -774,4 +778,173 @@ func TestTaskQuery_CustomPaging(t *testing.T) {
 	if q.PageRequest.GetPageSize() != 25 {
 		t.Errorf("GetPageSize() = %d, want 25", q.PageRequest.GetPageSize())
 	}
+}
+
+// ---------------------------------------------------------------------------
+// 终态/状态守卫：suspend/activate/complete/addSign 拒绝对非在办任务的状态变更，
+// 防止已办任务被"复活"后二次流转（与 complete 的 Completed/Terminated 拦截同族）
+// ---------------------------------------------------------------------------
+
+func newStatusGuardSvc(t *testing.T) *TaskServiceImpl {
+	t.Helper()
+	q := secFixDB(t)
+	return &TaskServiceImpl{
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		hiTaskDAO:      dao.NewHiTaskDAOWithQuery(q),
+		idGenerator:    NewIDGenerator(),
+		workflowEngine: &testEngineDouble{},
+	}
+}
+
+func seedTaskWithStatus(t *testing.T, svc *TaskServiceImpl, id, status, assignee string) {
+	t.Helper()
+	task := &model.WfTask{
+		ID:         id,
+		TaskDefKey: "approve",
+		Name:       "审批",
+		TaskType:   "user_task",
+		Status:     status,
+		TenantID:   "t1",
+		CreatedBy:  "system",
+		CreatedAt:  time.Now(),
+	}
+	if assignee != "" {
+		task.Assignee = secFixStrPtr(assignee)
+	}
+	require.NoError(t, svc.taskDAO.Create(context.Background(), task))
+}
+
+func statusGuardActor() Actor {
+	return Actor{UserID: "userA", UserName: "A", TenantID: "t1"}
+}
+
+func TestSuspendTask_RejectsTerminalStatus(t *testing.T) {
+	svc := newStatusGuardSvc(t)
+	actor := statusGuardActor()
+	for _, status := range []string{
+		string(enums.TaskStatusCompleted),
+		string(enums.TaskStatusTerminated),
+		string(enums.TaskStatusReturned),
+		string(enums.TaskStatusWithdrawn),
+	} {
+		id := "task-susp-" + status
+		seedTaskWithStatus(t, svc, id, status, actor.UserID)
+		err := svc.SuspendTask(SetUserToCtx(context.Background(), &actor), actor, id)
+		require.Error(t, err, "终态 %s 任务不应允许挂起", status)
+		require.True(t, errors.Is(err, ErrConflict), "%s: 期望 ErrConflict，got %v", status, err)
+	}
+}
+
+func TestActivateTask_RejectsTerminalStatus(t *testing.T) {
+	svc := newStatusGuardSvc(t)
+	actor := statusGuardActor()
+	for _, status := range []string{
+		string(enums.TaskStatusCompleted),
+		string(enums.TaskStatusTerminated),
+		string(enums.TaskStatusReturned),
+		string(enums.TaskStatusWithdrawn),
+	} {
+		id := "task-act-" + status
+		seedTaskWithStatus(t, svc, id, status, actor.UserID)
+		err := svc.ActivateTask(SetUserToCtx(context.Background(), &actor), actor, id)
+		require.Error(t, err, "终态 %s 任务不应允许激活", status)
+		require.True(t, errors.Is(err, ErrConflict), "%s: 期望 ErrConflict，got %v", status, err)
+	}
+}
+
+func TestSuspendActivateTask_SuspendedRoundtrip(t *testing.T) {
+	svc := newStatusGuardSvc(t)
+	actor := statusGuardActor()
+	ctx := SetUserToCtx(context.Background(), &actor)
+	seedTaskWithStatus(t, svc, "task-roundtrip", string(enums.TaskStatusActive), actor.UserID)
+	require.NoError(t, svc.SuspendTask(ctx, actor, "task-roundtrip"))
+	require.NoError(t, svc.ActivateTask(ctx, actor, "task-roundtrip"))
+	task, err := svc.taskDAO.Get(ctx, "task-roundtrip")
+	require.NoError(t, err)
+	require.Equal(t, string(enums.TaskStatusActive), task.Status)
+}
+
+func TestCompleteWithApproval_RejectsPendingTask(t *testing.T) {
+	svc := newStatusGuardSvc(t)
+	actor := statusGuardActor()
+	seedTaskWithStatus(t, svc, "task-seq-pending", string(enums.TaskStatusPending), actor.UserID)
+	err := svc.CompleteWithApproval(SetUserToCtx(context.Background(), &actor), actor, &ApprovalRequest{
+		TaskID:         "task-seq-pending",
+		ApprovalResult: enums.ApprovalResultApproved,
+	})
+	require.Error(t, err, "Pending（顺序会签未激活/待认领）任务不应允许直接完成")
+	require.True(t, errors.Is(err, ErrConflict), "期望 ErrConflict，got %v", err)
+}
+
+func TestAddSign_RejectsNonActiveTask(t *testing.T) {
+	svc := newStatusGuardSvc(t)
+	actor := statusGuardActor()
+	for _, status := range []string{string(enums.TaskStatusTerminated), string(enums.TaskStatusSuspended)} {
+		id := "task-addsign-" + status
+		seedTaskWithStatus(t, svc, id, status, actor.UserID)
+		err := svc.AddSign(SetUserToCtx(context.Background(), &actor), actor, id, []string{"userB"}, "加签")
+		require.Error(t, err, "%s 任务不应允许加签", status)
+		require.True(t, errors.Is(err, ErrConflict), "%s: 期望 ErrConflict，got %v", status, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 会签完成判定的错误语义：子任务减光=ErrNoSubTasks（可触发实例终止兜底），
+// 规则损坏/DAO 故障必须向上传播，不得误判成"减到 0 人"终止实例
+// ---------------------------------------------------------------------------
+
+func seedCountersignChild(t *testing.T, svc *TaskServiceImpl, parentID, id, assignee string) {
+	t.Helper()
+	task := &model.WfTask{
+		ID:         id,
+		ParentID:   secFixStrPtr(parentID),
+		TaskDefKey: "approve",
+		Name:       "会签",
+		TaskType:   "user_task",
+		Status:     string(enums.TaskStatusActive),
+		Assignee:   secFixStrPtr(assignee),
+		TenantID:   "t1",
+		CreatedBy:  "system",
+		CreatedAt:  time.Now(),
+	}
+	require.NoError(t, svc.taskDAO.Create(context.Background(), task))
+}
+
+func TestCheckCountersignCompletion_ErrorSemantics(t *testing.T) {
+	svc := newStatusGuardSvc(t)
+	ctx := context.Background()
+
+	_, _, err := svc.CheckCountersignSubTaskCompletion(ctx, "cs-none", `{"type":"all"}`)
+	require.True(t, errors.Is(err, ErrNoSubTasks), "无子任务应返回 ErrNoSubTasks，got %v", err)
+
+	seedCountersignChild(t, svc, "cs-bad-rule", "cs-bad-rule-c1", "userA")
+	_, _, err = svc.CheckCountersignSubTaskCompletion(ctx, "cs-bad-rule", `{invalid`)
+	require.True(t, errors.Is(err, ErrCountersignRule), "规则损坏应返回 ErrCountersignRule，got %v", err)
+
+	_, _, err = svc.CheckCountersignSubTaskCompletion(ctx, "cs-bad-rule", "")
+	require.NoError(t, err, "空规则按默认 all 判定，不应报错")
+}
+
+func TestReduceSign_RuleErrorPropagates(t *testing.T) {
+	svc := newStatusGuardSvc(t)
+	parent := &model.WfTask{
+		ID:           "cs-rp",
+		TaskDefKey:   "approve",
+		Name:         "会签",
+		TaskType:     "user_task",
+		Status:       string(enums.TaskStatusActive),
+		ApprovalType: string(enums.ApprovalTypeCountersign),
+		ApprovalRule: secFixStrPtr(`{invalid`),
+		TenantID:     "t1",
+		CreatedBy:    "system",
+		CreatedAt:    time.Now(),
+	}
+	require.NoError(t, svc.taskDAO.Create(context.Background(), parent))
+	seedCountersignChild(t, svc, "cs-rp", "cs-rp-c1", "userA")
+	seedCountersignChild(t, svc, "cs-rp", "cs-rp-c2", "userB")
+
+	actor := statusGuardActor()
+	err := svc.ReduceSign(SetUserToCtx(context.Background(), &actor), actor, "cs-rp", []string{"userB"}, "减签")
+	require.Error(t, err, "规则损坏时减签应报错，而不是误判'减到 0 人'静默通过")
+	require.True(t, errors.Is(err, ErrCountersignRule), "期望 ErrCountersignRule，got %v", err)
 }
