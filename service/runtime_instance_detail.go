@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/rulego/gflow-engine/types/constants"
@@ -65,9 +66,28 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		return nil, fmt.Errorf("current user %s has no view permission on instance %s: %w", currentUserId, processInstanceID, ErrPermissionDenied)
 	}
 	var approvalList []dto.ExecutionInfo
-	for _, task := range tasks {
+	// 回退/撤回会把 returned/terminated 任务归档进历史表并从运行时表删除，
+	// 活态实例只读运行时表就看不到这些痕迹，故并入历史条目（visibilityTasks
+	// 已是两表全集），再按创建时间排序还原节点先后。
+	timelineTasks := tasks
+	if !taskQuery.QueryHistory {
+		seen := make(map[string]bool, len(visibilityTasks))
+		for _, t := range tasks {
+			seen[t.ID] = true
+		}
+		for _, t := range visibilityTasks {
+			if !seen[t.ID] {
+				timelineTasks = append(timelineTasks, t)
+				seen[t.ID] = true
+			}
+		}
+		sort.SliceStable(timelineTasks, func(i, j int) bool {
+			return timelineTasks[i].CreatedAt.Before(timelineTasks[j].CreatedAt)
+		})
+	}
+	for _, task := range timelineTasks {
 		if task.ParentID == nil || *task.ParentID == "" {
-			approvalList = append(approvalList, Task2ExecutionInfo(task, tasks))
+			approvalList = append(approvalList, Task2ExecutionInfo(task, timelineTasks))
 		}
 	}
 

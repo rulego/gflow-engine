@@ -155,6 +155,76 @@ func TestGetProcessInstanceDetail_IDOR_RejectsNonParticipant(t *testing.T) {
 	require.Equal(t, "inst-idor", resp.InstanceID)
 }
 
+// 活态实例的时间线须包含已归档任务：回退把 returned 任务写入历史表并从运行时表删除，
+// 只读运行时表就丢了回退痕迹。同时校验并入后按创建时间排序。
+func TestGetProcessInstanceDetail_TimelineMergesArchivedReturnedTasks(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// 活态实例（回退到一级审批后的形态：实例仍在进行）
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-ret", ProcessID: "proc-1", Name: "ret_test",
+		Status: string(enums.InstanceStatusActive), StartUserID: "userA",
+		TenantID: "t1", CreatedBy: "userA", CreatedAt: now,
+	}))
+	// 运行时表：发起任务 + 回退后重建的一级审批（创建时间最晚）
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-start", ProcessInstanceID: secFixStrPtr("inst-ret"), TaskDefKey: "start",
+		Name: "发起人", TaskType: "startTask", Status: string(enums.TaskStatusCompleted),
+		Assignee: secFixStrPtr("userA"), ApprovalType: string(enums.ApprovalTypeSingle),
+		TenantID: "t1", CreatedBy: "userA", CreatedAt: now.Add(-3 * time.Minute),
+	}))
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-l1-new", ProcessInstanceID: secFixStrPtr("inst-ret"), TaskDefKey: "node_l1",
+		Name: "一级审批", TaskType: "user_task", Status: string(enums.TaskStatusActive),
+		Assignee: secFixStrPtr("userZ"), ApprovalType: string(enums.ApprovalTypeSingle),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+	}))
+	// 历史表：回退前已办结的一级审批 + 被回退的二级审批
+	require.NoError(t, q.WfHiTask.Create(&model.WfHiTask{
+		ID: "task-l1-old", ProcessInstanceID: secFixStrPtr("inst-ret"), TaskDefKey: secFixStrPtr("node_l1"),
+		Name: "一级审批", TaskType: "user_task", Status: string(enums.TaskStatusCompleted),
+		Assignee: secFixStrPtr("userZ"), ApprovalType: string(enums.ApprovalTypeSingle),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now.Add(-2 * time.Minute),
+	}))
+	require.NoError(t, q.WfHiTask.Create(&model.WfHiTask{
+		ID: "task-l2-returned", ProcessInstanceID: secFixStrPtr("inst-ret"), TaskDefKey: secFixStrPtr("node_l2"),
+		Name: "二级审批", TaskType: "user_task", Status: string(enums.TaskStatusReturned),
+		Assignee: secFixStrPtr("userL"), ApprovalType: string(enums.ApprovalTypeSingle),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now.Add(-1 * time.Minute),
+	}))
+
+	taskSvc := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), hiTaskDAO: dao.NewHiTaskDAOWithQuery(q)}
+	engine := &secFixEngine{taskSvc: taskSvc}
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: engine,
+	}
+	engine.runtimeSvc = rs
+
+	starterCtx := SetUserToCtx(ctx, &Actor{UserID: "userA", TenantID: "t1", UserName: "A"})
+	resp, err := rs.GetProcessInstanceDetail(starterCtx, Actor{UserID: "userA", TenantID: "t1"}, "inst-ret")
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// 发起人已提交 → 一级审批已通过 → 二级审批已退回 → 一级审批重新进行中
+	ids := make([]string, 0, len(resp.Executions))
+	for _, e := range resp.Executions {
+		ids = append(ids, e.TaskID)
+	}
+	require.Len(t, resp.Executions, 4, "时间线应含已归档条目，实际: %v", ids)
+	require.Equal(t, []string{"task-start", "task-l1-old", "task-l2-returned", "task-l1-new"}, ids,
+		"回退痕迹不得落在重建任务之后")
+	for _, e := range resp.Executions {
+		if e.TaskID == "task-l2-returned" {
+			require.Equal(t, string(enums.TaskStatusReturned), e.Status, "回退条目状态应为 returned")
+		}
+	}
+}
+
 // 候选池成员的详情可见性：待签收任务的候选成员（department/role 展开后）可读
 // 实例详情，池外用户拒绝；他人签收后剩余成员失去候选可见性。
 func TestGetProcessInstanceDetail_CandidateVisibility(t *testing.T) {
