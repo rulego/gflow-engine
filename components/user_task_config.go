@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rulego/gflow-engine/service"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/rulego/utils/el"
 	"github.com/rulego/rulego/utils/maps"
@@ -183,17 +184,27 @@ func (c *UserTaskNodeConfiguration) Validate() []string {
 }
 
 // validateUserTaskNodeConfig 供部署期校验入口调用的 map 形态包装。
-// nodeIDs 为链内全部节点 ID 集，用于 reject.target 等跨节点引用校验（nil 跳过该类检查）。
-func validateUserTaskNodeConfig(cfg map[string]interface{}, nodeIDs map[string]struct{}) []string {
+// nodeID 与 graph 用于 reject.target 等跨节点引用校验（graph 为 nil 时仅做本节点校验）。
+func validateUserTaskNodeConfig(cfg map[string]interface{}, nodeID string, graph *service.ChainGraph) []string {
 	var c UserTaskNodeConfiguration
 	if err := maps.Map2Struct(cfg, &c); err != nil {
 		return []string{"configuration parse: " + err.Error()}
 	}
 	c.Normalize()
 	issues := c.Validate()
-	if c.Reject.Strategy == RejectStrategyToNode && strings.TrimSpace(c.Reject.Target) != "" && nodeIDs != nil {
-		if _, ok := nodeIDs[strings.TrimSpace(c.Reject.Target)]; !ok {
-			issues = append(issues, fmt.Sprintf("reject.target %q not found in chain nodes", c.Reject.Target))
+	if c.Reject.Strategy == RejectStrategyToNode {
+		if target := strings.TrimSpace(c.Reject.Target); target != "" && graph != nil {
+			if !graph.HasNode(target) {
+				issues = append(issues, fmt.Sprintf("reject.target %q not found in chain nodes", c.Reject.Target))
+			} else if !graph.UpstreamReachable(nodeID, target) {
+				// 回退目标必须是已走过的上游节点：指向下游会跳过未审节点，
+				// 指向并行分支则与本节点没有先后关系。
+				issues = append(issues, fmt.Sprintf("reject.target %q is not an upstream node of %q; rollback target must be a passed node", target, nodeID))
+			} else if graph.RollbackRegionForked(target, nodeID) {
+				// 回退路径穿过 fork 时各分支会被重复派发任务，穿过 join 时
+				// 兄弟分支的消息不再到来、汇合点永久等待。
+				issues = append(issues, fmt.Sprintf("rollback path from %q to %q crosses fork/join; cross-branch rollback is not supported", target, nodeID))
+			}
 		}
 	}
 	return issues

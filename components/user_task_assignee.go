@@ -22,6 +22,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/rulego/gflow-engine/service"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/rulego/api/types"
 )
@@ -184,8 +186,7 @@ func (n *UserTaskNode) handleSelfApproval(ctx context.Context, tenantID, owner s
 		}
 		return filteredAssignees
 	case enums.SelfApprovalTypeAutoApprove:
-		// 当前实现保留发起人，不产生自动通过标记。
-		// 依赖"发起人自动通过"语义的场景请勿使用该选项。
+		// 名单保持原样：发起人照常建任务，自动通过由创建侧 autoApproveOwnerTasks 执行。
 		return assignees
 	case enums.SelfApprovalTypeDelegateToManager:
 		if managerID := n.getDelegateManager(ctx, tenantID, owner, variables); managerID != "" {
@@ -261,4 +262,44 @@ func (n *UserTaskNode) getDelegateManager(ctx context.Context, tenantID, userID 
 	}
 
 	return ""
+}
+
+// autoApproveOwnerTasks 发起人自动通过：selfApproval=autoApprove 时把受理人为
+// 发起人的任务立即按通过完成，归档与会签阈值判定复用用户审批管道。候选池认领型
+// 任务（assignee 为空）不命中，认领后正常审批；完成失败时任务保持 active，退化为手动审批。
+// 必须在任务创建锁外调用：完成动作经 AfterCommit→ExecuteNext 重入本节点重新拿锁。
+func (n *UserTaskNode) autoApproveOwnerTasks(ctx types.RuleContext, msg types.RuleMsg, processInstanceID string) {
+	if enums.SelfApprovalType(n.Config.SelfApproval) != enums.SelfApprovalTypeAutoApprove {
+		return
+	}
+	if n.TaskService == nil {
+		return
+	}
+	owner := metaValue(msg, constants.KeyOwner)
+	if owner == "" {
+		return
+	}
+	tasks, err := n.getExistingTasks(ctx.GetContext(), processInstanceID)
+	if err != nil {
+		logrus.WithError(err).Warnf("auto approve: query tasks of node %s failed, skip", n.GetSelfId())
+		return
+	}
+	for _, t := range tasks {
+		if t.Status != string(enums.TaskStatusActive) || t.Assignee == nil || *t.Assignee != owner {
+			continue
+		}
+		req := &service.ApprovalRequest{
+			TaskID:         t.ID,
+			ApprovalResult: enums.ApprovalResultApproved,
+			Comment:        "发起人自动通过（selfApproval=autoApprove）",
+			Variables:      map[string]interface{}{},
+		}
+		if err := n.TaskService.CompleteWithApproval(service.WithInternalCallingMode(ctx.GetContext()), service.SystemActor(), req); err != nil {
+			logrus.WithError(err).WithField("taskId", t.ID).
+				Warn("auto approve initiator task failed; task left active for manual approval")
+		} else {
+			logrus.WithFields(logrus.Fields{"taskId": t.ID, "node": n.GetSelfId(), "owner": owner}).
+				Info("initiator task auto approved (selfApproval=autoApprove)")
+		}
+	}
 }

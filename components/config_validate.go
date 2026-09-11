@@ -21,18 +21,20 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/rulego/gflow-engine/service"
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/rulego/utils/el"
 	"github.com/rulego/rulego/utils/maps"
 )
 
 // ValidateNodeConfiguration 按节点类型校验 configuration，返回问题列表（空=通过）。
-// nodeIDs 为链内全部节点 ID 集，供跨节点引用校验（如 reject.target 存在性）。
+// nodeID 为当前节点 ID，graph 为链级拓扑，供跨节点引用校验（reject.target 的
+// 存在性、是否上游节点、回退路径是否跨并行分支）。
 // 供部署期校验入口（service.ValidateChainConfigurations）调用，把配置错误拦在写入前。
-func ValidateNodeConfiguration(nodeType string, cfg map[string]interface{}, nodeIDs map[string]struct{}) []string {
+func ValidateNodeConfiguration(nodeType, nodeID string, cfg map[string]interface{}, graph *service.ChainGraph) []string {
 	switch nodeType {
 	case constants.NodeTypeUserTask:
-		return validateUserTaskNodeConfig(cfg, nodeIDs)
+		return validateUserTaskNodeConfig(cfg, nodeID, graph)
 	case CCTaskNodeType:
 		return validateCCTaskConfig(cfg)
 	case AIAgentNodeType:

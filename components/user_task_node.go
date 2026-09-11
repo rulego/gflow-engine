@@ -215,6 +215,10 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 
 	// 如果没有任务，说明刚创建了新任务
 	if created {
+		// 发起人自动通过：命中发起人的任务立即按通过完成。必须在创建锁释放后
+		// 调用——完成动作经 AfterCommit→ExecuteNext 重入本节点重新拿锁，
+		// taskOpMutex 非重入，锁内调用会死锁。
+		n.autoApproveOwnerTasks(ctx, msg, processInstanceID)
 		// 任务创建后，流程暂停等待用户操作，调用DoOnEnd结束当前节点执行
 		logrus.Debugf("User tasks created for node %s, waiting for completion", n.GetSelfId())
 		ctx.DoOnEnd(msg, nil, "")
