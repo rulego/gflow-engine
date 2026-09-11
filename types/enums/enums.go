@@ -166,11 +166,6 @@ const (
 	CountersignTypePercent CountersignType = "percent"
 	// CountersignTypeCount 按数量同意（自定义数量）
 	CountersignTypeCount CountersignType = "count"
-
-	// CountersignTypeSequential 顺序会签
-	CountersignTypeSequential CountersignType = "sequential"
-	// CountersignTypeParallel 并行会签
-	CountersignTypeParallel CountersignType = "parallel"
 )
 
 // AssigneeType 任务分配类型枚举
@@ -198,13 +193,13 @@ const (
 	// CandidateTypeRole 指定角色
 	CandidateTypeRole CandidateType = "role"
 	// CandidateTypeDirectManager 直接上级
-	CandidateTypeDirectManager CandidateType = "direct_manager"
+	CandidateTypeDirectManager CandidateType = "manager"
 	// CandidateTypeInitiatorSelect 发起人自选
-	CandidateTypeInitiatorSelect CandidateType = "initiator_select"
+	CandidateTypeInitiatorSelect CandidateType = "initiatorSelect"
 	// CandidateTypeInitiatorSelf 发起人自己
-	CandidateTypeInitiatorSelf CandidateType = "initiator_self"
+	CandidateTypeInitiatorSelf CandidateType = "initiatorSelf"
 	// CandidateTypeMultiLevelManager 多级上级
-	CandidateTypeMultiLevelManager CandidateType = "multi_level_manager"
+	CandidateTypeMultiLevelManager CandidateType = "multiLevelManager"
 	// CandidateTypeDept 指定部门（解析部门成员为候选组）
 	CandidateTypeDept CandidateType = "dept"
 )
@@ -284,16 +279,35 @@ const (
 type ApprovalType string
 
 const (
-	ApprovalTypeSingle      ApprovalType = "single"      // single   单人审批
-	ApprovalTypeOr          ApprovalType = "or"          // or       或签（多名审批人，满足任一通过即可）
-	ApprovalTypeSequential  ApprovalType = "sequential"  // sequential 按顺序依次审批
-	ApprovalTypeVote        ApprovalType = "vote"        // vote     票签（按阈值规则判定通过比例，规则见 dto.CountersignRule）
-	ApprovalTypeCountersign ApprovalType = "countersign" // countersign 会签（全员通过）
+	ApprovalTypeSingle      ApprovalType = "single"     // single     单人审批
+	ApprovalTypeAny         ApprovalType = "any"        // any        或签（多名审批人，任一通过即可）
+	ApprovalTypeSequential  ApprovalType = "sequential" // sequential 顺序审批（按顺序依次审批）
+	ApprovalTypeVote        ApprovalType = "vote"       // vote       票签（按 voteRule 阈值判定）
+	ApprovalTypeCountersign ApprovalType = "all"        // all        会签（全员通过）
 	// ApprovalTypeSystem 引擎内部使用（系统自动任务）；userTask 节点不接受该配置值。
 	ApprovalTypeSystem ApprovalType = "system"
 	// ApprovalTypeCC 引擎内部使用（抄送任务）；userTask 节点不接受该配置值。
 	ApprovalTypeCC ApprovalType = "cc"
 )
+
+// IsValidApprovalType 验证审批类型是否有效（含引擎内部使用的 system/cc）
+func IsValidApprovalType(aType ApprovalType) bool {
+	switch aType {
+	case ApprovalTypeSingle, ApprovalTypeAny, ApprovalTypeSequential, ApprovalTypeVote,
+		ApprovalTypeCountersign, ApprovalTypeSystem, ApprovalTypeCC:
+		return true
+	}
+	return false
+}
+
+// IsValidUserTaskApprovalType 验证 userTask 节点可配置的审批类型（不含引擎内部使用的 system/cc）
+func IsValidUserTaskApprovalType(aType ApprovalType) bool {
+	switch aType {
+	case ApprovalTypeSingle, ApprovalTypeAny, ApprovalTypeSequential, ApprovalTypeVote, ApprovalTypeCountersign:
+		return true
+	}
+	return false
+}
 
 // 枚举验证函数
 
@@ -456,15 +470,12 @@ func IsNegativeApprovalResult(result ApprovalResult) bool {
 
 // GetAllCountersignTypes 获取所有会签类型
 func GetAllCountersignTypes() []CountersignType {
-	// 会签规则阈值类型（all/any/majority/percent/count）与执行方式（sequential/parallel）同属一集
 	return []CountersignType{
 		CountersignTypeAll,
 		CountersignTypeAny,
 		CountersignTypeMajority,
 		CountersignTypePercent,
 		CountersignTypeCount,
-		CountersignTypeSequential,
-		CountersignTypeParallel,
 	}
 }
 
@@ -566,27 +577,27 @@ func IsValidNotificationType(nType NotificationType) bool {
 type SelfApprovalType string
 
 const (
+	// SelfApprovalTypeNone 不做自审过滤（缺省）
+	SelfApprovalTypeNone SelfApprovalType = "none"
 	// SelfApprovalTypeSkip 跳过自审，移除发起人
 	SelfApprovalTypeSkip SelfApprovalType = "skip"
-	// SelfApprovalTypeAutoApprove 名为自动通过，但当前实现与 allow 一致：
-	// 仅保留发起人为审批人，不会产生任何自动通过标记。依赖自动通过语义的场景请勿使用。
-	SelfApprovalTypeAutoApprove SelfApprovalType = "auto_approve"
-	// SelfApprovalTypeDelegateToManager 委托给上级主管
-	SelfApprovalTypeDelegateToManager SelfApprovalType = "delegate_to_manager"
-	// SelfApprovalTypeDelegateToDepartmentManager 委托给部门负责人
-	SelfApprovalTypeDelegateToDepartmentManager SelfApprovalType = "delegate_to_department_manager"
-	// SelfApprovalTypeAllow 默认允许自审
-	SelfApprovalTypeAllow SelfApprovalType = "allow"
+	// SelfApprovalTypeAutoApprove 名为自动通过，当前实现仅保留发起人为审批人，
+	// 不产生自动通过标记。依赖自动通过语义的场景请勿使用。
+	SelfApprovalTypeAutoApprove SelfApprovalType = "autoApprove"
+	// SelfApprovalTypeDelegateToManager 委托给直接上级
+	SelfApprovalTypeDelegateToManager SelfApprovalType = "delegateToManager"
+	// SelfApprovalTypeDelegateToDeptManager 委托给部门负责人
+	SelfApprovalTypeDelegateToDeptManager SelfApprovalType = "delegateToDeptManager"
 )
 
 // GetAllSelfApprovalTypes 获取所有自审配置类型
 func GetAllSelfApprovalTypes() []SelfApprovalType {
 	return []SelfApprovalType{
+		SelfApprovalTypeNone,
 		SelfApprovalTypeSkip,
 		SelfApprovalTypeAutoApprove,
 		SelfApprovalTypeDelegateToManager,
-		SelfApprovalTypeDelegateToDepartmentManager,
-		SelfApprovalTypeAllow,
+		SelfApprovalTypeDelegateToDeptManager,
 	}
 }
 

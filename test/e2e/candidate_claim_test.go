@@ -29,10 +29,14 @@ func seedClaimIdentity(t *testing.T, e *e2eTestEnv) {
 	identity.AddMockRoleUsers("role-finance", []string{"carol"})
 }
 
-// deployCandidateProcess 部署单节点候选审批流程，candidateType 为 dept/role，
-// candidateConfig 键分别为 departmentIds/roleIds。
-func (e *e2eTestEnv) deployCandidateProcess(processKey, name, candidateType, configKey string, entityIDs []string) {
+// deployCandidateProcess 部署单节点候选审批流程，approverType 为 dept/role，
+// 成员名单字段分别为 deptIds/roleIds。
+func (e *e2eTestEnv) deployCandidateProcess(processKey, name, approverType string, entityIDs []string) {
 	e.t.Helper()
+	fieldKey := "deptIds"
+	if approverType == "role" {
+		fieldKey = "roleIds"
+	}
 	def := map[string]interface{}{
 		"ruleChain": map[string]interface{}{
 			"id":   processKey,
@@ -47,11 +51,11 @@ func (e *e2eTestEnv) deployCandidateProcess(processKey, name, candidateType, con
 					"type": "userTask",
 					"name": name,
 					"configuration": map[string]interface{}{
-						"candidateType": candidateType,
-						"candidateConfig": map[string]interface{}{
-							configKey: entityIDs,
+						"approver": map[string]interface{}{
+							"type":   approverType,
+							fieldKey: entityIDs,
 						},
-						"approvalType": "single",
+						"approveMode": "single",
 					},
 				},
 				{"id": "end", "type": "end", "name": "End"},
@@ -173,7 +177,7 @@ func TestClaimThread_DeptCandidate(t *testing.T) {
 	e := newE2EEnv(t)
 	seedClaimIdentity(t, e)
 
-	e.deployCandidateProcess("claim-dept-flow", "部门候选审批", "dept", "departmentIds", []string{"dept-tech"})
+	e.deployCandidateProcess("claim-dept-flow", "部门候选审批", "dept", []string{"dept-tech"})
 	instID := e.startClaimInstance("claim-dept-flow", "eve")
 
 	// 签收前：部门成员待办可见，池外用户不可见
@@ -220,7 +224,7 @@ func TestClaimThread_RoleCandidate(t *testing.T) {
 	e := newE2EEnv(t)
 	seedClaimIdentity(t, e)
 
-	e.deployCandidateProcess("claim-role-flow", "角色候选审批", "role", "roleIds", []string{"role-finance"})
+	e.deployCandidateProcess("claim-role-flow", "角色候选审批", "role", []string{"role-finance"})
 	instID := e.startClaimInstance("claim-role-flow", "eve")
 
 	// 角色成员与部门成员同规则：可见、可签收、池外不可见
@@ -244,7 +248,7 @@ func TestClaimMixedPool_PersonAndDept(t *testing.T) {
 	e := newE2EEnv(t)
 	seedClaimIdentity(t, e)
 
-	e.deployCandidateProcess("claim-mixed-flow", "混合候选审批", "dept", "departmentIds", []string{"dept-tech"})
+	e.deployCandidateProcess("claim-mixed-flow", "混合候选审批", "dept", []string{"dept-tech"})
 	instID := e.startClaimInstance("claim-mixed-flow", "eve")
 	taskID := e.pendingClaimTaskID(instID)
 
@@ -268,7 +272,7 @@ func TestClaimUnclaim_ReturnToPool(t *testing.T) {
 	e := newE2EEnv(t)
 	seedClaimIdentity(t, e)
 
-	e.deployCandidateProcess("claim-unclaim-flow", "签收回退审批", "dept", "departmentIds", []string{"dept-tech"})
+	e.deployCandidateProcess("claim-unclaim-flow", "签收回退审批", "dept", []string{"dept-tech"})
 	instID := e.startClaimInstance("claim-unclaim-flow", "eve")
 	taskID := e.pendingClaimTaskID(instID)
 
@@ -299,7 +303,7 @@ func TestClaimStatistics_TodoCount(t *testing.T) {
 
 	require.Equal(t, int64(0), e.todoCount("alice"))
 
-	e.deployCandidateProcess("claim-stat-flow", "统计口径审批", "dept", "departmentIds", []string{"dept-tech"})
+	e.deployCandidateProcess("claim-stat-flow", "统计口径审批", "dept", []string{"dept-tech"})
 	instID := e.startClaimInstance("claim-stat-flow", "eve")
 
 	require.Equal(t, int64(1), e.todoCount("alice"), "未签收候选任务应计入部门成员待办数")

@@ -106,6 +106,11 @@ type InstanceDetailResponse struct {
 	Executions []ExecutionInfo        `json:"executions"`
 	Variables  map[string]interface{} `json:"variables"`
 
+	// Upcoming 后续待执行审批节点预测（仅活态实例）：从活跃节点沿 Success 出边
+	// 向前遍历定义解析出的审批人名单。预测非承诺——转办/加签/条件路由都可能
+	// 改变实际走向；条件分支处截断，发起人自选节点不展开具体人员。
+	Upcoming []UpcomingNode `json:"upcoming"`
+
 	// CurrentUserActivityTask 当前操作人视角下的当前活动任务（无则为零值）
 	CurrentUserActivityTask CurrentUserActivityTask `json:"currentUserActivityTask"`
 	// ActionPermissions 节点动作权限映射：key 为动作名（如 return/addSign），
@@ -122,6 +127,20 @@ type CurrentUserActivityTask struct {
 	// Variables 任务创建时的变量快照（AI 兜底待办携带 _ai 原始输出，
 	// 供审批详情面板高亮展示；普通审批任务与实例变量基本一致）。
 	Variables map[string]interface{} `json:"variables,omitempty"`
+}
+
+// UpcomingNode 后续待执行审批节点预测
+type UpcomingNode struct {
+	NodeID   string `json:"nodeId"`
+	NodeName string `json:"nodeName"`
+	// ApproverType 审批人类型（approver.type 原值：user/role/dept/manager/
+	// initiatorSelect/initiatorSelf/multiLevelManager）
+	ApproverType string `json:"approverType"`
+	// Assignees 解析出的审批人 userId 列表；不可解析时为空（原因见 Unresolved）
+	Assignees []string `json:"assignees"`
+	// Unresolved 不可解析原因：initiatorSelect（发起人自选，发起时才确定）/
+	// identityUnavailable（身份服务未注入）/ noAssignee（解析结果为空）
+	Unresolved string `json:"unresolved,omitempty"`
 }
 
 // ExecutionInfo represents the approval history of a task.

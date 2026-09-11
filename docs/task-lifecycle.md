@@ -25,11 +25,11 @@
 ## 任务类型与审批模式
 
 - `task_type`：`userTask`（审批）、`ccTask`（抄送，创建即 `completed`，`end_reason="cc"`）等；
-- `approval_type`：`single`（单人）/ `or`（或签）/ `sequential`（顺序）/ `countersign`（会签）/ `vote`（票签），语义详见 [components.md](components.md) 的 userTask 章节。
+- `approval_type`：`single`（单人）/ `any`（或签）/ `sequential`（顺序）/ `all`（会签）/ `vote`（票签），语义详见 [components.md](components.md) 的 userTask 章节。
 
 ## 会签/票签的父子结构
 
-`countersign` / `vote` 复用同一结构：一条**主任务**（`parent_id` 为空）+ 每个审批人一条**子任务**（`parent_id` 指向主任务，`sequence_order` 记录序号）。阈值判定（`approval_rule`：all/any/majority/percent/count）在 service 层 `CheckCountersignSubTaskCompletion` 完成；达到阈值后剩余子任务被终止。
+`all` / `vote` 复用同一结构：一条**主任务**（`parent_id` 为空）+ 每个审批人一条**子任务**（`parent_id` 指向主任务，`sequence_order` 记录序号）。阈值判定（票签的 `approval_rule`：majority/percent/count）在 service 层 `CheckCountersignSubTaskCompletion` 完成；达到阈值后剩余子任务被终止。
 
 ## 常用操作（TaskService）
 
@@ -103,4 +103,4 @@ engine.GetTaskService().GetHistoryTask(ctx, taskID)
 
 ## 驳回后的任务清理
 
-驳回回跳（`rejectToStarter` / `rejectToPrev` / `rejectToNode`）会调用 `SupersedeNodeTasks` 归档跳转涉及节点上一轮的终态任务，保证目标节点重入时重新生成待办而不是读到旧记录。管理员处理卡死实例可用 `ForceResumeInstance`（见 [parallel-limitations.md](parallel-limitations.md)）。
+驳回回跳（`toStarter` / `toPrev` / `toNode`）会调用 `SupersedeNodeTasks` 归档跳转涉及节点上一轮的终态任务，保证目标节点重入时重新生成待办而不是读到旧记录。管理员处理卡死实例可用 `ForceResumeInstance`（见 [parallel-limitations.md](parallel-limitations.md)）。

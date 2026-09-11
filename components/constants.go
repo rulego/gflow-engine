@@ -16,34 +16,31 @@
 
 package components
 
-// 驳回策略取值。userTask 与 aiAgent 共享 terminate 语义；
-// userTask 额外支持三种回跳策略，aiAgent 额外支持 backToInitiator。
+// 驳回策略取值，userTask 与 aiAgent 共用同一套词表。
 const (
 	// RejectStrategyTerminate 终止流程实例（默认策略）
 	RejectStrategyTerminate = "terminate"
-	// RejectStrategyRejectToStarter 跳回开始节点（userTask）
-	RejectStrategyRejectToStarter = "rejectToStarter"
-	// RejectStrategyRejectToPrev 跳到上一个 userTask 节点（userTask）
-	RejectStrategyRejectToPrev = "rejectToPrev"
-	// RejectStrategyRejectToNode 跳到 rejectTargetNode 指定的节点（userTask）
-	RejectStrategyRejectToNode = "rejectToNode"
-	// RejectStrategyBackToInitiator 退回发起人，即跳到开始节点（aiAgent）
-	RejectStrategyBackToInitiator = "backToInitiator"
+	// RejectStrategyToStarter 跳回开始节点
+	RejectStrategyToStarter = "toStarter"
+	// RejectStrategyToPrev 跳到上一个 userTask 节点（userTask）
+	RejectStrategyToPrev = "toPrev"
+	// RejectStrategyToNode 跳到 reject.target 指定的节点（userTask）
+	RejectStrategyToNode = "toNode"
 )
 
 // isValidUserTaskRejectStrategy 判断 userTask 驳回策略是否已知取值（空串合法，等价默认 terminate）。
 func isValidUserTaskRejectStrategy(s string) bool {
 	switch s {
-	case "", RejectStrategyTerminate, RejectStrategyRejectToStarter, RejectStrategyRejectToPrev, RejectStrategyRejectToNode:
+	case "", RejectStrategyTerminate, RejectStrategyToStarter, RejectStrategyToPrev, RejectStrategyToNode:
 		return true
 	}
 	return false
 }
 
-// isValidAIAgentRejectStrategy 判断 aiAgent 驳回策略是否已知取值（空串合法，等价默认 terminate）。
-func isValidAIAgentRejectStrategy(s string) bool {
+// isValidRejectStrategy 判断驳回策略是否为共用词表的已知取值（空串合法，等价默认 terminate）。
+func isValidRejectStrategy(s string) bool {
 	switch s {
-	case "", RejectStrategyTerminate, RejectStrategyBackToInitiator:
+	case "", RejectStrategyTerminate, RejectStrategyToStarter:
 		return true
 	}
 	return false
@@ -59,6 +56,16 @@ func isValidAIAgentUnresolved(s string) bool {
 }
 
 // 任务候选实体类型改用 types/enums EntityType*（wf_task_assignee.entity_type）。
+
+// userTask 超时处理动作，由宿主逾期巡检执行。
+const (
+	// TimeoutActionRemind 到期提醒办理人（缺省动作，仅提醒不代办）
+	TimeoutActionRemind = "remind"
+	// TimeoutActionAutoApprove 到期自动通过（以 system 身份记录审批意见并推进流程）
+	TimeoutActionAutoApprove = "autoApprove"
+	// TimeoutActionAutoReject 到期自动拒绝
+	TimeoutActionAutoReject = "autoReject"
+)
 
 // RelationReject 自定义出边关系：业务驳回（与系统错误 types.Failure 分离）。
 const RelationReject = "Reject"

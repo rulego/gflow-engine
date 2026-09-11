@@ -28,12 +28,12 @@ func TestE2E_Return_RecreatesTargetTask(t *testing.T) {
 			"firstNodeIndex": 0,
 			"nodes": []map[string]interface{}{
 				{"id": "node_a", "type": "userTask", "name": "A审批", "configuration": map[string]interface{}{
-					"candidateType": "user", "candidateConfig": map[string]interface{}{"userIds": []string{"user_a"}},
-					"approvalType": "single",
+					"approver":    map[string]interface{}{"type": "user", "userIds": []string{"user_a"}},
+					"approveMode": "single",
 				}, "additionalInfo": map[string]interface{}{"actionPermissions": permissions}},
 				{"id": "node_b", "type": "userTask", "name": "B审批", "configuration": map[string]interface{}{
-					"candidateType": "user", "candidateConfig": map[string]interface{}{"userIds": []string{"user_b"}},
-					"approvalType": "single",
+					"approver":    map[string]interface{}{"type": "user", "userIds": []string{"user_b"}},
+					"approveMode": "single",
 				}, "additionalInfo": map[string]interface{}{"actionPermissions": permissions}},
 				{"id": "end", "type": "end", "name": "End"},
 			},

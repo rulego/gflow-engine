@@ -80,12 +80,4 @@ func TestRejectResetNodes_NilGraph(t *testing.T) {
 	require.Empty(t, rejectResetNodes(nil, "A", "C"))
 }
 
-// 会签一票否决只适用于全员通过规则；any/majority 等阈值规则首票拒绝不定局
-func TestCountersignRequiresUnanimity(t *testing.T) {
-	require.True(t, countersignRequiresUnanimity(""), "空规则按默认全员通过")
-	require.True(t, countersignRequiresUnanimity(`{}`))
-	require.True(t, countersignRequiresUnanimity(`{"type":"all"}`))
-	require.False(t, countersignRequiresUnanimity(`{"type":"any"}`), "any 规则首票拒绝不定局")
-	require.False(t, countersignRequiresUnanimity(`{"type":"majority"}`))
-	require.True(t, countersignRequiresUnanimity(`not-json`), "解析失败按默认全员通过，与 complete 路径同口径")
-}
+// 会签（approveMode=all）即全员通过，一票否决条件已内化到模式判断，无独立规则解析

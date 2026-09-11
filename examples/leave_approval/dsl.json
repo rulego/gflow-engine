@@ -41,14 +41,14 @@
         "name": "经理审批",
         "debugMode": false,
         "configuration": {
-          "candidateType": "user",
-          "candidateConfig": {
+          "approver": {
+            "type": "user",
             "userIds": [
               "mgr001"
             ]
           },
           "formKey": "manager_approval_form",
-          "approvalType": "single"
+          "approveMode": "single"
         },
         "additionalInfo": {
           "description": "直属经理审批请假申请",
@@ -62,16 +62,15 @@
         "name": "经理与HR会签",
         "debugMode": false,
         "configuration": {
-          "candidateType": "user",
-          "candidateConfig": {
+          "approver": {
+            "type": "user",
             "userIds": [
               "mgr001",
               "hr001"
             ]
           },
           "formKey": "multi_approval_form",
-          "approvalType": "countersign",
-          "approvalRule": "{\"isSequential\":false,\"type\":\"all\"}"
+          "approveMode": "all"
         },
         "additionalInfo": {
           "description": "经理和HR并行会签（全部通过）",
@@ -85,8 +84,8 @@
         "name": "顺序会签审批",
         "debugMode": false,
         "configuration": {
-          "candidateType": "user",
-          "candidateConfig": {
+          "approver": {
+            "type": "user",
             "userIds": [
               "user001",
               "user002",
@@ -94,8 +93,7 @@
             ]
           },
           "formKey": "sequential_approval_form",
-          "approvalType": "countersign",
-          "approvalRule": "{\"isSequential\":true,\"type\":\"majority\"}"
+          "approveMode": "all"
         },
         "additionalInfo": {
           "description": "顺序会签审批，需要按顺序进行审批",

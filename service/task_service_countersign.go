@@ -18,46 +18,6 @@ import (
 	"github.com/rulego/gflow-engine/types/enums"
 )
 
-// activateNextSequentialTaskInternal 在已持有实例行锁的事务内执行激活逻辑。
-// 由 completeWithApprovalInternal 直接调用（持锁路径），避免重复 FOR UPDATE。
-func (s *TaskServiceImpl) activateNextSequentialTaskInternal(ctx context.Context, scope *InstanceScope, processInstanceID, taskDefKey string) error {
-	taskDAO := scope.Tasks()
-
-	// 查询所有相关的会签任务，按创建时间排序
-	query := &dto.TaskQuery{
-		InstanceID: &processInstanceID,
-		TaskDefKey: taskDefKey,
-		PageRequest: dto.PageRequest{
-			OrderBy:   "created_at",
-			OrderDesc: false,
-		},
-	}
-
-	tasks, _, err := taskDAO.List(ctx, query)
-	if err != nil {
-		return fmt.Errorf("failed to query sequential countersign tasks: %w", err)
-	}
-
-	// 找到下一个待激活的任务
-	for _, task := range tasks {
-		if task.Status == string(enums.TaskStatusPending) {
-			// 激活这个任务
-			task.Status = string(enums.TaskStatusActive)
-			now := time.Now()
-			task.UpdatedAt = &now
-
-			if err := taskDAO.Update(ctx, task); err != nil {
-				return fmt.Errorf("failed to activate next sequential task: %w", err)
-			}
-
-			return nil
-		}
-	}
-
-	// 没有找到待激活的任务
-	return nil
-}
-
 // parseCountersignRule 解析会签规则
 func (s *TaskServiceImpl) parseCountersignRule(approvalRule string) (*dto.CountersignRule, error) {
 	if approvalRule == "" {
@@ -117,17 +77,7 @@ func (s *TaskServiceImpl) createCountersignSubTasksInternal(ctx context.Context,
 	if parentTask == nil {
 		return fmt.Errorf("%w: parent task=%s", ErrNotFound, parentTaskID)
 	}
-
-	rule, err := s.parseCountersignRule(approvalRule)
-	if err != nil {
-		return fmt.Errorf("%w: parse countersign rule: %v", ErrCountersignRule, err)
-	}
-	// 根据会签类型创建子任务
-	if rule.IsSequential {
-		return s.createSequentialSubTasks(ctx, scope, parentTask, assignees, approvalRule)
-	} else {
-		return s.createParallelSubTasks(ctx, scope, parentTask, assignees, approvalRule)
-	}
+	return s.createParallelSubTasks(ctx, scope, parentTask, assignees, approvalRule)
 }
 
 // createParallelSubTasks 创建并行会签子任务
@@ -153,9 +103,12 @@ func (s *TaskServiceImpl) createParallelSubTasks(ctx context.Context, scope *Ins
 			Assignee:          &assignee,
 			ApprovalType:      parentTask.ApprovalType,
 			ApprovalRule:      &approvalRule,
-			TenantID:          parentTask.TenantID,
-			CreatedBy:         constants.UserSystem,
-			CreatedAt:         time.Now(),
+			// 超时口径随子任务：逾期扫描与超时动作作用在子任务上，
+			// 子任务缺 due_date 会让 all/vote 节点的 timeout 配置整体落空。
+			DueDate:   parentTask.DueDate,
+			TenantID:  parentTask.TenantID,
+			CreatedBy: constants.UserSystem,
+			CreatedAt: time.Now(),
 		}
 
 		if err := taskDAO.Create(ctx, subTask); err != nil {
@@ -164,70 +117,6 @@ func (s *TaskServiceImpl) createParallelSubTasks(ctx context.Context, scope *Ins
 
 		// 并行会签：每个子任务立即激活，触发 assigned 事件通知审批人
 		if listener != nil {
-			evt := TaskEvent{
-				Type:         TaskEventAssigned,
-				TaskID:       subTask.ID,
-				TaskDefKey:   subTask.TaskDefKey,
-				ParentTaskID: parentTask.ID,
-				InstanceID:   instanceID,
-				ProcessID:    parentTask.ProcessID,
-				TenantID:     parentTask.TenantID,
-				TaskName:     subTask.Name,
-				ToUsers:      []string{assignee},
-				FromUser:     countersignOperator(ctx),
-				Timestamp:    time.Now(),
-			}
-			scope.AfterCommit(func() error {
-				DispatchTaskEvent(listener, evt, ctx)
-				return nil
-			})
-		}
-	}
-	return nil
-}
-
-// createSequentialSubTasks 创建顺序会签子任务
-func (s *TaskServiceImpl) createSequentialSubTasks(ctx context.Context, scope *InstanceScope, parentTask *model.WfTask, assignees []string, approvalRule string) error {
-	taskDAO := scope.Tasks()
-	instanceID := ""
-	if parentTask.ProcessInstanceID != nil {
-		instanceID = *parentTask.ProcessInstanceID
-	}
-	listener := s.workflowEngine.GetTaskEventListener()
-	for i, assignee := range assignees {
-		// 只有第一个任务激活，其他任务等待
-		status := string(enums.TaskStatusPending)
-		isActive := i == 0
-		if isActive {
-			status = string(enums.TaskStatusActive)
-		}
-
-		subTask := &model.WfTask{
-			ID:                s.idGenerator.GenerateID(),
-			ProcessInstanceID: parentTask.ProcessInstanceID,
-			ParentID:          &parentTask.ID,
-			TaskDefKey:        parentTask.TaskDefKey,
-			TaskType:          parentTask.TaskType,
-			ProcessID:         parentTask.ProcessID,
-			Variables:         parentTask.Variables,
-			Name:              fmt.Sprintf("%s_%s", parentTask.Name, assignee),
-			Status:            status,
-			Assignee:          &assignee,
-			SequenceOrder:     int32(i),
-			ApprovalType:      parentTask.ApprovalType,
-			TenantID:          parentTask.TenantID,
-			CreatedBy:         constants.UserSystem,
-			CreatedAt:         time.Now(),
-			ApprovalRule:      &approvalRule,
-		}
-
-		if err := taskDAO.Create(ctx, subTask); err != nil {
-			return fmt.Errorf("failed to create sequential sub task for %s: %w", assignee, err)
-		}
-
-		// 顺序会签：仅第一个激活子任务触发 assigned，后续子任务由
-		// ActivateNextSequentialSubTask 按需激活时再触发（不在本方法处理）。
-		if isActive && listener != nil {
 			evt := TaskEvent{
 				Type:         TaskEventAssigned,
 				TaskID:       subTask.ID,

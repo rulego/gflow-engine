@@ -7,9 +7,13 @@ import (
 	"strings"
 	"sync"
 
+	"context"
+
 	"github.com/rulego/gflow-engine/service"
+	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/rulego"
 	"github.com/rulego/rulego/api/types"
+	"github.com/rulego/rulego/utils/maps"
 	"github.com/sirupsen/logrus"
 
 	// 注册 rulego-components-ai 的 ai/agent 节点。
@@ -92,6 +96,41 @@ func Register(deps ComponentDeps) error {
 	service.SetServiceFunctionChecker(func(name string) bool {
 		_, ok := Services.Get(name)
 		return ok
+	})
+
+	// 注入节点配置校验器：各节点配置结构在本包，部署期拦截非法配置。
+	service.SetNodeConfigValidator(ValidateNodeConfiguration)
+
+	// 注入审批人预览解析器：实例详情的"后续审批人"预测复用节点的审批人解析
+	// 逻辑（角色/部门/多级上级展开、发起人自选表达式求值、自审过滤），保证
+	// 预测名单与实际建任务名单同源。
+	identity := deps.IdentityService
+	service.SetApproverPreviewResolver(func(cfg map[string]interface{}, tenantID, owner string, variables map[string]interface{}) *service.ApproverPreview {
+		var c UserTaskNodeConfiguration
+		if err := maps.Map2Struct(cfg, &c); err != nil {
+			return &service.ApproverPreview{Unresolved: "noAssignee"}
+		}
+		c.Normalize()
+		preview := &service.ApproverPreview{ApproverType: c.Approver.Type}
+		node := &UserTaskNode{IdentityService: identity, Config: c}
+		if err := node.compileTemplates(); err != nil {
+			preview.Unresolved = "noAssignee"
+			return preview
+		}
+		assignees, err := node.resolveAssignees(context.Background(), tenantID, owner, variables)
+		if err != nil || len(assignees) == 0 {
+			switch {
+			case identity == nil:
+				preview.Unresolved = "identityUnavailable"
+			case enums.CandidateType(c.Approver.Type) == enums.CandidateTypeInitiatorSelect:
+				preview.Unresolved = "initiatorSelect"
+			default:
+				preview.Unresolved = "noAssignee"
+			}
+			return preview
+		}
+		preview.Assignees = assignees
+		return preview
 	})
 
 	// 注册用户任务节点。

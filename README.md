@@ -25,7 +25,7 @@
   * **审批与自动化同链编排：** `serviceTask` 调用 Go 函数，`automation` 节点调用 `RuleGo` 规则链，`aiAgent` 节点对接智能体规则链（[rulego-components-ai](https://github.com/rulego/rulego-components-ai)），`httpCall` 节点同步调用外部接口。
   * **子流程：** `subProcess` 节点启动独立子流程实例，嵌套审批闭环。
 * **中国式审批语义与流程模型**
-  * **中国式审批语义：** 或签（or）、会签（并行/顺序，全票/多数）、动态加签/减签、转办、委托、签收/抢单、退回、撤回、挂起/恢复、超时催办，开箱即用无需二次开发。
+  * **中国式审批语义：** 或签（any）、会签（all，一票否决）、票签（vote，过半/百分比/指定票数）、顺序审批、动态加签/减签、转办、委托、签收/抢单、退回、撤回、挂起/恢复、超时催办，开箱即用无需二次开发。
   * **候选组待办：** 任务可按人员/角色/部门发起，候选人池（`wf_task_assignee`）独立存储，查询时经 `IdentityService` 展开。
   * **审批意见：** 评论存于 `wf_task_comment`，任务归档后仍可读写；审批动作与意见在同一事务落库。
   * **流程定义版本化：** 同一 `process_key` 按 `version` 递增保留多个发布版本，存量实例继续运行旧版本。
@@ -185,7 +185,7 @@ err = engine.GetTaskService().CompleteWithApproval(ctx, service.Actor{
 > 办理人则以 `ErrPermissionDenied` 拒绝。`Actor` 必须由宿主服务端从认证层
 > （session/token）构造，绝不直接透传客户端输入。
 
-完整可运行示例（单签、并行会签、顺序会签）见 [examples/leave_approval](examples/leave_approval)——默认跑在内存 SQLite 上，零依赖直接运行（`GFLOW_DSN` 可切 PostgreSQL/MySQL）；`httpCall` + `switch` 组合示例（查询外部接口 → 响应映射进流程变量 → 按结果路由）见 [examples/http_call](examples/http_call)。引擎默认内置内存 Mock 身份服务（仅用于测试），生产集成请按下一节注入自己的 `IdentityService`。
+完整可运行示例（单签、会签、顺序审批）见 [examples/leave_approval](examples/leave_approval)——默认跑在内存 SQLite 上，零依赖直接运行（`GFLOW_DSN` 可切 PostgreSQL/MySQL）；`httpCall` + `switch` 组合示例（查询外部接口 → 响应映射进流程变量 → 按结果路由）见 [examples/http_call](examples/http_call)。引擎默认内置内存 Mock 身份服务（仅用于测试），生产集成请按下一节注入自己的 `IdentityService`。
 
 ## 接入组织架构（IdentityService）
 
@@ -210,7 +210,7 @@ func (s *OrgIdentityService) GetUserIDsByRoleID(ctx context.Context, tenantID, r
 // 其余待实现方法与用途：
 //   GetUserIDsByDepartmentID        按部门查用户（dept 候选任务）
 //   GetDepartmentManagerUserID      查部门主管（dept 候选任务）
-//   GetUserManagerID                查直接主管（direct_manager 候选任务）
+//   GetUserManagerID                查直接主管（manager 候选任务）
 //   GetUserManagerHierarchy         查多级主管（multi_level_manager 候选任务）
 //   GetUserDepartmentID             按用户反查部门
 //   GetRoleIDsByUserID              按用户反查角色（role 候选任务的待办可见性）
@@ -228,16 +228,16 @@ engine, err := service.NewWorkflowEngineBuilder().
 	Build()
 ```
 
-候选人配置（`candidateType`）与接口方法的对应关系：
+审批人配置（`approver.type`）与接口方法的对应关系：
 
-| candidateType | 解析用的接口方法 |
+| approver.type | 解析用的接口方法 |
 |---|---|
-| `user` | 无需身份服务（`candidateUsers` 直接给用户 ID） |
+| `user` | 无需身份服务（`userIds` 直接给用户 ID） |
 | `role` | `GetUserIDsByRoleID`；待办可见性走 `GetRoleIDsByUserID` |
 | `dept` | `GetUserIDsByDepartmentID` / `GetDepartmentManagerUserID`；待办可见性走 `GetDepartmentIDsByUserID` |
-| `direct_manager` | `GetUserManagerID` |
-| `multi_level_manager` | `GetUserManagerHierarchy` |
-| `initiator_select` / `initiator_self` | 无需身份服务（发起人自选 / 发起人本人） |
+| `manager` | `GetUserManagerID` |
+| `multiLevelManager` | `GetUserManagerHierarchy` |
+| `initiatorSelect` / `initiatorSelf` | 无需身份服务（发起人自选 / 发起人本人） |
 
 > 可选加固：宿主实现若同时实现 `TenantMembershipChecker` 接口（`IsUserInTenant`），引擎会在转办/委派/改派时校验目标用户属于任务租户，阻断跨租户转派；未实现时跳过校验并告警留痕。
 

@@ -4,7 +4,7 @@
 //   - RestartProcessInstance 正常路径（新实例 ID / businessKey -restart 后缀 /
 //     变量继承 / 从头推进）与跨租户拒绝
 //   - CompleteProcessInstance 幂等重试（重复调用返回 nil，归档仅一条）
-//   - 顺序审批 dueDate 逐任务重算（timeoutPolicy 相对各自创建时刻）
+//   - 顺序审批 dueDate 逐任务重算（timeout 相对各自创建时刻）
 //   - subProcess 子实例终止 → 父流程经 Failure 边恢复
 //   - RestoreAllProcessInstances / RestoreProcessInstance 越权拦截
 //   - ForceResumeInstance（活动分支拒绝 / 非 fork 拓扑拒绝 / 卡死实例救回）
@@ -157,7 +157,7 @@ func TestE2E_SequentialApproval_DueDateRecomputedPerTask(t *testing.T) {
 	env := newE2EEnv(t)
 	env.deploySimpleProcess("seq_due_e2e", "顺序dueDate", "sequential", []string{"seq_a", "seq_b"},
 		map[string]interface{}{
-			"timeoutPolicy": map[string]interface{}{"dueInMinutes": 60},
+			"timeout": map[string]interface{}{"dueInMinutes": 60},
 		})
 
 	instID := env.startInstance("seq_due_e2e", "starter")
@@ -172,7 +172,7 @@ func TestE2E_SequentialApproval_DueDateRecomputedPerTask(t *testing.T) {
 		return true
 	}, 3*time.Second, 50*time.Millisecond, "first sequential task should be created")
 
-	require.NotNil(t, task1.DueDate, "task1 must carry a dueDate from timeoutPolicy")
+	require.NotNil(t, task1.DueDate, "task1 must carry a dueDate from timeout")
 	d1 := task1.DueDate.Sub(task1.CreatedAt)
 	assert.InDelta(t, float64(60*time.Minute), float64(d1), float64(3*time.Minute),
 		"task1 dueDate should be createdAt + dueInMinutes")
@@ -230,9 +230,8 @@ func TestE2E_SubProcess_ChildTerminated_ResumesParentViaFailureEdge(t *testing.T
 					"type": "userTask",
 					"name": "子流程后的审批",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{"parent_approver"}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{"parent_approver"}},
+						"approveMode": "single",
 					},
 				},
 				{"id": "end", "type": "end", "name": "End"},

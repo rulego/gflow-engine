@@ -229,8 +229,7 @@ fmt.Printf("Process status: %s\n", status.Status)
 - **拒绝**：引擎默认策略是**终止整个流程实例**（`rejectStrategy` 默认为 `terminate`），
   DSL 里 userTask 画的 `Failure` 出边仅作为兜底逃生通道，正常拒绝不会走到 `node_notify`。
   如需"驳回后回退/继续"，需在 userTask 节点配置 `rejectStrategy: rejectToStarter/rejectToPrev/rejectToNode`。
-- **顺序会签**：`approvalRule: {"isSequential":true,"type":"majority"}` 表示按
-  user001 → user002 → user003 顺序审批，严格过半同意即通过，剩余未审任务自动终止。
+- **顺序审批**：`approveMode: "sequential"` 表示按名单顺序依次审批（逐个生成任务）。
 
 ## 扩展功能
 

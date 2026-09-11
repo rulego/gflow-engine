@@ -26,12 +26,12 @@ type WfTask struct {
 	DueDate           *time.Time `gorm:"column:due_date;comment:到期时间" json:"dueDate"`                                                                                                                                   // 到期时间
 	Priority          int32      `gorm:"column:priority;not null;default:50" json:"priority"`
 	FormKey           *string    `gorm:"column:form_key" json:"formKey"`
-	Variables         *string    `gorm:"column:variables;default:{};comment:任务变量" json:"variables"`                                              // 任务变量
-	ClaimedAt         *time.Time `gorm:"column:claimed_at;comment:签收时间" json:"claimedAt"`                                                        // 签收时间
-	SequenceOrder     int32      `gorm:"column:sequence_order;not null;comment:会签序号（用于顺序会签排序，0表示主任务或非会签任务）" json:"sequenceOrder"`                // 会签序号（用于顺序会签排序，0表示主任务或非会签任务）
-	ApprovalType      string     `gorm:"column:approval_type;not null;default:single;comment:审批类型：single、multi、countersign" json:"approvalType"` // 审批类型：single、multi、countersign
-	ApprovalRule      *string    `gorm:"column:approval_rule;default:{};comment:会签规则JSON" json:"approvalRule"`                                   // 会签规则JSON
-	DelegateFrom      *string    `gorm:"column:delegate_from;comment:委托人ID" json:"delegateFrom"`                                                 // 委托人ID
+	Variables         *string    `gorm:"column:variables;default:{};comment:任务变量" json:"variables"`                                                    // 任务变量
+	ClaimedAt         *time.Time `gorm:"column:claimed_at;comment:签收时间" json:"claimedAt"`                                                              // 签收时间
+	SequenceOrder     int32      `gorm:"column:sequence_order;not null;comment:会签序号（用于顺序会签排序，0表示主任务或非会签任务）" json:"sequenceOrder"`                      // 会签序号（用于顺序会签排序，0表示主任务或非会签任务）
+	ApprovalType      string     `gorm:"column:approval_type;not null;default:single;comment:审批类型：single、any、all、sequential、vote" json:"approvalType"` // 审批类型：single、any、all、sequential、vote
+	ApprovalRule      *string    `gorm:"column:approval_rule;default:{};comment:会签规则JSON" json:"approvalRule"`                                         // 会签规则JSON
+	DelegateFrom      *string    `gorm:"column:delegate_from;comment:委托人ID" json:"delegateFrom"`                                                       // 委托人ID
 	DelegateReason    *string    `gorm:"column:delegate_reason" json:"delegateReason"`
 	DelegateTime      *time.Time `gorm:"column:delegate_time;comment:委托时间" json:"delegateTime"` // 委托时间
 	EndedAt           *time.Time `gorm:"column:ended_at;comment:完成时间" json:"endedAt"`           // 完成时间

@@ -19,7 +19,6 @@ package components
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/sirupsen/logrus"
 
@@ -37,10 +36,10 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 	var assignees []string
 	assigneeSet := make(map[string]bool)
 
-	ct := enums.CandidateType(strings.ToLower(strings.TrimSpace(n.Config.CandidateType)))
+	ct := enums.CandidateType(n.Config.Approver.Type)
 	switch ct {
 	case enums.CandidateTypeUser:
-		for _, uid := range toStringSlice(n.Config.CandidateConfig["userIds"]) {
+		for _, uid := range n.Config.Approver.UserIds {
 			assignees = addUnique(assignees, assigneeSet, uid)
 		}
 	case enums.CandidateTypeRole:
@@ -48,7 +47,7 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 		if n.IdentityService == nil {
 			return nil, fmt.Errorf("identity service not configured for role-based candidate resolution")
 		}
-		for _, rid := range toStringSlice(n.Config.CandidateConfig["roleIds"]) {
+		for _, rid := range n.Config.Approver.RoleIds {
 			if rid == "" {
 				continue
 			}
@@ -69,7 +68,7 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 			return nil, fmt.Errorf("identity service not configured for direct_manager candidate resolution")
 		}
 		// levels>1 表示取第 N 级主管（设计器"发起人的第 N 级主管"），逐级向上只保留终点
-		levels := toInt(n.Config.CandidateConfig["levels"], 1)
+		levels := n.Config.Approver.Levels
 		if levels <= 0 {
 			levels = 1
 		}
@@ -112,7 +111,7 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 		// levels>0：固定审批到第 N 级；levels<0：直到最上层（设计器 directorMode=0），
 		// 组织关系中没有更上级时自然停止。
 		// visited 防组织关系成环（A 的上级是 B、B 的上级是 A）导致死循环
-		levels := toInt(n.Config.CandidateConfig["levels"], 1)
+		levels := n.Config.Approver.Levels
 		current := owner
 		visited := map[string]bool{owner: true}
 		for i := 0; levels < 0 || i < levels; i++ {
@@ -134,7 +133,7 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 		if n.IdentityService == nil {
 			return nil, fmt.Errorf("identity service not configured for dept-based candidate resolution")
 		}
-		for _, did := range toStringSlice(n.Config.CandidateConfig["departmentIds"]) {
+		for _, did := range n.Config.Approver.DeptIds {
 			if did == "" {
 				continue
 			}
@@ -151,7 +150,7 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 		// 未指定类型时，不分配审批人
 	}
 
-	if n.Config.SelfApprovalType != "" {
+	if sa := enums.SelfApprovalType(n.Config.SelfApproval); sa != "" && sa != enums.SelfApprovalTypeNone {
 		assignees = n.handleSelfApproval(ctx, tenantID, owner, assignees, variables)
 	}
 
@@ -175,9 +174,7 @@ func (n *UserTaskNode) handleSelfApproval(ctx context.Context, tenantID, owner s
 		return assignees
 	}
 
-	switch enums.SelfApprovalType(n.Config.SelfApprovalType) {
-	case enums.SelfApprovalTypeAllow:
-		return assignees
+	switch enums.SelfApprovalType(n.Config.SelfApproval) {
 	case enums.SelfApprovalTypeSkip:
 		filteredAssignees := make([]string, 0, len(assignees))
 		for _, assignee := range assignees {
@@ -187,7 +184,7 @@ func (n *UserTaskNode) handleSelfApproval(ctx context.Context, tenantID, owner s
 		}
 		return filteredAssignees
 	case enums.SelfApprovalTypeAutoApprove:
-		// 当前行为与 allow 一致：保留发起人，不产生自动通过标记。
+		// 当前实现保留发起人，不产生自动通过标记。
 		// 依赖"发起人自动通过"语义的场景请勿使用该选项。
 		return assignees
 	case enums.SelfApprovalTypeDelegateToManager:
@@ -195,7 +192,7 @@ func (n *UserTaskNode) handleSelfApproval(ctx context.Context, tenantID, owner s
 			return replaceAssignee(assignees, owner, managerID)
 		}
 		return assignees
-	case enums.SelfApprovalTypeDelegateToDepartmentManager:
+	case enums.SelfApprovalTypeDelegateToDeptManager:
 		// 委托给部门负责人（不回退到直接上级）。
 		// IdentityService 未注入时不做委托，保持原审批人（与 getDelegateManager 的兜底一致）。
 		if n.IdentityService == nil {

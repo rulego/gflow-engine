@@ -10,9 +10,32 @@ import (
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
+	"github.com/rulego/rulego/api/types"
 
 	"github.com/rulego/gflow-engine/model"
 )
+
+// detailPageSizeFetchAll 实例详情需要单实例任务全集（时间线、活跃节点判定、
+// 后续审批人预测）：会签子任务、加签、驳回回跳重跑很容易超过默认 pageSize=10，
+// 且默认 created_at 升序会优先截掉最新创建的活跃任务。
+const detailPageSizeFetchAll = 1000
+
+// listAllInstanceTasks 翻页取全单实例任务集，防止分页截断。实例任务量正常远
+// 小于单页上限，循环只是防御极端形态（上万行实例本身就异常）。
+func (s *RuntimeServiceImpl) listAllInstanceTasks(ctx context.Context, actor Actor, q *dto.TaskQuery) ([]*model.WfTask, error) {
+	var all []*model.WfTask
+	for page := 1; ; page++ {
+		q.Page = page
+		pageTasks, total, err := s.workflowEngine.GetTaskService().GetTaskList(ctx, actor, q)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, pageTasks...)
+		if int64(len(all)) >= total || len(pageTasks) == 0 {
+			return all, nil
+		}
+	}
+}
 
 // GetProcessInstanceDetail 获取流程实例详情（时间线、流程定义、当前用户任务与权限）
 // 入参：actor 查询视角的用户（操作人）；processInstanceID 流程实例ID
@@ -35,13 +58,13 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 
 	// 2. 查询该实例下任务列表并组装审批时间线
 	// 可见性校验需要覆盖历史 assignee 与 CC 抄送归属，故终态实例查历史、活态实例同时查运行时+历史
-	taskQuery := &dto.TaskQuery{InstanceID: &processInstanceID}
+	taskQuery := &dto.TaskQuery{InstanceID: &processInstanceID, PageRequest: dto.PageRequest{PageSize: detailPageSizeFetchAll}}
 	if instance.Status == string(enums.InstanceStatusActive) || instance.Status == string(enums.InstanceStatusSuspended) {
 		taskQuery.QueryHistory = false
 	} else {
 		taskQuery.QueryHistory = true
 	}
-	tasks, _, err := s.workflowEngine.GetTaskService().GetTaskList(ctx, actor, taskQuery)
+	tasks, err := s.listAllInstanceTasks(ctx, actor, taskQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -49,8 +72,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 	// 活态实例主查询只读运行时表，可见性判定需要补查历史 task（已 completed 的前序节点 assignee + CC 抄送归属）
 	visibilityTasks := tasks
 	if !taskQuery.QueryHistory {
-		histQuery := &dto.TaskQuery{InstanceID: &processInstanceID, QueryHistory: true}
-		if histTasks, _, histErr := s.workflowEngine.GetTaskService().GetTaskList(ctx, actor, histQuery); histErr == nil {
+		histQuery := &dto.TaskQuery{InstanceID: &processInstanceID, QueryHistory: true, PageRequest: dto.PageRequest{PageSize: detailPageSizeFetchAll}}
+		if histTasks, histErr := s.listAllInstanceTasks(ctx, actor, histQuery); histErr == nil {
 			visibilityTasks = append(visibilityTasks, histTasks...)
 		}
 	}
@@ -142,6 +165,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 	var actionPermissions = map[string]interface{}{}        // 审批人节点（userTask）的设计器动作权限
 	var starterActionPermissions = map[string]interface{}{} // 发起人动作权限（流程级 ruleChain.additionalInfo.actionPermissions）
 	var formPermissions = map[string]string{}
+	var ruleChain *types.RuleChain // 解析后的链定义（upcoming 预测遍历用）
 	if instance.ProcessID != "" {
 		procDef, err := s.workflowEngine.GetProcessService().Get(ctx, instance.ProcessID)
 		if err == nil && procDef != nil {
@@ -165,7 +189,9 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 			// - ruleChain.additionalInfo.actionPermissions：流程级发起人动作（withdraw/resubmit/urge/suspend/terminate）
 			//   —— 即流程级"高级设置"，不挂在 startTask 节点上
 			// - userTask（审批人节点）的 additionalInfo.actionPermissions：审批人视角动作（addComment/transfer/return/terminate/uploadAttachment/awaken）
-			if rc, err := procDef.ToRuleChain(); err == nil {
+			rc, rcErr := procDef.ToRuleChain()
+			if rcErr == nil {
+				ruleChain = rc
 				// 流程级发起人动作权限
 				if ap, ok := rc.RuleChain.GetAdditionalInfo("actionPermissions"); ok {
 					if v, ok := ap.(map[string]interface{}); ok {
@@ -215,6 +241,25 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		}
 	}
 
+	// 5.5 后续审批节点预测（仅活态实例）：从活跃节点沿 Success 出边向前遍历
+	var upcoming []dto.UpcomingNode
+	if ruleChain != nil &&
+		(instance.Status == string(enums.InstanceStatusActive) || instance.Status == string(enums.InstanceStatusSuspended)) {
+		activeNodeSet := make(map[string]bool)
+		for _, t := range tasks {
+			if t.Status == string(enums.TaskStatusActive) || t.Status == string(enums.TaskStatusPending) || t.Status == string(enums.TaskStatusSuspended) {
+				activeNodeSet[t.TaskDefKey] = true
+			}
+		}
+		if len(activeNodeSet) > 0 {
+			activeNodeIDs := make([]string, 0, len(activeNodeSet))
+			for id := range activeNodeSet {
+				activeNodeIDs = append(activeNodeIDs, id)
+			}
+			upcoming = BuildUpcomingNodes(ruleChain, activeNodeIDs, instance.TenantID, instance.StartUserID, variables)
+		}
+	}
+
 	// 6. 组装响应。ActionPermissions 在第 7 步按"状态 × 设计器"二维合并后填入
 	resp := &dto.InstanceDetailResponse{
 		InstanceID:        instance.ID,
@@ -227,6 +272,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		FormSchemaJSON:    formSchemaJSON,
 		Executions:        approvalList,
 		Variables:         variables,
+		Upcoming:          upcoming,
 		ActionPermissions: map[string]interface{}{},
 	}
 

@@ -27,6 +27,7 @@ import (
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/rulego/api/types"
 	"github.com/rulego/rulego/components/base"
+	"github.com/rulego/rulego/utils/el"
 	"github.com/rulego/rulego/utils/maps"
 	"github.com/sirupsen/logrus"
 )
@@ -36,19 +37,21 @@ const CCTaskNodeType = "ccTask"
 
 // CCTaskNodeConfiguration 抄送任务节点配置
 type CCTaskNodeConfiguration struct {
-	// CCUserIds 静态抄送人 userId 列表（不支持变量替换；动态名单用 SelfSelect）
+	// CCUserIds 抄送人列表：静态 userId 或 "${msg.xxx}" 表达式模板项，
+	// 模板项运行时以流程变量求值，结果为字符串取单值、为数组则逐项摊平
 	CCUserIds []string `json:"ccUserIds"`
-	// 为 true 时，额外读取业务变量 ccUserIds（[]string）作为发起人自选的抄送人列表
-	SelfSelect bool `json:"selfSelect"`
 }
 
 type CCTaskNode struct {
 	Config         CCTaskNodeConfiguration
 	TaskService    service.TaskServiceInternal
 	CurrentNodeDef types.RuleNode
-	// TenantGuard 租户归属鉴权守卫：自选抄送人（selfSelect 业务变量）校验用户属于实例
-	// 租户（TenantMembershipChecker）。由 Register 注入；未实现该接口的宿主跳过校验。
+	// TenantGuard 租户归属鉴权守卫：校验抄送人属于实例租户
+	// （TenantMembershipChecker）。由 Register 注入；未实现该接口的宿主跳过校验。
 	TenantGuard service.TenantMembershipGuard
+
+	// ccUserTemplates 名单逐项预编译的模板（Init 期构建）
+	ccUserTemplates []el.Template
 
 	// OnCCTaskCreated 由 Builder.SetCCTaskCreatedListener 经
 	// Register 注入。每条 CC 任务创建成功后调用一次。
@@ -79,10 +82,14 @@ func (x *CCTaskNode) Init(ruleConfig types.Config, configuration types.Configura
 	}
 	// 保存当前节点信息
 	x.CurrentNodeDef = base.NodeUtils.GetSelfDefinition(configuration)
-	// 静态名单与自选都没配时节点必然空跑，部署期提醒而不是等运行时静默 0 抄送
-	if len(x.Config.CCUserIds) == 0 && !x.Config.SelfSelect {
-		logrus.WithField("nodeId", x.GetSelfId()).
-			Warn("ccTask node has no ccUserIds and selfSelect=false; it will cc nobody")
+	// 名单逐项预编译：含 "${...}" 的项按模板求值，静态项原样返回
+	x.ccUserTemplates = make([]el.Template, 0, len(x.Config.CCUserIds))
+	for _, item := range x.Config.CCUserIds {
+		tpl, err := el.NewTemplate(item)
+		if err != nil {
+			return fmt.Errorf("failed to compile ccUserIds item %q: %w", item, err)
+		}
+		x.ccUserTemplates = append(x.ccUserTemplates, tpl)
 	}
 	return nil
 }
@@ -95,33 +102,31 @@ func (x *CCTaskNode) Init(ruleConfig types.Config, configuration types.Configura
 //   - 流程不会因 CC 任务而暂停，OnMsg 末尾直接 TellSuccess 推进下游
 func (x *CCTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 	defer recoverNodePanic(ctx, msg, CCTaskNodeType, x.GetSelfId())
-	// 获取抄送用户
-	// selfSelect=true 时名单完全以业务变量 ccUserIds 为准，静态配置名单不参与
-	// （发起人未选则无人被抄送）；仅静态模式下使用配置名单。
-	// 节点实例跨消息复用，x.Config.CCUserIds 是共享 slice header；直接 append 在底层数组
-	// 有余容时会写共享数组，并发 OnMsg 会触发数据竞争并污染抄送列表。先复制一份再追加。
-	var ccUserIds []string
-	if x.Config.SelfSelect {
-		// 自选抄送人来自业务变量 ccUserIds（业务变量在 env 信封的 "msg" 下，见 extractVariables）；
-		// 发起人跳过选择时变量缺失，不视为错误，仅告警留痕
-		vars := extractVariables(ctx, msg)
-		if v, ok := vars["ccUserIds"]; ok {
-			if ids, ok := v.([]string); ok {
-				ccUserIds = append(ccUserIds, ids...)
-			} else if ids, ok := v.([]interface{}); ok {
-				for _, id := range ids {
-					ccUserIds = append(ccUserIds, fmt.Sprintf("%v", id))
+	// 获取抄送用户：模板项以流程变量求值（变量在 env 信封的 "msg" 下，见 extractVariables）。
+	// 求值结果为字符串取单值、为数组逐项摊平；变量缺失的模板项求值为空，不视为错误。
+	// 节点实例跨消息复用，名单先复制再追加，避免并发 OnMsg 写共享底层数组。
+	vars := extractVariables(ctx, msg)
+	ccUserIds := make([]string, 0, len(x.ccUserTemplates))
+	for _, tpl := range x.ccUserTemplates {
+		v, err := tpl.Execute(map[string]interface{}{types.MsgKey: vars})
+		if err != nil {
+			logrus.WithError(err).WithField("nodeId", x.GetSelfId()).Warn("ccUserIds template execute failed")
+			continue
+		}
+		switch val := v.(type) {
+		case string:
+			if val != "" {
+				ccUserIds = append(ccUserIds, val)
+			}
+		case []string:
+			ccUserIds = append(ccUserIds, val...)
+		case []interface{}:
+			for _, item := range val {
+				if s := fmt.Sprintf("%v", item); s != "" {
+					ccUserIds = append(ccUserIds, s)
 				}
 			}
-		} else {
-			logrus.WithFields(logrus.Fields{
-				"nodeId":     x.GetSelfId(),
-				"instanceId": metaValue(msg, constants.KeyInstanceID),
-			}).Warn("ccTask selfSelect=true but variable ccUserIds missing; nobody cc'd by self-select")
 		}
-	} else {
-		ccUserIds = make([]string, 0, len(x.Config.CCUserIds))
-		ccUserIds = append(ccUserIds, x.Config.CCUserIds...)
 	}
 
 	// 去重

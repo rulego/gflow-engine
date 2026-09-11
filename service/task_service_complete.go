@@ -336,12 +336,6 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 			return fmt.Errorf("%w: parse approval rule: %v", ErrCountersignRule, err)
 		}
 
-		if rule.IsSequential {
-			if err := s.activateNextSequentialTaskInternal(ctx, scope, *task.ProcessInstanceID, task.TaskDefKey); err != nil {
-				return err
-			}
-		}
-
 		if task.TaskType == constants.TaskTypeUserTask {
 			// 早期一票否决：仅"全员会签"(CountersignTypeAll)——一人 reject 注定不通过，可立即结束父任务。
 			// 阈值类(Any/Majority/Percent/Count，如票签 vote)不适用：少数 reject 不终止，落入下方 rule 阈值判定。
@@ -453,7 +447,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	// 如果是userTask节点，则通知下一个节点/或者userTask节点，做是否都审批完检查
 	if task.TaskType == constants.TaskTypeUserTask {
 		// 或签：任一完成即节点完成，即时终止同节点其他活跃候选任务，避免幽灵待办
-		if task.ApprovalType == string(enums.ApprovalTypeOr) {
+		if task.ApprovalType == string(enums.ApprovalTypeAny) {
 			if cerr := s.cancelSiblingActiveTasks(ctx, scope, task); cerr != nil {
 				logrus.Warnf("failed to cancel sibling tasks after or-sign completion: %v", cerr)
 			}

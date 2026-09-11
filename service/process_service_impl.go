@@ -92,6 +92,9 @@ func (s *ProcessServiceImpl) Update(ctx context.Context, actor Actor, process *m
 		if issues := ValidateChainExpressions(chain); len(issues) > 0 {
 			return fmt.Errorf("invalid node expressions: %w: %s", ErrValidation, FormatConditionIssues(issues))
 		}
+		if issues := ValidateChainConfigurations(chain); len(issues) > 0 {
+			return fmt.Errorf("invalid node configuration: %w: %s", ErrValidation, FormatConfigIssues(issues))
+		}
 	}
 	// 保持原 processKey（忽略传入值，防破坏版本族）
 	process.ProcessKey = existingProcess.ProcessKey
@@ -197,6 +200,11 @@ func (s *ProcessServiceImpl) create(ctx context.Context, process *model.WfProces
 	// 部署期拦截并定位到具体节点（见 ValidateChainExpressions）。
 	if issues := ValidateChainExpressions(chain); len(issues) > 0 {
 		return nil, fmt.Errorf("invalid node expressions: %w: %s", ErrValidation, FormatConditionIssues(issues))
+	}
+	// 节点配置校验（userTask 审批配置/抄送名单/HTTP 地址等）：坏配置落库后
+	// 运行期才炸，部署期拦截并定位到具体节点。
+	if issues := ValidateChainConfigurations(chain); len(issues) > 0 {
+		return nil, fmt.Errorf("invalid node configuration: %w: %s", ErrValidation, FormatConfigIssues(issues))
 	}
 
 	// 兜底归一化（一次性，部署/创建时）：

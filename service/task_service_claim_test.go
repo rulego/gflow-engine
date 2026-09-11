@@ -40,7 +40,7 @@ func TestClaim_RejectsNonCandidate(t *testing.T) {
 		Name:              "审批",
 		TaskType:          "user_task",
 		Status:            string(enums.TaskStatusPending),
-		ApprovalType:      string(enums.ApprovalTypeOr),
+		ApprovalType:      string(enums.ApprovalTypeAny),
 		TenantID:          "t1",
 		CreatedBy:         "system",
 		CreatedAt:         now,

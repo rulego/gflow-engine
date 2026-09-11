@@ -167,9 +167,9 @@ func (e *miEnv) deployForkJoin(processKey string) {
 			"nodes": []map[string]interface{}{
 				{"id": "fork1", "type": "fork", "name": "Parallel Fork"},
 				{"id": "task_a", "type": "userTask", "name": "Branch A", "configuration": map[string]interface{}{
-					"candidateType": "user", "candidateConfig": map[string]interface{}{"userIds": []string{"user_a"}}, "approvalType": "single"}},
+					"approver": map[string]interface{}{"type": "user", "userIds": []string{"user_a"}}, "approveMode": "single"}},
 				{"id": "task_b", "type": "userTask", "name": "Branch B", "configuration": map[string]interface{}{
-					"candidateType": "user", "candidateConfig": map[string]interface{}{"userIds": []string{"user_b"}}, "approvalType": "single"}},
+					"approver": map[string]interface{}{"type": "user", "userIds": []string{"user_b"}}, "approveMode": "single"}},
 				{"id": "join1", "type": "join", "name": "Parallel Join", "configuration": map[string]interface{}{"timeout": 5}},
 				{"id": "end", "type": "end", "name": "End"},
 			},

@@ -2,9 +2,9 @@
 // 部署流程定义（DSL 从 dsl.json 加载）→ 启动实例 → 查询待办 → 审批 → 查询实例状态。
 //
 // 三条审批路径由 switch 条件分支节点按请假天数路由（与 GFlow 设计器的条件分支同款 DSL）：
-//   - ≤3 天：经理单签（approvalType=single，cases 命中）
+//   - ≤3 天：经理单签（approveMode=single，cases 命中）
 //   - 3~7 天：经理 + HR 并行会签（countersign，all，cases 命中）
-//   - >7 天：三人顺序会签（countersign，isSequential + majority，走 Default 默认分支）
+//   - >7 天：三人顺序审批（sequential，走 Default 默认分支）
 //
 // 运行前准备：
 //  1. 默认使用内存 SQLite，零依赖直接 go run 即可（进程退出数据即清空）
@@ -353,7 +353,7 @@ func printStatus(ctx context.Context, w *LeaveApprovalWorkflow, instanceID strin
 	}
 }
 
-// shortLeaveDemo ≤3 天：经理单签（node_manager_approval，approvalType=single）。
+// shortLeaveDemo ≤3 天：经理单签（node_manager_approval，approveMode=single）。
 func shortLeaveDemo(ctx context.Context, w *LeaveApprovalWorkflow) {
 	fmt.Println("=== 场景一：短期请假（≤3 天，经理单签） ===")
 	instanceID := startLeave(ctx, w, &LeaveRequest{
@@ -391,7 +391,7 @@ func longLeaveDemo(ctx context.Context, w *LeaveApprovalWorkflow) {
 	printStatus(ctx, w, instanceID)
 }
 
-// sequentialLeaveDemo >7 天：三人顺序会签（node_sequential_approval，isSequential + majority）。
+// sequentialLeaveDemo >7 天：三人顺序审批（node_sequential_approval）。
 // 任务按 user001 → user002 → user003 依次生成，严格过半（2 票）即通过，剩余任务自动终止。
 func sequentialLeaveDemo(ctx context.Context, w *LeaveApprovalWorkflow) {
 	fmt.Println("=== 场景三：超长期请假（>7 天，三人顺序会签） ===")

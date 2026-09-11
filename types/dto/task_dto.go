@@ -109,7 +109,6 @@ type NodeApprovalStatusDTO struct {
 
 // CountersignRule 会签规则结构
 type CountersignRule struct {
-	Type         string  `json:"type"`         // 规则类型：all, any, majority, percent, count
-	Value        float64 `json:"value"`        // 规则值：用于percent和count类型
-	IsSequential bool    `json:"isSequential"` // 是否是顺序会签, 默认false false: 并行会签, true: 顺序会签
+	Type  string  `json:"type"`  // 规则类型：majority, percent, count
+	Value float64 `json:"value"` // 规则值：用于percent和count类型
 }

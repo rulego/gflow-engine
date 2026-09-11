@@ -270,8 +270,8 @@ func TestAIAgentNode_Init_Defaults(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 120, node.Config.TimeoutSec)
 	require.Nil(t, node.Config.Decision)
-	// 缺省=平铺（与 httpCall 节点同默认）
-	require.True(t, node.flattenOutput())
+	// 缺省=隔离（与 httpCall 节点同默认）
+	require.False(t, node.flattenOutput())
 }
 
 // 未知 decision 取值只告警不报错（运行时按默认处理）。
@@ -664,20 +664,14 @@ func TestAIAgentNode_AssembleContextSources(t *testing.T) {
 		want    []string
 		notWant []string
 	}{
-		{"formData", `"formData":true`,
-			[]string{"## 表单数据", "采购合同X", "5000"}, nil},
+		{"default", ``,
+			[]string{"## 表单数据", "采购合同X", "5000", "## 流程信息", "pk-ctx", "## 前序审批意见", "初审", "## 发起人", "owner-user"},
+			[]string{"## 附件"}},
 		{"attachments", `"attachments":true`,
-			[]string{"## 附件", "invoice.pdf"},
+			[]string{"## 附件", "invoice.pdf", "## 表单数据", "采购合同X"}, nil},
+		{"formData off", `"formData":false`,
+			[]string{"## 流程信息", "pk-ctx"},
 			[]string{"## 表单数据", "采购合同X"}},
-		{"processInfo", `"processInfo":true`,
-			[]string{"## 流程信息", "pk-ctx", "inst-ctx", "BK-1"},
-			[]string{"## 表单数据"}},
-		{"prevComments", `"prevComments":true`,
-			[]string{"## 前序审批意见", "预算充足，同意", "初审"},
-			[]string{"## 表单数据"}},
-		{"initiator", `"initiator":true`,
-			[]string{"## 发起人", "owner-user"},
-			[]string{"## 表单数据"}},
 		{"all off", `"formData":false,"attachments":false,"processInfo":false,"prevComments":false,"initiator":false`,
 			nil, []string{"## 表单数据", "## 附件", "## 流程信息", "## 前序审批意见", "## 发起人", "AI_DECISION"}},
 	}

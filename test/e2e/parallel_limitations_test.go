@@ -52,17 +52,15 @@ func (e *e2eTestEnv) deployForkJoinWithMergeMap(processKey, assigneeA, assigneeB
 				{
 					"id": "task_a", "type": "userTask", "name": "Branch A",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{assigneeA}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{assigneeA}},
+						"approveMode": "single",
 					},
 				},
 				{
 					"id": "task_b", "type": "userTask", "name": "Branch B",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{assigneeB}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{assigneeB}},
+						"approveMode": "single",
 					},
 				},
 				{
@@ -116,25 +114,22 @@ func (e *e2eTestEnv) deployForkJoinSerialUserTasks(processKey, assigneeA1, assig
 				{
 					"id": "task_a1", "type": "userTask", "name": "Branch A Step 1",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{assigneeA1}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{assigneeA1}},
+						"approveMode": "single",
 					},
 				},
 				{
 					"id": "task_a2", "type": "userTask", "name": "Branch A Step 2",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{assigneeA2}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{assigneeA2}},
+						"approveMode": "single",
 					},
 				},
 				{
 					"id": "task_b", "type": "userTask", "name": "Branch B",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{assigneeB}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{assigneeB}},
+						"approveMode": "single",
 					},
 				},
 				{

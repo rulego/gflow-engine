@@ -45,17 +45,15 @@ func (e *e2eTestEnv) deployForkJoinProcess(processKey, assigneeA, assigneeB stri
 				{
 					"id": "task_a", "type": "userTask", "name": "Branch A",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{assigneeA}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{assigneeA}},
+						"approveMode": "single",
 					},
 				},
 				{
 					"id": "task_b", "type": "userTask", "name": "Branch B",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{assigneeB}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{assigneeB}},
+						"approveMode": "single",
 					},
 				},
 				{

@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -103,19 +104,37 @@ func TestHttpCallNode_FlattenDefault(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := `{"url":"` + srv.URL + `","method":"GET"}`
-	engine := buildHttpEngine(t, "t_http_flatten", cfg)
-	msg := types.NewMsgWithJsonData(`{"days":3,"name":"li"}`)
+	// 缺省=隔离：响应只进 _http，不碰表单；flattenOutput=true 才平铺
+	cases := []struct {
+		name    string
+		cfg     string
+		wantTop bool
+	}{
+		{"isolate default", `{"url":"` + srv.URL + `"}`, false},
+		{"flatten explicit", `{"url":"` + srv.URL + `","flattenOutput":true}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := buildHttpEngine(t, "t_http_flatten_"+strconv.FormatBool(tc.wantTop), tc.cfg)
+			msg := types.NewMsgWithJsonData(`{"days":3,"name":"li"}`)
 
-	endMsg, rel, err := runChain(t, engine, msg)
-	require.NoError(t, err)
-	assert.Equal(t, types.Success, rel)
+			endMsg, rel, err := runChain(t, engine, msg)
+			require.NoError(t, err)
+			assert.Equal(t, types.Success, rel)
 
-	m := parseData(t, endMsg.GetData())
-	assert.Equal(t, float64(85), m["score"]) // 默认全平铺
-	assert.Equal(t, "A", m["level"])
-	assert.Equal(t, float64(3), m["days"]) // 表单保留
-	assert.Equal(t, "li", m["name"])
+			m := parseData(t, endMsg.GetData())
+			if tc.wantTop {
+				assert.Equal(t, float64(85), m["score"]) // 平铺开启：顶层可见
+			} else {
+				assert.NotContains(t, m, "score") // 缺省隔离：顶层不出现响应字段
+			}
+			reserved, ok := m["_http"].(map[string]interface{})
+			require.True(t, ok)
+			assert.Equal(t, float64(85), reserved["score"])
+			assert.Equal(t, float64(3), m["days"]) // 表单始终保留
+			assert.Equal(t, "li", m["name"])
+		})
+	}
 }
 
 func TestHttpCallNode_VariableSubstitution(t *testing.T) {
@@ -140,15 +159,15 @@ func TestHttpCallNode_VariableSubstitution(t *testing.T) {
 	assert.Equal(t, "Bearer xyz", gotAuth)
 }
 
-// 统一输出模型（与 aiAgent 同一套三规则）：默认平铺模式下完整响应也始终在 msg._http。
-func TestHttpCallNode_OutputAlwaysReservedWhenFlatten(t *testing.T) {
+// 统一输出模型（与 aiAgent 同一套三规则）：完整响应始终在 msg._http。
+func TestHttpCallNode_OutputAlwaysReserved(t *testing.T) {
 	registerHttpCallForTest(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"score":85,"level":"A"}`))
 	}))
 	defer srv.Close()
 
-	cfg := `{"url":"` + srv.URL + `","method":"GET"}`
+	cfg := `{"url":"` + srv.URL + `","flattenOutput":true}`
 	engine := buildHttpEngine(t, "t_http_reserved", cfg)
 	msg := types.NewMsgWithJsonData(`{"days":3}`)
 
@@ -157,7 +176,7 @@ func TestHttpCallNode_OutputAlwaysReservedWhenFlatten(t *testing.T) {
 	assert.Equal(t, types.Success, rel)
 
 	m := parseData(t, endMsg.GetData())
-	assert.Equal(t, float64(85), m["score"]) // 平铺默认开
+	assert.Equal(t, float64(85), m["score"]) // 显式平铺
 	raw, ok := m["_http"].(map[string]interface{})
 	require.True(t, ok, "full response must always be kept under _http")
 	assert.Equal(t, float64(85), raw["score"])

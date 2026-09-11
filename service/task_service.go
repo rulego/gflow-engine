@@ -243,7 +243,7 @@ type TaskServiceInternal interface {
 	// SupersedeNodeTasks 把某实例某节点（taskDefKey）的全部任务归档到 wf_hi_task
 	// 并从 wf_task 删除，返回被归档的任务数。
 	//
-	// 用途：驳回回跳（rejectToPrev / rejectToStarter / rejectToNode）重新进入目标
+	// 用途：驳回回跳（toPrev / toStarter / toNode）重新进入目标
 	// userTask 节点前，清理该节点上一轮遗留的 Completed 任务。否则重入时
 	// getExistingTasks 会返回这些旧任务，checkTasksCompletion 立即判定"已完成"，
 	// evaluateApproval 看到历史 approved → TellSuccess，导致目标节点被"静默自动通过"，

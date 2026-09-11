@@ -131,7 +131,7 @@ func TestEvaluateApproval(t *testing.T) {
 		// ---- Or-sign ----
 		{
 			name:         "or: one approved out of three",
-			approvalType: string(enums.ApprovalTypeOr),
+			approvalType: string(enums.ApprovalTypeAny),
 			tasks: []*model.WfTask{
 				makeTask(string(enums.TaskStatusCompleted), strPtr(string(enums.ApprovalResultApproved))),
 				makeTask(string(enums.TaskStatusActive), nil),
@@ -141,7 +141,7 @@ func TestEvaluateApproval(t *testing.T) {
 		},
 		{
 			name:         "or: one rejected, no approved",
-			approvalType: string(enums.ApprovalTypeOr),
+			approvalType: string(enums.ApprovalTypeAny),
 			tasks: []*model.WfTask{
 				makeTask(string(enums.TaskStatusCompleted), strPtr(string(enums.ApprovalResultRejected))),
 				makeTask(string(enums.TaskStatusActive), nil),
@@ -229,8 +229,7 @@ func TestEvaluateApproval(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			node := &UserTaskNode{
 				Config: UserTaskNodeConfiguration{
-					ApprovalType: tt.approvalType,
-					ApprovalRule: tt.approvalRule,
+					ApproveMode: tt.approvalType,
 				},
 			}
 			if got := node.evaluateApproval(tt.tasks, tt.approvedCount, tt.rejectedCount); got != tt.wantApproved {
@@ -272,7 +271,7 @@ func TestCheckTasksCompletion(t *testing.T) {
 		},
 		{
 			name:         "or: 1 of 3 completed => true",
-			approvalType: string(enums.ApprovalTypeOr),
+			approvalType: string(enums.ApprovalTypeAny),
 			tasks: []*model.WfTask{
 				makeTask(string(enums.TaskStatusCompleted), strPtr(string(enums.ApprovalResultApproved))),
 				makeTask(string(enums.TaskStatusActive), nil),
@@ -282,7 +281,7 @@ func TestCheckTasksCompletion(t *testing.T) {
 		},
 		{
 			name:         "or: 0 of 3 completed => false",
-			approvalType: string(enums.ApprovalTypeOr),
+			approvalType: string(enums.ApprovalTypeAny),
 			tasks: []*model.WfTask{
 				makeTask(string(enums.TaskStatusActive), nil),
 				makeTask(string(enums.TaskStatusActive), nil),
@@ -348,7 +347,7 @@ func TestCheckTasksCompletion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			node := &UserTaskNode{Config: UserTaskNodeConfiguration{ApprovalType: tt.approvalType}}
+			node := &UserTaskNode{Config: UserTaskNodeConfiguration{ApproveMode: tt.approvalType}}
 			got, err := node.checkTasksCompletion(nil, types.RuleMsg{}, tt.tasks)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("checkTasksCompletion() error = %v, wantErr %v", err, tt.wantErr)
@@ -364,81 +363,71 @@ func TestCheckTasksCompletion(t *testing.T) {
 
 func TestResolveAssignees(t *testing.T) {
 	tests := []struct {
-		name             string
-		candidateType    string
-		candidateConfig  map[string]interface{}
-		selfApprovalType string
-		owner            string
-		wantAssignees    []string
+		name          string
+		approverType  string
+		userIds       []string
+		selfApproval  string
+		owner         string
+		wantAssignees []string
 	}{
 		{
-			name:          "candidateType user: returns userIds",
-			candidateType: "user",
-			candidateConfig: map[string]interface{}{
-				"userIds": []interface{}{"user1", "user2"},
-			},
+			name:          "approver.type user: returns userIds",
+			approverType:  "user",
+			userIds:       []string{"user1", "user2"},
 			owner:         "owner1",
 			wantAssignees: []string{"user1", "user2"},
 		},
 		{
-			name:          "candidateType user: deduplicates userIds",
-			candidateType: "user",
-			candidateConfig: map[string]interface{}{
-				"userIds": []interface{}{"user1", "user2", "user1"},
-			},
+			name:          "approver.type user: deduplicates userIds",
+			approverType:  "user",
+			userIds:       []string{"user1", "user2", "user1"},
 			owner:         "owner1",
 			wantAssignees: []string{"user1", "user2"},
 		},
 		{
-			name:          "candidateType user: skips empty userIds",
-			candidateType: "user",
-			candidateConfig: map[string]interface{}{
-				"userIds": []interface{}{"user1", "", "user2"},
-			},
+			name:          "approver.type user: skips empty userIds",
+			approverType:  "user",
+			userIds:       []string{"user1", "", "user2"},
 			owner:         "owner1",
 			wantAssignees: []string{"user1", "user2"},
 		},
 		{
-			name:          "candidateType initiator_self: returns owner",
-			candidateType: "initiator_self",
+			name:          "approver.type initiatorSelf: returns owner",
+			approverType:  "initiatorSelf",
 			owner:         "owner1",
 			wantAssignees: []string{"owner1"},
 		},
 		{
-			name:          "candidateType initiator_self: empty owner returns empty",
-			candidateType: "initiator_self",
+			name:          "approver.type initiatorSelf: empty owner returns empty",
+			approverType:  "initiatorSelf",
 			owner:         "",
 			wantAssignees: nil,
 		},
 		{
 			name:          "selfApproval skip: removes owner from list",
-			candidateType: "user",
-			candidateConfig: map[string]interface{}{
-				"userIds": []interface{}{"owner1", "user2", "owner1"},
-			},
-			selfApprovalType: "skip",
-			owner:            "owner1",
-			wantAssignees:    []string{"user2"},
+			approverType:  "user",
+			userIds:       []string{"owner1", "user2", "owner1"},
+			selfApproval:  "skip",
+			owner:         "owner1",
+			wantAssignees: []string{"user2"},
 		},
 		{
 			name:          "selfApproval allow: keeps owner in list",
-			candidateType: "user",
-			candidateConfig: map[string]interface{}{
-				"userIds": []interface{}{"owner1", "user2"},
-			},
-			selfApprovalType: "allow",
-			owner:            "owner1",
-			wantAssignees:    []string{"owner1", "user2"},
+			approverType:  "user",
+			userIds:       []string{"owner1", "user2"},
+			selfApproval:  "none",
+			owner:         "owner1",
+			wantAssignees: []string{"owner1", "user2"},
 		},
 		{
-			name:          "unknown candidateType: returns empty",
-			candidateType: "nonexistent",
+			name:          "unknown approverType: returns empty",
+			approverType:  "nonexistent",
 			owner:         "owner1",
 			wantAssignees: nil,
 		},
 		{
-			name:          "empty candidateType: returns empty",
-			candidateType: "",
+			name:          "empty approverType: returns empty",
+			approverType:  "",
 			owner:         "owner1",
 			wantAssignees: nil,
 		},
@@ -448,9 +437,8 @@ func TestResolveAssignees(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			node := &UserTaskNode{
 				Config: UserTaskNodeConfiguration{
-					CandidateType:    tt.candidateType,
-					CandidateConfig:  tt.candidateConfig,
-					SelfApprovalType: tt.selfApprovalType,
+					Approver:     ApproverConfig{Type: tt.approverType, UserIds: tt.userIds},
+					SelfApproval: tt.selfApproval,
 				},
 			}
 			got, err := node.resolveAssignees(context.Background(), "tenant1", tt.owner, nil)
@@ -474,69 +462,69 @@ func TestResolveAssignees(t *testing.T) {
 
 func TestHandleSelfApproval(t *testing.T) {
 	tests := []struct {
-		name             string
-		selfApprovalType string
-		owner            string
-		assignees        []string
-		wantAssignees    []string
+		name          string
+		selfApproval  string
+		owner         string
+		assignees     []string
+		wantAssignees []string
 	}{
 		{
-			name:             "allow: keeps owner",
-			selfApprovalType: "allow",
-			owner:            "owner1",
-			assignees:        []string{"owner1", "user2"},
-			wantAssignees:    []string{"owner1", "user2"},
+			name:          "allow: keeps owner",
+			selfApproval:  "none",
+			owner:         "owner1",
+			assignees:     []string{"owner1", "user2"},
+			wantAssignees: []string{"owner1", "user2"},
 		},
 		{
-			name:             "skip: removes owner",
-			selfApprovalType: "skip",
-			owner:            "owner1",
-			assignees:        []string{"owner1", "user2", "user3"},
-			wantAssignees:    []string{"user2", "user3"},
+			name:          "skip: removes owner",
+			selfApproval:  "skip",
+			owner:         "owner1",
+			assignees:     []string{"owner1", "user2", "user3"},
+			wantAssignees: []string{"user2", "user3"},
 		},
 		{
-			name:             "skip: owner not in list => unchanged",
-			selfApprovalType: "skip",
-			owner:            "owner1",
-			assignees:        []string{"user2", "user3"},
-			wantAssignees:    []string{"user2", "user3"},
+			name:          "skip: owner not in list => unchanged",
+			selfApproval:  "skip",
+			owner:         "owner1",
+			assignees:     []string{"user2", "user3"},
+			wantAssignees: []string{"user2", "user3"},
 		},
 		{
-			name:             "auto_approve: keeps owner",
-			selfApprovalType: "auto_approve",
-			owner:            "owner1",
-			assignees:        []string{"owner1", "user2"},
-			wantAssignees:    []string{"owner1", "user2"},
+			name:          "autoApprove: keeps owner",
+			selfApproval:  "autoApprove",
+			owner:         "owner1",
+			assignees:     []string{"owner1", "user2"},
+			wantAssignees: []string{"owner1", "user2"},
 		},
 		{
-			name:             "empty owner: returns unchanged",
-			selfApprovalType: "skip",
-			owner:            "",
-			assignees:        []string{"user1", "user2"},
-			wantAssignees:    []string{"user1", "user2"},
+			name:          "empty owner: returns unchanged",
+			selfApproval:  "skip",
+			owner:         "",
+			assignees:     []string{"user1", "user2"},
+			wantAssignees: []string{"user1", "user2"},
 		},
-		// IdentityService 未注入时，delegate_to_department_manager 不得 panic，
+		// IdentityService 未注入时，delegateToDeptManager 不得 panic，
 		// 应与 getDelegateManager 的兜底一致——保持原审批人不变。
 		{
-			name:             "delegate_to_department_manager: nil identity service keeps assignees",
-			selfApprovalType: "delegate_to_department_manager",
-			owner:            "owner1",
-			assignees:        []string{"owner1", "user2"},
-			wantAssignees:    []string{"owner1", "user2"},
+			name:          "delegateToDeptManager: nil identity service keeps assignees",
+			selfApproval:  "delegateToDeptManager",
+			owner:         "owner1",
+			assignees:     []string{"owner1", "user2"},
+			wantAssignees: []string{"owner1", "user2"},
 		},
 		{
-			name:             "delegate_to_manager: nil identity service keeps assignees",
-			selfApprovalType: "delegate_to_manager",
-			owner:            "owner1",
-			assignees:        []string{"owner1", "user2"},
-			wantAssignees:    []string{"owner1", "user2"},
+			name:          "delegateToManager: nil identity service keeps assignees",
+			selfApproval:  "delegateToManager",
+			owner:         "owner1",
+			assignees:     []string{"owner1", "user2"},
+			wantAssignees: []string{"owner1", "user2"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			node := &UserTaskNode{
-				Config: UserTaskNodeConfiguration{SelfApprovalType: tt.selfApprovalType},
+				Config: UserTaskNodeConfiguration{SelfApproval: tt.selfApproval},
 			}
 			got := node.handleSelfApproval(context.Background(), "tenant1", tt.owner, tt.assignees, nil)
 			if len(got) != len(tt.wantAssignees) {
@@ -554,20 +542,6 @@ func TestHandleSelfApproval(t *testing.T) {
 
 // 驳回策略与拒绝类型字段
 
-// TestRejectTypeField 验证 RejectType 字段存在且可读写
-// 该字段当前未启用，预留用于未来区分拒绝来源（user/timeout/escalation/system）
-func TestRejectTypeField(t *testing.T) {
-	cases := []string{"", "user", "timeout", "escalation", "system"}
-	for _, rt := range cases {
-		node := &UserTaskNode{
-			Config: UserTaskNodeConfiguration{RejectType: rt},
-		}
-		if node.Config.RejectType != rt {
-			t.Errorf("RejectType round-trip failed: set %q, got %q", rt, node.Config.RejectType)
-		}
-	}
-}
-
 // TestRejectStrategyConfig 验证驳回策略字段在常见取值下可正确存取
 func TestRejectStrategyConfig(t *testing.T) {
 	cases := []struct {
@@ -576,22 +550,21 @@ func TestRejectStrategyConfig(t *testing.T) {
 	}{
 		{"", ""},
 		{"terminate", ""},
-		{"rejectToStarter", ""},
-		{"rejectToPrev", ""},
-		{"rejectToNode", "nodeKey_abc"},
+		{"toStarter", ""},
+		{"toPrev", ""},
+		{"toNode", "nodeKey_abc"},
 	}
 	for _, c := range cases {
 		node := &UserTaskNode{
 			Config: UserTaskNodeConfiguration{
-				RejectStrategy:   c.strategy,
-				RejectTargetNode: c.targetNode,
+				Reject: RejectConfig{Strategy: c.strategy, Target: c.targetNode},
 			},
 		}
-		if node.Config.RejectStrategy != c.strategy {
-			t.Errorf("RejectStrategy set %q got %q", c.strategy, node.Config.RejectStrategy)
+		if node.Config.Reject.Strategy != c.strategy {
+			t.Errorf("Reject.Strategy set %q got %q", c.strategy, node.Config.Reject.Strategy)
 		}
-		if node.Config.RejectTargetNode != c.targetNode {
-			t.Errorf("RejectTargetNode set %q got %q", c.targetNode, node.Config.RejectTargetNode)
+		if node.Config.Reject.Target != c.targetNode {
+			t.Errorf("Reject.Target set %q got %q", c.targetNode, node.Config.Reject.Target)
 		}
 	}
 }
@@ -669,71 +642,10 @@ func TestToStringSlice(t *testing.T) {
 	}
 }
 
-// 到期时间解析：parseDueDate / Init
-
-func TestParseDueDate(t *testing.T) {
-	cases := []struct {
-		name    string
-		in      string
-		wantNil bool
-		want    time.Time
-	}{
-		{"empty", "", true, time.Time{}},
-		{"blank", "   ", true, time.Time{}},
-		{"rfc3339", "2026-08-20T10:00:00Z", false, time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)},
-		{"datetime", "2026-08-20 10:00:00", false, time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)},
-		{"date only", "2026-08-20", false, time.Date(2026, 8, 20, 0, 0, 0, 0, time.UTC)},
-		{"invalid", "not-a-date", true, time.Time{}},
-		{"invalid format", "20/08/2026", true, time.Time{}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := parseDueDate(c.in)
-			if c.wantNil {
-				if got != nil {
-					t.Errorf("parseDueDate(%q) = %v, want nil", c.in, got)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatalf("parseDueDate(%q) = nil, want %v", c.in, c.want)
-			}
-			if !got.Equal(c.want) {
-				t.Errorf("parseDueDate(%q) = %v, want %v", c.in, got, c.want)
-			}
-		})
-	}
-}
-
-// TestInit_DueDate 验证 Init 解析 dueDate：合法写入节点、非法保持 nil 且不报错
-func TestInit_DueDate(t *testing.T) {
-	valid := &UserTaskNode{}
-	if err := valid.Init(types.Config{}, types.Configuration{
-		"candidateType": "user",
-		"dueDate":       "2026-08-20 10:00:00",
-	}); err != nil {
-		t.Fatalf("Init with valid dueDate failed: %v", err)
-	}
-	if valid.dueDate == nil {
-		t.Error("Init should parse valid dueDate into node.dueDate")
-	}
-
-	invalid := &UserTaskNode{}
-	if err := invalid.Init(types.Config{}, types.Configuration{
-		"candidateType": "user",
-		"dueDate":       "garbage",
-	}); err != nil {
-		t.Fatalf("Init with invalid dueDate should not error (only warn): %v", err)
-	}
-	if invalid.dueDate != nil {
-		t.Errorf("Init with invalid dueDate should leave dueDate nil, got %v", invalid.dueDate)
-	}
-}
-
 // 驳回策略初始化校验：未知值仅告警不报错，运行时按 terminate 处理
 
 func TestIsValidUserTaskRejectStrategy(t *testing.T) {
-	valid := []string{"", RejectStrategyTerminate, RejectStrategyRejectToStarter, RejectStrategyRejectToPrev, RejectStrategyRejectToNode}
+	valid := []string{"", RejectStrategyTerminate, RejectStrategyToStarter, RejectStrategyToPrev, RejectStrategyToNode}
 	for _, s := range valid {
 		if !isValidUserTaskRejectStrategy(s) {
 			t.Errorf("isValidUserTaskRejectStrategy(%q) = false, want true", s)
@@ -749,14 +661,14 @@ func TestIsValidUserTaskRejectStrategy(t *testing.T) {
 func TestInit_UnknownRejectStrategyStillInits(t *testing.T) {
 	node := &UserTaskNode{}
 	err := node.Init(types.Config{}, types.Configuration{
-		"candidateType":  "user",
-		"rejectStrategy": "noSuchStrategy",
+		"approver": map[string]interface{}{"type": "user", "userIds": []string{"u1"}},
+		"reject":   map[string]interface{}{"strategy": "noSuchStrategy"},
 	})
 	if err != nil {
-		t.Fatalf("Init with unknown rejectStrategy should only warn, got error: %v", err)
+		t.Fatalf("Init with unknown reject strategy should only warn, got error: %v", err)
 	}
-	if node.Config.RejectStrategy != "noSuchStrategy" {
-		t.Errorf("rejectStrategy should be kept as-is for runtime fallback, got %q", node.Config.RejectStrategy)
+	if node.Config.Reject.Strategy != RejectStrategyTerminate {
+		t.Errorf("unknown reject strategy should fall back to terminate, got %q", node.Config.Reject.Strategy)
 	}
 }
 
@@ -774,7 +686,7 @@ func TestAddUnique(t *testing.T) {
 	}
 }
 
-// 主管层级解析：direct_manager 的 levels 与 multi_level_manager 的 levels/-1
+// 主管层级解析：manager 的 levels 与 multi_level_manager 的 levels/-1
 
 // managerChainIdentity 按 managers 表返回直接上级，不在表中的用户无上级。
 type managerChainIdentity struct{}
@@ -822,56 +734,50 @@ func (managerChainIdentity) GetDepartmentIDsByUserID(context.Context, string, st
 }
 
 func TestResolveAssignees_ManagerLevels(t *testing.T) {
-	newNode := func(ct string, levels interface{}) *UserTaskNode {
-		cfg := map[string]interface{}{}
-		if levels != nil {
-			cfg["levels"] = levels
-		}
+	newNode := func(ct string, levels int) *UserTaskNode {
 		return &UserTaskNode{
 			IdentityService: managerChainIdentity{},
 			Config: UserTaskNodeConfiguration{
-				CandidateType:   ct,
-				CandidateConfig: cfg,
+				Approver: ApproverConfig{Type: ct, Levels: levels},
 			},
 		}
 	}
 
-	t.Run("direct_manager 默认取第 1 级", func(t *testing.T) {
-		got, err := newNode("direct_manager", nil).resolveAssignees(context.Background(), "t", "staff", nil)
+	t.Run("manager 默认取第 1 级", func(t *testing.T) {
+		got, err := newNode("manager", 0).resolveAssignees(context.Background(), "t", "staff", nil)
 		require.NoError(t, err)
 		require.Equal(t, []string{"m1"}, got)
 	})
 
-	t.Run("direct_manager levels=2 只取第 2 级（终点单审批人）", func(t *testing.T) {
-		got, err := newNode("direct_manager", 2).resolveAssignees(context.Background(), "t", "staff", nil)
+	t.Run("manager levels=2 只取第 2 级（终点单审批人）", func(t *testing.T) {
+		got, err := newNode("manager", 2).resolveAssignees(context.Background(), "t", "staff", nil)
 		require.NoError(t, err)
 		require.Equal(t, []string{"m2"}, got)
 	})
 
-	t.Run("direct_manager 层级不足时报错而不是静默降级", func(t *testing.T) {
-		_, err := newNode("direct_manager", 5).resolveAssignees(context.Background(), "t", "staff", nil)
+	t.Run("manager 层级不足时报错而不是静默降级", func(t *testing.T) {
+		_, err := newNode("manager", 5).resolveAssignees(context.Background(), "t", "staff", nil)
 		require.ErrorContains(t, err, "no manager found at level 3")
 	})
 
-	t.Run("multi_level_manager levels=2 逐级全审", func(t *testing.T) {
-		got, err := newNode("multi_level_manager", 2).resolveAssignees(context.Background(), "t", "staff", nil)
+	t.Run("multiLevelManager levels=2 逐级全审", func(t *testing.T) {
+		got, err := newNode("multiLevelManager", 2).resolveAssignees(context.Background(), "t", "staff", nil)
 		require.NoError(t, err)
 		require.Equal(t, []string{"m1", "m2"}, got)
 	})
 
-	t.Run("multi_level_manager levels=-1 审到组织顶层", func(t *testing.T) {
-		got, err := newNode("multi_level_manager", -1).resolveAssignees(context.Background(), "t", "staff", nil)
+	t.Run("multiLevelManager levels=-1 审到组织顶层", func(t *testing.T) {
+		got, err := newNode("multiLevelManager", -1).resolveAssignees(context.Background(), "t", "staff", nil)
 		require.NoError(t, err)
 		require.Equal(t, []string{"m1", "m2"}, got)
 	})
 
 	// 组织关系成环（a→b→a）：levels=-1 必须按到顶停止，死循环会让本用例超时失败
-	t.Run("multi_level_manager levels=-1 组织环不死循环", func(t *testing.T) {
+	t.Run("multiLevelManager levels=-1 组织环不死循环", func(t *testing.T) {
 		node := &UserTaskNode{
 			IdentityService: cyclicManagerIdentity{},
 			Config: UserTaskNodeConfiguration{
-				CandidateType:   "multi_level_manager",
-				CandidateConfig: map[string]interface{}{"levels": -1},
+				Approver: ApproverConfig{Type: "multiLevelManager", Levels: -1},
 			},
 		}
 		done := make(chan []string, 1)
@@ -947,72 +853,67 @@ func TestHandleSelfApproval_Delegate(t *testing.T) {
 	newNode := func(selfType string) *UserTaskNode {
 		return &UserTaskNode{
 			IdentityService: delegateIdentity{},
-			Config:          UserTaskNodeConfiguration{SelfApprovalType: selfType},
+			Config:          UserTaskNodeConfiguration{SelfApproval: selfType},
 		}
 	}
 
-	t.Run("delegate_to_manager 替换发起人为直接上级", func(t *testing.T) {
-		got := newNode("delegate_to_manager").handleSelfApproval(context.Background(), "t", "staff", []string{"staff", "user2"}, nil)
+	t.Run("delegateToManager 替换发起人为直接上级", func(t *testing.T) {
+		got := newNode("delegateToManager").handleSelfApproval(context.Background(), "t", "staff", []string{"staff", "user2"}, nil)
 		require.Equal(t, []string{"m1", "user2"}, got)
 	})
 
-	t.Run("delegate_to_manager 上级已在名单不重复", func(t *testing.T) {
-		got := newNode("delegate_to_manager").handleSelfApproval(context.Background(), "t", "staff", []string{"staff", "m1"}, nil)
+	t.Run("delegateToManager 上级已在名单不重复", func(t *testing.T) {
+		got := newNode("delegateToManager").handleSelfApproval(context.Background(), "t", "staff", []string{"staff", "m1"}, nil)
 		require.Equal(t, []string{"m1"}, got, "委托目标已在名单时应去重，避免同一人多个任务")
 	})
 
-	t.Run("delegate_to_manager 无上级回退部门负责人", func(t *testing.T) {
+	t.Run("delegateToManager 无上级回退部门负责人", func(t *testing.T) {
 		// owner1 无上级（不在 managerChain），getDelegateManager 回退查部门 d1 → 负责人 boss
-		got := newNode("delegate_to_manager").handleSelfApproval(context.Background(), "t", "owner1", []string{"owner1"}, nil)
+		got := newNode("delegateToManager").handleSelfApproval(context.Background(), "t", "owner1", []string{"owner1"}, nil)
 		require.Equal(t, []string{"boss"}, got)
 	})
 
-	t.Run("delegate_to_department_manager 替换为部门负责人", func(t *testing.T) {
-		got := newNode("delegate_to_department_manager").handleSelfApproval(context.Background(), "t", "owner1", []string{"owner1", "user2"}, nil)
+	t.Run("delegateToDeptManager 替换为部门负责人", func(t *testing.T) {
+		got := newNode("delegateToDeptManager").handleSelfApproval(context.Background(), "t", "owner1", []string{"owner1", "user2"}, nil)
 		require.Equal(t, []string{"boss", "user2"}, got)
 	})
 
-	t.Run("delegate_to_department_manager 负责人已在名单不重复", func(t *testing.T) {
-		got := newNode("delegate_to_department_manager").handleSelfApproval(context.Background(), "t", "owner1", []string{"owner1", "boss"}, nil)
+	t.Run("delegateToDeptManager 负责人已在名单不重复", func(t *testing.T) {
+		got := newNode("delegateToDeptManager").handleSelfApproval(context.Background(), "t", "owner1", []string{"owner1", "boss"}, nil)
 		require.Equal(t, []string{"boss"}, got)
 	})
 
-	t.Run("delegate_to_department_manager 无部门保持原名单", func(t *testing.T) {
+	t.Run("delegateToDeptManager 无部门保持原名单", func(t *testing.T) {
 		// staff 无部门映射 → 保持原审批人
-		got := newNode("delegate_to_department_manager").handleSelfApproval(context.Background(), "t", "staff", []string{"staff", "user2"}, nil)
+		got := newNode("delegateToDeptManager").handleSelfApproval(context.Background(), "t", "staff", []string{"staff", "user2"}, nil)
 		require.Equal(t, []string{"staff", "user2"}, got)
 	})
 }
 
-// 超时策略的到期时间解析：timeoutPolicy.dueInMinutes（相对任务创建的时长）
-// 优先于节点级静态 dueDate；非法时长（<=0）回退静态值。
-func TestResolveDueDate_TimeoutPolicy(t *testing.T) {
-	base := time.Date(2026, 1, 1, 8, 0, 0, 0, time.Local)
-	static := base.Add(24 * time.Hour)
-
+// 超时策略的到期时间解析：timeout.dueInMinutes 为相对任务创建时刻的时长
+func TestResolveDueDate_Timeout(t *testing.T) {
 	n := &UserTaskNode{}
-	n.dueDate = &static
 
-	// 1) 无策略 → 静态值
-	if got := n.resolveDueDate(); !got.Equal(static) {
-		t.Errorf("no policy: got %v, want static %v", got, static)
+	// 1) 无策略 → 无到期时间
+	if got := n.resolveDueDate(); got != nil {
+		t.Errorf("no policy: got %v, want nil", got)
 	}
-	// 2) 90 分钟策略 → 约 now+90m（允许 5s 时钟误差），不再用静态值
-	n.Config.TimeoutPolicy = &TimeoutPolicy{DueInMinutes: 90, Action: "autoApprove"}
+	// 2) 90 分钟策略 → 约 now+90m（允许 5s 时钟误差）
+	n.Config.Timeout = &TimeoutPolicy{DueInMinutes: 90, Action: "autoApprove"}
 	got := n.resolveDueDate()
 	wantLo := time.Now().Add(90*time.Minute - 5*time.Second)
 	wantHi := time.Now().Add(90*time.Minute + 5*time.Second)
 	if got.Before(wantLo) || got.After(wantHi) {
 		t.Errorf("policy 90m: got %v, want ~now+90m", got)
 	}
-	// 3) 非法时长回退静态
-	n.Config.TimeoutPolicy = &TimeoutPolicy{DueInMinutes: 0, Action: "remind"}
-	if got := n.resolveDueDate(); !got.Equal(static) {
-		t.Errorf("invalid policy: got %v, want static %v", got, static)
+	// 3) 非法时长 → 无到期时间
+	n.Config.Timeout = &TimeoutPolicy{DueInMinutes: 0, Action: "remind"}
+	if got := n.resolveDueDate(); got != nil {
+		t.Errorf("invalid policy: got %v, want nil", got)
 	}
 	// 4) 策略时长生效但未配动作 → 仍计算到期（sweep 侧按 remind 兜底）
-	n.Config.TimeoutPolicy = &TimeoutPolicy{DueInMinutes: 60}
-	if got := n.resolveDueDate(); got == nil || got.Equal(static) {
-		t.Errorf("policy without action should still set due date, got %v", got)
+	n.Config.Timeout = &TimeoutPolicy{DueInMinutes: 60}
+	if got := n.resolveDueDate(); got == nil {
+		t.Errorf("policy without action should still set due date, got nil")
 	}
 }

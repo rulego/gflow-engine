@@ -33,20 +33,18 @@ import (
 // 拒绝处理不依赖流程设计器画 Failure 出边（未画该边时消息会丢失，实例永远卡在
 // active 状态），而是直接驱动实例状态。
 //
-// 策略解析：
+// 策略解析（reject.strategy）：
 //   - 空字符串 / "terminate"：直接调用 RuntimeService.TerminateProcessInstance（默认）
-//   - "rejectToStarter"：调用 ExecuteNext 跳到开始节点
-//   - "rejectToPrev"：调用 ExecuteNext 跳到上一个 userTask 节点
-//   - "rejectToNode"：调用 ExecuteNext 跳到 additionalInfo.rejectTargetNode 指定的节点
+//   - "toStarter"：调用 ExecuteNext 跳到开始节点
+//   - "toPrev"：调用 ExecuteNext 跳到上一个 userTask 节点
+//   - "toNode"：调用 ExecuteNext 跳到 reject.target 指定的节点
 //   - 其他未知值：兜底 terminate，避免实例卡死
 //
-// 跳转失败时的兜底（hasRejectEdge）：若节点定义了 Reject/Failure 出边则走 rulego
-// 分支，否则 terminate。
+// 跳转失败时的兜底（rejectEdgeRelation）：若节点定义了 Reject/Failure 出边则按实际
+// 命中的关系走 rulego 分支，否则 terminate。
 func (n *UserTaskNode) handleRejection(ctx types.RuleContext, msg types.RuleMsg, instanceID string) {
-	strategy := strings.TrimSpace(n.Config.RejectStrategy)
-	// rejectType 当前版本不生效（见 Config.RejectType 注释），日志标注 ignored 防误读
-	logrus.Infof("Node %s rejected, strategy=%q, rejectType=%q (ignored), instance=%s",
-		n.GetSelfId(), strategy, n.Config.RejectType, instanceID)
+	strategy := strings.TrimSpace(n.Config.Reject.Strategy)
+	logrus.Infof("Node %s rejected, strategy=%q, instance=%s", n.GetSelfId(), strategy, instanceID)
 
 	switch strategy {
 	case "", RejectStrategyTerminate:
@@ -55,22 +53,22 @@ func (n *UserTaskNode) handleRejection(ctx types.RuleContext, msg types.RuleMsg,
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回")
 		terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：终止流程")
 		return
-	case RejectStrategyRejectToStarter:
+	case RejectStrategyToStarter:
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至发起人")
 		n.jumpToStartNode(ctx, msg, instanceID)
 		return
-	case RejectStrategyRejectToPrev:
+	case RejectStrategyToPrev:
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至上一审批节点")
 		n.jumpToPrevUserTask(ctx, msg, instanceID)
 		return
-	case RejectStrategyRejectToNode:
-		if strings.TrimSpace(n.Config.RejectTargetNode) == "" {
-			logrus.Warnf("Node %s strategy=rejectToNode but rejectTargetNode empty, fallback", n.GetSelfId())
-			n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：未配置 rejectTargetNode，降级处理")
+	case RejectStrategyToNode:
+		if strings.TrimSpace(n.Config.Reject.Target) == "" {
+			logrus.Warnf("Node %s reject.strategy=toNode but reject.target empty, fallback", n.GetSelfId())
+			n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：未配置 reject.target，降级处理")
 			return
 		}
-		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至指定节点 "+n.Config.RejectTargetNode)
-		n.jumpToNode(ctx, msg, instanceID, n.Config.RejectTargetNode)
+		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至指定节点 "+n.Config.Reject.Target)
+		n.jumpToNode(ctx, msg, instanceID, n.Config.Reject.Target)
 		return
 	}
 
@@ -124,7 +122,8 @@ func (n *UserTaskNode) fireRejectedEvent(ctx types.RuleContext, msg types.RuleMs
 	service.DispatchTaskEvent(listener, evt, ctx.GetContext())
 }
 
-// hasRejectEdge 通过 ChainCtx.Definition() 查询当前节点是否有 Reject 出边
+// hasRejectEdge 通过 ChainCtx.Definition() 查询当前节点是否有 Reject/Failure 出边，
+// 返回实际存在的出边关系类型；都没有时返回空串。
 //
 // 安全兜底用途：
 //   - handleRejection 的默认策略是 terminate，不依赖 Reject 边
@@ -132,25 +131,32 @@ func (n *UserTaskNode) fireRejectedEvent(ctx types.RuleContext, msg types.RuleMs
 //     节点是否定义了 Reject 出边；若存在则走 rulego 自定义分支，
 //     让流程设计师有机会自定义错误处理；不存在才降级 terminate
 //   - 这样即使 rejectStrategy 配置错误或目标节点丢失，也不会让实例永久卡死
-func (n *UserTaskNode) hasRejectEdge(ctx types.RuleContext) bool {
+func (n *UserTaskNode) rejectEdgeRelation(ctx types.RuleContext) string {
 	def := getRuleChainDefinition(ctx)
 	if def == nil {
-		return false
+		return ""
 	}
 	selfID := ctx.GetSelfId()
 	for _, conn := range def.Metadata.Connections {
-		if conn.FromId == selfID && (conn.Type == RelationReject || conn.Type == types.Failure) {
-			return true
+		if conn.FromId == selfID && conn.Type == RelationReject {
+			return RelationReject
 		}
 	}
-	return false
+	for _, conn := range def.Metadata.Connections {
+		if conn.FromId == selfID && conn.Type == types.Failure {
+			return types.Failure
+		}
+	}
+	return ""
 }
 
-// fallbackRejection 跳转失败时的兜底处理：优先走 Reject 出边，否则 terminate
+// fallbackRejection 跳转失败时的兜底处理：优先走 Reject/Failure 出边，否则 terminate。
+// 出边关系必须按实际命中的类型下发——TellNext 只按给定关系找下游节点，
+// 只发 Reject 而链上只有 Failure 边时消息会被静默丢弃，实例永久卡在 active。
 func (n *UserTaskNode) fallbackRejection(ctx types.RuleContext, msg types.RuleMsg, instanceID, reason string) {
-	if n.hasRejectEdge(ctx) {
-		logrus.Warnf("Node %s falling back to Reject edge after reject jump failure", n.GetSelfId())
-		ctx.TellNext(msg, RelationReject)
+	if relation := n.rejectEdgeRelation(ctx); relation != "" {
+		logrus.Warnf("Node %s falling back to %s edge after reject jump failure", n.GetSelfId(), relation)
+		ctx.TellNext(msg, relation)
 		return
 	}
 	terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, reason)
@@ -191,7 +197,7 @@ func (n *UserTaskNode) jumpToNode(ctx types.RuleContext, msg types.RuleMsg, inst
 		return
 	}
 	// 目标节点存在性校验：ExecuteNext 对不存在的 startNodeId 静默成功（不报错也不路由），
-	// 不拦截则 rejectToNode 配错目标时实例永久卡死 active。
+	// 不拦截则 reject.strategy=toNode 配错目标时实例永久卡死 active。
 	if !n.nodeExists(ctx, targetNodeID) {
 		logrus.Warnf("reject jump target node %s not found in definition, fallback", targetNodeID)
 		n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：跳转目标节点不存在，降级处理")
@@ -357,7 +363,7 @@ func (n *UserTaskNode) findPrevUserTaskNodeID(ctx types.RuleContext) string {
 	// 退而求其次：返回任意一个非开始节点的前驱。
 	// DSL 中开始节点 type 有两种："startTask"（本引擎发起人节点）与
 	// "start"（rulego 原生链起点），都要排除——回跳到开始节点等价于
-	// rejectToStarter，会使 rejectToPrev 语义错误。
+	// toStarter，会使 toPrev 语义错误。
 	for _, id := range upstreamIDs {
 		if id == "" {
 			continue

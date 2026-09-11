@@ -305,11 +305,10 @@ func createE2ETables(t *testing.T, db *gorm.DB) {
 func (e *e2eTestEnv) deploySimpleProcess(processKey, name, approvalType string, userIds []string, extraConfig map[string]interface{}) {
 	e.t.Helper()
 	nodeConfig := map[string]interface{}{
-		"candidateType": "user",
-		"candidateConfig": map[string]interface{}{
+		"approver": map[string]interface{}{"type": "user",
 			"userIds": userIds,
 		},
-		"approvalType": approvalType,
+		"approveMode": approvalType,
 	}
 	for k, v := range extraConfig {
 		nodeConfig[k] = v
@@ -510,7 +509,7 @@ func TestE2E_SequentialApproval_RejectionStopsChain(t *testing.T) {
 		"sequential",
 		[]string{"admin-001", "user_manager_001", "user_hr_001"},
 		map[string]interface{}{
-			"rejectStrategy": "terminate",
+			"reject": map[string]interface{}{"strategy": "terminate"},
 		})
 
 	instanceID := env.startInstance("seq_reject_e2e", "admin-001")
@@ -525,11 +524,8 @@ func TestE2E_SequentialApproval_RejectionStopsChain(t *testing.T) {
 	env.rejectAs(tasks1[0].ID, "admin-001", "admin 拒绝")
 
 	require.Eventually(t, func() bool {
-		status := env.instanceStatus(instanceID)
-		return status == string(enums.InstanceStatusTerminated) ||
-			status == string(enums.InstanceStatusCancelled) ||
-			status == string(enums.InstanceStatusCompleted)
-	}, 2*time.Second, 50*time.Millisecond, "instance should reach a terminal state after reject")
+		return env.instanceStatus(instanceID) == string(enums.InstanceStatusTerminated)
+	}, 2*time.Second, 50*time.Millisecond, "reject with strategy=terminate must terminate the instance")
 	assert.Empty(t, env.activeTasksFor(instanceID, "user_manager_001"),
 		"second approver must NOT receive task after rejection")
 	assert.Empty(t, env.activeTasksFor(instanceID, "user_hr_001"),
@@ -567,7 +563,7 @@ func TestE2E_SingleApproval_CompleteOnApprove(t *testing.T) {
 func TestE2E_OrApproval_AnyOneApproverCompletes(t *testing.T) {
 	env := newE2EEnv(t)
 	env.deploySimpleProcess("or_e2e", "Or Approval",
-		"or", []string{"a1", "a2", "a3"}, nil)
+		"any", []string{"a1", "a2", "a3"}, nil)
 
 	instanceID := env.startInstance("or_e2e", "starter")
 
@@ -634,17 +630,15 @@ func (e *e2eTestEnv) deployConditionalSwitchProcess(processKey string) {
 				{
 					"id": "mgr_task", "type": "userTask", "name": "manager",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{"mgr_user"}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{"mgr_user"}},
+						"approveMode": "single",
 					},
 				},
 				{
 					"id": "dir_task", "type": "userTask", "name": "director",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{"dir_user"}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{"dir_user"}},
+						"approveMode": "single",
 					},
 				},
 				{"id": "end", "type": "end", "name": "End"},
@@ -728,18 +722,16 @@ func TestE2E_ConditionalBranch_HighDays_ToDirector(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // 测试 7：会签（countersign, parallel）—— 所有人都通过才完成。
-// 配置：3 个审批人 a/b/c，并行，approvalType=countersign，approvalRule=isSequential:false。
+// 配置：3 个审批人 a/b/c，会签（approveMode=all）。
 // 期望：必须 3 人都通过才进 end；任意一人拒绝立刻终止。
 // ---------------------------------------------------------------------------
 
 func TestE2E_CountersignApproval_AllMustApprove(t *testing.T) {
 	env := newE2EEnv(t)
 	env.deploySimpleProcess("cnt_e2e", "Countersign Parallel",
-		"countersign",
+		"all",
 		[]string{"a_user", "b_user", "c_user"},
-		map[string]interface{}{
-			"approvalRule": `{"type":"all","value":0,"isSequential":false}`,
-		})
+		map[string]interface{}{})
 
 	instID := env.startInstance("cnt_e2e", "starter")
 
@@ -781,11 +773,10 @@ func TestE2E_CountersignApproval_AllMustApprove(t *testing.T) {
 func TestE2E_CountersignApproval_OneRejectTerminates(t *testing.T) {
 	env := newE2EEnv(t)
 	env.deploySimpleProcess("cnt_reject_e2e", "Countersign Reject",
-		"countersign",
+		"all",
 		[]string{"a_user", "b_user", "c_user"},
 		map[string]interface{}{
-			"approvalRule":   `{"type":"all","value":0,"isSequential":false}`,
-			"rejectStrategy": "terminate",
+			"reject": map[string]interface{}{"strategy": "terminate"},
 		})
 
 	instID := env.startInstance("cnt_reject_e2e", "starter")
@@ -800,11 +791,8 @@ func TestE2E_CountersignApproval_OneRejectTerminates(t *testing.T) {
 	env.rejectAs(b[0].ID, "b_user", "b vetoes")
 
 	require.Eventually(t, func() bool {
-		st := env.instanceStatus(instID)
-		return st == string(enums.InstanceStatusTerminated) ||
-			st == string(enums.InstanceStatusCancelled) ||
-			st == string(enums.InstanceStatusCompleted)
-	}, 2*time.Second, 50*time.Millisecond, "countersign: instance should reach terminal state after one reject")
+		return env.instanceStatus(instID) == string(enums.InstanceStatusTerminated)
+	}, 2*time.Second, 50*time.Millisecond, "countersign: one reject with strategy=terminate must terminate the instance")
 
 	// 其他审批人的任务不应再产生新的 active 任务
 	a := env.activeTasksFor(instID, "a_user")
@@ -825,7 +813,7 @@ func TestE2E_VoteApproval_MajorityThresholdMet(t *testing.T) {
 		"vote",
 		[]string{"a_user", "b_user", "c_user"},
 		map[string]interface{}{
-			"approvalRule": `{"type":"majority","value":0,"isSequential":false}`,
+			"voteRule": map[string]interface{}{"type": "majority", "value": 0},
 		})
 
 	instID := env.startInstance("vote_maj_e2e", "starter")
@@ -867,7 +855,7 @@ func TestE2E_VoteApproval_PercentThreshold(t *testing.T) {
 		"vote",
 		[]string{"a_user", "b_user", "c_user", "d_user"},
 		map[string]interface{}{
-			"approvalRule": `{"type":"percent","value":75,"isSequential":false}`,
+			"voteRule": map[string]interface{}{"type": "percent", "value": 75},
 		})
 
 	instID := env.startInstance("vote_pct_e2e", "starter")
@@ -907,7 +895,7 @@ func TestE2E_VoteApproval_CountThreshold(t *testing.T) {
 		"vote",
 		[]string{"a_user", "b_user", "c_user", "d_user"},
 		map[string]interface{}{
-			"approvalRule": `{"type":"count","value":2,"isSequential":false}`,
+			"voteRule": map[string]interface{}{"type": "count", "value": 2},
 		})
 
 	instID := env.startInstance("vote_cnt_e2e", "starter")
@@ -940,8 +928,8 @@ func TestE2E_VoteApproval_MajorityRejectTerminates(t *testing.T) {
 		"vote",
 		[]string{"a_user", "b_user", "c_user"},
 		map[string]interface{}{
-			"approvalRule":   `{"type":"majority","value":0,"isSequential":false}`,
-			"rejectStrategy": "terminate",
+			"voteRule": map[string]interface{}{"type": "majority", "value": 0},
+			"reject":   map[string]interface{}{"strategy": "terminate"},
 		})
 
 	instID := env.startInstance("vote_maj_reject_e2e", "starter")
@@ -957,11 +945,8 @@ func TestE2E_VoteApproval_MajorityRejectTerminates(t *testing.T) {
 	env.rejectAs(b[0].ID, "b_user", "b no")
 
 	require.Eventually(t, func() bool {
-		st := env.instanceStatus(instID)
-		return st == string(enums.InstanceStatusTerminated) ||
-			st == string(enums.InstanceStatusCancelled) ||
-			st == string(enums.InstanceStatusCompleted)
-	}, 2*time.Second, 50*time.Millisecond, "vote majority: 2/3 reject should terminate (注定 reject)")
+		return env.instanceStatus(instID) == string(enums.InstanceStatusTerminated)
+	}, 2*time.Second, 50*time.Millisecond, "vote majority: 2/3 reject with strategy=terminate must terminate (注定 reject)")
 }
 
 // ---------------------------------------------------------------------------
@@ -973,7 +958,7 @@ func TestE2E_VoteApproval_MajorityRejectTerminates(t *testing.T) {
 func TestE2E_OrApproval_ConcurrentApprovals_NoCorruption(t *testing.T) {
 	env := newE2EEnv(t)
 	env.deploySimpleProcess("or_concurrent_e2e", "Or Concurrent",
-		"or", []string{"a_user", "b_user", "c_user"}, nil)
+		"any", []string{"a_user", "b_user", "c_user"}, nil)
 
 	instID := env.startInstance("or_concurrent_e2e", "starter")
 
@@ -1045,14 +1030,12 @@ func TestE2E_OrApproval_ConcurrentApprovals_NoCorruption(t *testing.T) {
 func (e *e2eTestEnv) deployOrThenSingleProcess(processKey, name string, orApprovers []string, finalApprover string) {
 	e.t.Helper()
 	orConfig := map[string]interface{}{
-		"candidateType":   "user",
-		"candidateConfig": map[string]interface{}{"userIds": orApprovers},
-		"approvalType":    "or",
+		"approver":    map[string]interface{}{"type": "user", "userIds": orApprovers},
+		"approveMode": "any",
 	}
 	finalConfig := map[string]interface{}{
-		"candidateType":   "user",
-		"candidateConfig": map[string]interface{}{"userIds": []string{finalApprover}},
-		"approvalType":    "single",
+		"approver":    map[string]interface{}{"type": "user", "userIds": []string{finalApprover}},
+		"approveMode": "single",
 	}
 	def := map[string]interface{}{
 		"ruleChain": map[string]interface{}{
@@ -1219,7 +1202,7 @@ func TestE2E_SequentialApproval_DoubleSubmitIsIdempotent(t *testing.T) {
 func TestE2E_OrApproval_ResidualTasksNotActive(t *testing.T) {
 	env := newE2EEnv(t)
 	env.deploySimpleProcess("or_residual_e2e", "Or Residual",
-		"or", []string{"a_user", "b_user", "c_user"}, nil)
+		"any", []string{"a_user", "b_user", "c_user"}, nil)
 
 	instID := env.startInstance("or_residual_e2e", "starter")
 
@@ -1254,11 +1237,10 @@ func TestE2E_OrApproval_ResidualTasksNotActive(t *testing.T) {
 func TestE2E_CountersignApproval_EarlyVeto_CorruptParentVariables_ReturnsError(t *testing.T) {
 	env := newE2EEnv(t)
 	env.deploySimpleProcess("cnt_corrupt_e2e", "Countersign Corrupt Vars",
-		"countersign",
+		"all",
 		[]string{"a_user", "b_user", "c_user"},
 		map[string]interface{}{
-			"approvalRule":   `{"type":"all","value":0,"isSequential":false}`,
-			"rejectStrategy": "terminate",
+			"reject": map[string]interface{}{"strategy": "terminate"},
 		})
 
 	instID := env.startInstance("cnt_corrupt_e2e", "starter")
@@ -1297,7 +1279,7 @@ func TestE2E_CountersignApproval_EarlyVeto_CorruptParentVariables_ReturnsError(t
 // ---------------------------------------------------------------------------
 // 测试：驳回回跳必须重新生成任务，而非静默自动通过。
 //
-// rejectToPrev / rejectToStarter / rejectToNode 跳回目标 userTask 时，若不清理
+// toPrev / toStarter / toNode 跳回目标 userTask 时，若不清理
 // 该节点上一轮的 Completed 任务，重入后 getExistingTasks 返回旧任务 →
 // checkTasksCompletion 立即判定"已完成"→ evaluateApproval 看到历史 approved →
 // TellSuccess，目标节点被静默自动通过，驳回语义（"重新让该节点审批人再审一遍"）
@@ -1306,9 +1288,9 @@ func TestE2E_CountersignApproval_EarlyVeto_CorruptParentVariables_ReturnsError(t
 // 因此 jumpToNode 在 ExecuteNext 前调用 TaskService.SupersedeNodeTasks，把目标节点
 // 旧任务归档到 wf_hi_task 并从 wf_task 删除，重入时 getExistingTasks 为空 → 重建任务。
 //
-// 本测试构造 A(single) → B(single, rejectStrategy=rejectToPrev) 线性流程：
+// 本测试构造 A(single) → B(single, reject.strategy=toPrev) 线性流程：
 //   1. A 通过 → B 出现 active 任务
-//   2. B 驳回（rejectToPrev）→ 应跳回 A 并让 A 重新出现 active 任务
+//   2. B 驳回（toPrev）→ 应跳回 A 并让 A 重新出现 active 任务
 //   3. 断言 A 有新的 active 任务，且旧的 A 任务已归档（wf_hi_task）。
 // 若不做清理，A 会被静默自动通过、流程进 end，A 拿不到任何 active 任务。
 // ---------------------------------------------------------------------------
@@ -1327,9 +1309,8 @@ func (e *e2eTestEnv) deployLinearTwoStepProcess(processKey, name string, firstAp
 					"type": "userTask",
 					"name": name + " - first",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{firstApprover}},
-						"approvalType":    "single",
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{firstApprover}},
+						"approveMode": "single",
 					},
 				},
 				{
@@ -1337,10 +1318,9 @@ func (e *e2eTestEnv) deployLinearTwoStepProcess(processKey, name string, firstAp
 					"type": "userTask",
 					"name": name + " - second",
 					"configuration": map[string]interface{}{
-						"candidateType":   "user",
-						"candidateConfig": map[string]interface{}{"userIds": []string{secondApprover}},
-						"approvalType":    "single",
-						"rejectStrategy":  secondRejectStrategy,
+						"approver":    map[string]interface{}{"type": "user", "userIds": []string{secondApprover}},
+						"approveMode": "single",
+						"reject":      map[string]interface{}{"strategy": secondRejectStrategy},
 					},
 				},
 				{"id": "end", "type": "end", "name": "End"},
@@ -1379,7 +1359,7 @@ func (e *e2eTestEnv) hiTaskCountForDefKey(instanceID, taskDefKey string) int {
 
 func TestE2E_RejectToPrev_RegeneratesTaskNotSilentApprove(t *testing.T) {
 	env := newE2EEnv(t)
-	env.deployLinearTwoStepProcess("reject_prev_e2e", "Reject To Prev", "a_user", "b_user", "rejectToPrev")
+	env.deployLinearTwoStepProcess("reject_prev_e2e", "Reject To Prev", "a_user", "b_user", "toPrev")
 
 	instanceID := env.startInstance("reject_prev_e2e", "starter")
 
@@ -1401,7 +1381,7 @@ func TestE2E_RejectToPrev_RegeneratesTaskNotSilentApprove(t *testing.T) {
 	// 记录 B 驳回前：A 的旧任务应已归档（A 通过时即归档），wf_hi_task 里 A 有 1 条
 	hiABefore := env.hiTaskCountForDefKey(instanceID, "first_task")
 
-	// 2) B 驳回（rejectToPrev）→ 应跳回 A
+	// 2) B 驳回（toPrev）→ 应跳回 A
 	env.rejectAs(bTasks[0].ID, "b_user", "b 驳回，退回 A")
 
 	// 3) 关键断言：A 必须重新出现 active 任务，而不是静默自动通过进 end。
@@ -1410,7 +1390,7 @@ func TestE2E_RejectToPrev_RegeneratesTaskNotSilentApprove(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(env.activeTasksFor(instanceID, "a_user")) > 0
 	}, 2*time.Second, 50*time.Millisecond,
-		"rejectToPrev must regenerate A's task, not silently auto-approve")
+		"toPrev must regenerate A's task, not silently auto-approve")
 	aTasks2 := env.activeTasksFor(instanceID, "a_user")
 	require.Len(t, aTasks2, 1, "A should have exactly one regenerated active task")
 
@@ -1430,17 +1410,17 @@ func TestE2E_RejectToPrev_RegeneratesTaskNotSilentApprove(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 测试：rejectToStarter —— 驳回后跳回开始节点。
+// 测试：toStarter —— 驳回后跳回开始节点。
 //
-// 与 rejectToPrev 的差异：目标不是"上一个 userTask"而是链的 FirstNodeIndex 起始节点，
-// 走 jumpToStartNode/getStartNodeID 路径。线性链 A → B（B 配 rejectToStarter）中
+// 与 toPrev 的差异：目标不是"上一个 userTask"而是链的 FirstNodeIndex 起始节点，
+// 走 jumpToStartNode/getStartNodeID 路径。线性链 A → B（B 配 toStarter）中
 // 开始节点即 A，验证：B 驳回后 A 重新生成任务、B 的任务被归档、
 // A 重新通过后流程能再次推进到 B（完整往返）。
 // ---------------------------------------------------------------------------
 
 func TestE2E_RejectToStarter_JumpsToStartNode(t *testing.T) {
 	env := newE2EEnv(t)
-	env.deployLinearTwoStepProcess("reject_starter_e2e", "Reject To Starter", "a_user", "b_user", "rejectToStarter")
+	env.deployLinearTwoStepProcess("reject_starter_e2e", "Reject To Starter", "a_user", "b_user", "toStarter")
 
 	instanceID := env.startInstance("reject_starter_e2e", "starter")
 
@@ -1460,7 +1440,7 @@ func TestE2E_RejectToStarter_JumpsToStartNode(t *testing.T) {
 
 	hiBBefore := env.hiTaskCountForDefKey(instanceID, "second_task")
 
-	// 2) B 驳回（rejectToStarter）→ 跳回开始节点（first_task = A）
+	// 2) B 驳回（toStarter）→ 跳回开始节点（first_task = A）
 	env.rejectAs(bTasks[0].ID, "b_user", "b 驳回，退回发起人")
 
 	// 3) A 重新出现 active 任务（开始节点重入生成新任务，而非静默通过）；
@@ -1468,7 +1448,7 @@ func TestE2E_RejectToStarter_JumpsToStartNode(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(env.activeTasksFor(instanceID, "a_user")) > 0
 	}, 2*time.Second, 50*time.Millisecond,
-		"rejectToStarter must regenerate the start node's task, not silently auto-approve")
+		"toStarter must regenerate the start node's task, not silently auto-approve")
 	aTasks2 := env.activeTasksFor(instanceID, "a_user")
 	require.Len(t, aTasks2, 1, "start node should have exactly one regenerated active task")
 	assert.NotEqual(t, aTasks[0].ID, aTasks2[0].ID,
@@ -1476,9 +1456,9 @@ func TestE2E_RejectToStarter_JumpsToStartNode(t *testing.T) {
 
 	status := env.instanceStatus(instanceID)
 	assert.NotEqual(t, string(enums.InstanceStatusCompleted), status,
-		"instance must NOT be completed after rejectToStarter")
+		"instance must NOT be completed after toStarter")
 	assert.NotEqual(t, string(enums.InstanceStatusTerminated), status,
-		"instance must NOT be terminated after rejectToStarter")
+		"instance must NOT be terminated after toStarter")
 	assert.Greater(t, env.hiTaskCountForDefKey(instanceID, "second_task"), hiBBefore,
 		"rejected B task should be archived to wf_hi_task")
 
@@ -1487,15 +1467,15 @@ func TestE2E_RejectToStarter_JumpsToStartNode(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(env.activeTasksFor(instanceID, "b_user")) > 0
 	}, 2*time.Second, 50*time.Millisecond,
-		"B should receive a fresh task after A re-approves following rejectToStarter")
+		"B should receive a fresh task after A re-approves following toStarter")
 }
 
 // ---------------------------------------------------------------------------
-// 测试：rejectToNode —— 跳到指定目标节点同样要重新生成任务。
+// 测试：toNode —— 跳到指定目标节点同样要重新生成任务。
 //
-// 与 rejectToPrev 不同，rejectToNode 由 configuration.rejectTargetNode 显式指定
+// 与 toPrev 不同，toNode 由 configuration.reject.target 显式指定
 // 目标节点。验证 jumpToNode 的 supersede 逻辑对"任意 userTask 目标"通用，而不只是
-// "上一个 userTask"。三节点线性链 A → B → C，C 配 rejectToNode=first_task（跳回 A）。
+// "上一个 userTask"。三节点线性链 A → B → C，C 配 reject.target=first_task（跳回 A）。
 // ---------------------------------------------------------------------------
 
 func (e *e2eTestEnv) deployLinearThreeStepProcess(processKey, name string, approvers [3]string, lastRejectStrategy, lastRejectTarget string) {
@@ -1504,15 +1484,15 @@ func (e *e2eTestEnv) deployLinearThreeStepProcess(processKey, name string, appro
 	nodes := make([]map[string]interface{}, 0, 4)
 	for i := 0; i < 3; i++ {
 		cfg := map[string]interface{}{
-			"candidateType":   "user",
-			"candidateConfig": map[string]interface{}{"userIds": []string{approvers[i]}},
-			"approvalType":    "single",
+			"approver":    map[string]interface{}{"type": "user", "userIds": []string{approvers[i]}},
+			"approveMode": "single",
 		}
 		if i == 2 && lastRejectStrategy != "" {
-			cfg["rejectStrategy"] = lastRejectStrategy
+			rejectCfg := map[string]interface{}{"strategy": lastRejectStrategy}
 			if lastRejectTarget != "" {
-				cfg["rejectTargetNode"] = lastRejectTarget
+				rejectCfg["target"] = lastRejectTarget
 			}
+			cfg["reject"] = rejectCfg
 		}
 		nodes = append(nodes, map[string]interface{}{
 			"id":            nodeIDs[i],
@@ -1553,9 +1533,9 @@ func (e *e2eTestEnv) deployLinearThreeStepProcess(processKey, name string, appro
 
 func TestE2E_RejectToNode_RegeneratesTargetTask(t *testing.T) {
 	env := newE2EEnv(t)
-	// A → B → C，C 配 rejectToNode=first_task（跳回 A，跨过 B）
+	// A → B → C，C 配 reject.target=first_task（跳回 A，跨过 B）
 	env.deployLinearThreeStepProcess("reject_node_e2e", "Reject To Node",
-		[3]string{"a_user", "b_user", "c_user"}, "rejectToNode", "first_task")
+		[3]string{"a_user", "b_user", "c_user"}, "toNode", "first_task")
 
 	instanceID := env.startInstance("reject_node_e2e", "starter")
 
@@ -1591,7 +1571,7 @@ func TestE2E_RejectToNode_RegeneratesTargetTask(t *testing.T) {
 
 func TestE2E_RejectToPrev_ThenApproveCompletesRoundTrip(t *testing.T) {
 	env := newE2EEnv(t)
-	env.deployLinearTwoStepProcess("reject_roundtrip_e2e", "Reject Round Trip", "a_user", "b_user", "rejectToPrev")
+	env.deployLinearTwoStepProcess("reject_roundtrip_e2e", "Reject Round Trip", "a_user", "b_user", "toPrev")
 
 	instanceID := env.startInstance("reject_roundtrip_e2e", "starter")
 
@@ -1627,7 +1607,7 @@ func TestE2E_RejectToPrev_ThenApproveCompletesRoundTrip(t *testing.T) {
 
 func TestE2E_RejectToPrev_ArchivedTaskPreservesOriginalEndReason(t *testing.T) {
 	env := newE2EEnv(t)
-	env.deployLinearTwoStepProcess("reject_audit_e2e", "Reject Audit", "a_user", "b_user", "rejectToPrev")
+	env.deployLinearTwoStepProcess("reject_audit_e2e", "Reject Audit", "a_user", "b_user", "toPrev")
 
 	instanceID := env.startInstance("reject_audit_e2e", "starter")
 

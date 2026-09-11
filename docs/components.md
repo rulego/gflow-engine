@@ -77,29 +77,29 @@ _ = components.RegisterFromEngine(engine) // 依赖由引擎自取
 
 核心审批节点。每次到达时按审批模式创建任务，并在每次 `OnMsg`（任务完成、认领等）时检查完成度、推进顺序审批、触发驳回策略。
 
-### 审批模式（approvalType）
+### 审批模式（approveMode）
 
 | 模式 | 语义 |
 |---|---|
 | `single` | 单人审批，完成即过 |
-| `or` | 任一人通过即过 |
+| `any` | 或签：任一人通过即过 |
 | `sequential` | 顺序审批：按解析出的审批人名单依次逐个审批（任一步拒绝即触发驳回策略） |
-| `countersign` | 会签：按 `approvalRule` 比例/人数通过 |
-| `vote` | 投票：达阈值通过或驳回 |
+| `all` | 会签：全员通过（一票否决） |
+| `vote` | 票签：按 `voteRule` 阈值（majority/percent/count）通过或驳回 |
 
-### 候选解析（candidateType）
+### 审批人解析（approver.type）
 
 共 7 种取值（`types/enums.CandidateType`）：
 
-- `user`：`candidateConfig.userIds` 直达（设为候选执行人）；
-- `role`：`candidateConfig.roleIds` 指定角色，候选落库为"待认领"任务（候选组写入 `wf_task_assignee`），认领后展开为执行人；
-- `dept`：`candidateConfig.departmentIds` 指定部门，同 `role` 产生待认领任务；
-- `direct_manager`：经 IdentityService 解析发起人的直接上级（`levels`>1 时取第 N 级主管）；
-- `multi_level_manager`：沿上级链展开多级审批人（`levels`>0 固定审批到第 N 级，`levels`<0 直到最上层）；
-- `initiator_select`：`candidateConfig.selected` 表达式模板按流程变量求值得到审批人 ID 列表；
-- `initiator_self`：发起人本人。
+- `user`：`approver.userIds` 直达（设为候选执行人）；
+- `role`：`approver.roleIds` 指定角色，候选落库为"待认领"任务（候选组写入 `wf_task_assignee`），认领后展开为执行人；
+- `dept`：`approver.deptIds` 指定部门，同 `role` 产生待认领任务；
+- `manager`：经 IdentityService 解析发起人的直接上级（`levels`>1 时取第 N 级主管）；
+- `multiLevelManager`：沿上级链展开多级审批人（`levels`>0 固定审批到第 N 级，`levels`<0 直到最上层）；
+- `initiatorSelect`：`approver.expression` 表达式模板按流程变量求值得到审批人 ID 列表；
+- `initiatorSelf`：发起人本人。
 
-解析依赖 IdentityService 的候选类型（`role` / `dept` / `direct_manager` / `multi_level_manager`）
+解析依赖 IdentityService 的类型（`role` / `dept` / `manager` / `multiLevelManager`）
 在 IdentityService 未注入或解析失败时**返回错误，节点走 `Failure`**，不会静默丢失审批人。
 
 ### 配置字段
@@ -108,24 +108,27 @@ _ = components.RegisterFromEngine(engine) // 依赖由引擎自取
 |---|---|
 | `taskName` / `taskDescription` | 任务标题/描述，覆盖节点名 |
 | `formKey` | 关联表单，落库 `wf_task.form_key` |
-| `candidateType` | user / role / dept / direct_manager / multi_level_manager / initiator_select / initiator_self |
-| `candidateConfig` | `{userIds, roleIds, departmentIds, levels, selected}`，按 `candidateType` 取用 |
-| `approvalType` | 见上表 |
-| `approvalRule` | 会签/投票阈值规则（`dto.CountersignRule`：`{type, value, isSequential}`，字段语义见 [dsl-reference.md](dsl-reference.md) 2.1.2） |
-| `selfApprovalType` | 发起人自审批策略 |
-| `dueDate` | 期限（节点级静态配置） |
-| `timeoutPolicy` | `{dueInMinutes, action}`：到期时间相对**每个任务创建时刻**（配置后优先于静态 `dueDate`）；`action`（remind/autoApprove/autoReject）由宿主逾期巡检（`TaskService.ScanOverdueTasks`）执行，引擎自身不执行动作 |
-| `rejectStrategy` | `terminate`(默认) / `rejectToStarter` / `rejectToPrev` / `rejectToNode` |
-| `rejectTargetNode` | `rejectToNode` 目标 |
-| additionalInfo | `description`、`rejectStrategy`、`rejectTargetNode`、`formPermissions`、`actionPermissions` |
+| `approver` | `{type, userIds, roleIds, deptIds, levels, expression}`，按 `type` 取用 |
+| `approveMode` | 见上表 |
+| `voteRule` | 票签阈值（`{type: majority|percent|count, value}`，仅 vote 消费，缺省过半） |
+| `selfApproval` | 自审策略：`none`(默认) / `skip` / `autoApprove` / `delegateToManager` / `delegateToDeptManager` |
+| `timeout` | `{dueInMinutes, action}`：到期时间相对**每个任务创建时刻**；`action`（remind/autoApprove/autoReject）由宿主逾期巡检（`TaskService.ScanOverdueTasks`）执行，引擎自身不执行动作 |
+| `reject` | `{strategy, target}`：`terminate`(默认) / `toStarter` / `toPrev` / `toNode` |
+| additionalInfo | `description`、`formPermissions`、`actionPermissions` |
 
-### 驳回策略
+配置合法性在部署/更新时校验，非法取值或缺失必填项直接拒绝部署（见 [dsl-reference.md](dsl-reference.md) 2.1.2）。
 
-`terminate` 终止实例（默认）；`rejectToStarter` 回开始节点；`rejectToPrev` 回上一个 userTask；`rejectToNode` 回 `rejectTargetNode`。`aiAgent` 共享 `terminate` 语义，另支持 `backToInitiator`。
+### 驳回策略（reject.strategy）
+
+`terminate` 终止实例（默认）；`toStarter` 回开始节点；`toPrev` 回上一个 userTask；`toNode` 回 `reject.target` 指定节点。`aiAgent` 的 `decision.rejectStrategy` 共用 `terminate`/`toStarter`。`
+
+### 后续审批人预测（upcoming）
+
+实例详情响应携带 `upcoming`：从活跃节点沿 Success 出边向前遍历定义解析出的依次待执行审批节点（nodeId/nodeName/approverType/assignees/unresolved）。复用节点审批人解析逻辑；条件分支处截断；`initiatorSelect` 在变量未落定时 `unresolved="initiatorSelect"`。预测非承诺，转办/加签/条件路由都可能改变实际走向。
 
 ## ccTask
 
-抄送知会。按 `ccUserIds` 创建即完成的任务（endReason=`cc`），经 `CCTaskCreatedListener` 通知宿主；`selfSelect` 支持发起时自选抄送人。不阻塞流程。
+抄送知会。按 `ccUserIds` 创建即完成的任务（endReason=`cc`），经 `CCTaskCreatedListener` 通知宿主。`ccUserIds` 支持静态 userId 与 `${msg.xxx}` 模板项（求值结果为数组自动摊平，发起人自选抄送即写 `${msg.ccUserIds}`）。不阻塞流程。
 
 ## serviceTask
 
@@ -226,11 +229,10 @@ Call Activity。按 `targetId` 启动独立的子流程实例，父流程实例�
 | `headers` | | value 支持 EL 变量 |
 | `body` | | 模板；空则不发 body |
 | `timeoutMs` | `10000` | |
-| `flattenOutput` | `true` | 输出模式（`*bool`，**缺省=平铺(true)**）：`true`=平铺（响应顶层字段并入 `msg.Data`，同名覆盖表单）；`false`=隔离（完整响应只在 `_http`，不碰表单）。**与 `aiAgent` 节点语义与默认值已统一** |
+| `flattenOutput` | `false` | 输出模式（`*bool`，**缺省=隔离(false)**）：`false`=完整响应只在 `_http`，不碰表单；`true`=平铺（响应顶层字段并入 `msg.Data`，同名覆盖表单）。与 `aiAgent` 节点语义与默认值一致 |
 | `outputMappings` | 空 | 按 `{from,to}` 显式映射，在输出模式之后最后执行；目标写 `metadata.k` 进消息元数据 |
 | `reservedKey` | `_http` | 完整响应的存放 key；存量 DSL 可自定义，设计器不暴露 |
 | `allowedHosts` | 空 | SSRF 主机白名单，支持 `host` / `host:port`，重定向逐跳校验 |
-| `blockPrivateNetworks` | `false` | 是否拦截 RFC1918 私有网段（BPM 常需调内网服务，默认放行） |
 | `insecureSkipVerify` | `false` | 跳过 TLS 校验（危险项，设计器不暴露 UI） |
 | `proxyUrl` | | http/https 代理 |
 
@@ -240,7 +242,7 @@ Call Activity。按 `targetId` 启动独立的子流程实例，父流程实例�
 
 1. **scheme 白名单**：仅允许 `http`/`https`；
 2. **主机白名单**：配置 `allowedHosts` 后主机必须命中。按【字面 IP/host:port】信任时视为显式指定地址，完全放行（内网/回环回调可用）；按【域名】信任时拨号期仍保留回环/链路本地/元数据段的兜底拦截（防 DNS 劫持到云元数据）；
-3. **动态主机拦截**：仅当 URL 模板的**主机部分**含 `${...}` 时（`urlHostIsDynamic` 判定，路径含变量不算），对渲染结果做 DNS 解析并逐 IP 校验——回环（127/8、::1）、链路本地/云元数据（169.254/16、fe80::/10）、未指定、组播地址**始终拦截**；RFC1918 私有段仅在 `blockPrivateNetworks=true` 时拦截（避免误伤合法的内网服务调用）；解析失败按拒绝处理；
+3. **动态主机拦截**：仅当 URL 模板的**主机部分**含 `${...}` 时（`urlHostIsDynamic` 判定，路径含变量不算），对渲染结果做 DNS 解析并逐 IP 校验——回环（127/8、::1）、链路本地/云元数据（169.254/16、fe80::/10）、未指定、组播地址**始终拦截**；无白名单时 RFC1918 私有段一并拦截；配置了 `allowedHosts` 后私有段放行（内网回调经白名单显式信任）；解析失败按拒绝处理；
 4. **重定向逐跳校验**：`CheckRedirect` 对每个 30x 目标重复上述校验，防跳转绕过；
 5. **响应体上限 10MB**（`maxHTTPResponseBytes`），防超大响应打爆内存。
 

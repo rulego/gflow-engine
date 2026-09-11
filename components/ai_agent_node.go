@@ -114,10 +114,10 @@ type AIAgentNodeConfiguration struct {
 	// 纯数据用途，与裁决路由无关（路由只认 AI_DECISION 标记）。
 	OutputMappings []OutputMapping `json:"outputMappings,omitempty"`
 
-	// FlattenOutput 输出模式（与 httpCall 节点同语义同默认）：true=平铺（智能体输出
-	// JSON 对象的顶层字段并入 msg.Data 顶层，同名覆盖表单，冲突字段应在 OutputMappings
-	// 里改名规避）；false=隔离（完整输出只放 ReservedKey 下，不碰表单）。
-	// 缺省（nil 或未配置）=平铺。无论开关如何，完整输出始终保留在 msg.Data[ReservedKey] 下。
+	// FlattenOutput 输出模式（与 httpCall 节点同语义同默认）：false=隔离（缺省，
+	// 完整输出只放 ReservedKey 下，不碰表单）；true=平铺（智能体输出 JSON 对象的
+	// 顶层字段并入 msg.Data 顶层，同名覆盖表单）。需要把输出提升为流程变量时，
+	// 优先用 OutputMappings。无论开关如何，完整输出始终保留在 msg.Data[ReservedKey] 下。
 	FlattenOutput *bool `json:"flattenOutput,omitempty"`
 
 	// ReservedKey 智能体输出的隔离 key，默认 "_ai"。
@@ -128,7 +128,7 @@ type AIAgentNodeConfiguration struct {
 type DecisionConfig struct {
 	// RejectStrategy 拒绝时的处理：
 	//   - "terminate"（默认）：终止流程实例
-	//   - "backToInitiator"：退回发起人（跳到开始节点）
+	//   - "toStarter"：退回发起人（跳到开始节点）
 	RejectStrategy string `json:"rejectStrategy"`
 	// Unresolved 未明确裁决（标记缺失/输出损坏）时的处理：
 	//   - "human"（默认）：转人工兜底（需配置 failureHandler，未配置则放行并标记）
@@ -149,12 +149,13 @@ type InputAssemblyConfig struct {
 	ContextSources ContextSourcesConfig `json:"contextSources"`
 }
 
-// ContextSourcesConfig 上下文来源开关
+// ContextSourcesConfig 上下文来源开关。缺省（nil/未配置）即标准审批上下文：
+// 表单数据、流程信息、前序审批意见、发起人开启，附件关闭；仅写覆盖项。
 type ContextSourcesConfig struct {
-	// FormData 流程变量（审批表单数据）
-	FormData bool `json:"formData"`
-	// Attachments 附件主开关：附件清单文本 + 图片送识别 + 文档摘要（从 metadata.attachments
-	// 或表单上传字段 attachments 读取）
+	// FormData 流程变量（审批表单数据），缺省开
+	FormData *bool `json:"formData,omitempty"`
+	// Attachments 附件主开关，缺省关：附件清单文本 + 图片送识别 + 文档摘要
+	// （从 metadata.attachments 或表单上传字段 attachments 读取）
 	Attachments bool `json:"attachments"`
 	// AttachmentsImages 图片送识别（nil=跟随 Attachments 主开关）。
 	// 开启时图片以 image_url 内容片随消息发送：模型支持视觉则直接看图，
@@ -163,12 +164,20 @@ type ContextSourcesConfig struct {
 	// AttachmentsDocs 文档摘要送识别（nil=跟随 Attachments 主开关）。
 	// 开启时文字型文档（PDF/TXT/MD）抽取文本后以章节形式随消息发送。
 	AttachmentsDocs *bool `json:"attachmentsDocs,omitempty"`
-	// ProcessInfo 流程元信息（processKey/instanceId/initiator/已用时长）
-	ProcessInfo bool `json:"processInfo"`
-	// PrevComments 前序节点审批意见（从 metadata.comments 读取）
-	PrevComments bool `json:"prevComments"`
-	// Initiator 发起人信息（owner/current_user）
-	Initiator bool `json:"initiator"`
+	// ProcessInfo 流程元信息（processKey/instanceId/initiator/已用时长），缺省开
+	ProcessInfo *bool `json:"processInfo,omitempty"`
+	// PrevComments 前序节点审批意见（从 metadata.comments 读取），缺省开
+	PrevComments *bool `json:"prevComments,omitempty"`
+	// Initiator 发起人信息（owner/current_user），缺省开
+	Initiator *bool `json:"initiator,omitempty"`
+}
+
+// enabled 取开关值：nil 返回 def，否则 *p。
+func enabled(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
 }
 
 // 裁决标记解析：两级匹配，均取最后一次命中（模型先复述协议再给结论时，最后的才是真裁决）。
@@ -230,7 +239,7 @@ func normalizeDecisionToken(tok string) AIDecision {
 //
 // 裁决路由（decision 启用时）：节点在 user 消息末尾注入裁决协议，智能体在输出末行
 // 输出 AI_DECISION 标记，引擎按标记路由——不依赖输出是合法 JSON：
-//   - REJECT → 拒绝策略（terminate/backToInitiator）
+//   - REJECT → 拒绝策略（terminate/toStarter）
 //   - PASS   → 放行
 //   - UNRESOLVED → 未裁决策略（human/pass/reject），绝不静默
 //
@@ -283,7 +292,7 @@ func (n *AIAgentNode) Init(ruleConfig types.Config, configuration types.Configur
 
 	if n.Config.Decision != nil {
 		// 未知取值初始化期告警，运行时按默认处理
-		if s := strings.TrimSpace(n.Config.Decision.RejectStrategy); !isValidAIAgentRejectStrategy(s) {
+		if s := strings.TrimSpace(n.Config.Decision.RejectStrategy); !isValidRejectStrategy(s) {
 			logrus.Warnf("aiAgent node %s has unknown rejectStrategy %q; will terminate as fallback at runtime", n.GetSelfId(), n.Config.Decision.RejectStrategy)
 		}
 		if u := strings.TrimSpace(n.Config.Decision.Unresolved); !isValidAIAgentUnresolved(u) {
@@ -312,9 +321,9 @@ func (n *AIAgentNode) Init(ruleConfig types.Config, configuration types.Configur
 	return nil
 }
 
-// flattenOutput 输出合并的平铺开关：缺省（nil）=平铺，与 httpCall 节点同默认。
+// flattenOutput 输出合并的平铺开关：缺省（nil）=隔离，与 httpCall 节点同默认。
 func (n *AIAgentNode) flattenOutput() bool {
-	return n.Config.FlattenOutput == nil || *n.Config.FlattenOutput
+	return n.Config.FlattenOutput != nil && *n.Config.FlattenOutput
 }
 
 // OnMsg 处理消息
@@ -438,7 +447,7 @@ func (n *AIAgentNode) assembleInput(ctx types.RuleContext, msg types.RuleMsg) ([
 	// 只取扁平业务变量，不含 id/ts/metadata 信封（避免把租户/用户等内部信息写进提示词）
 	vars := extractVariables(ctx, msg)
 
-	if cfg.ContextSources.FormData {
+	if enabled(cfg.ContextSources.FormData, true) {
 		if formData := serializeVariables(vars); formData != "" && formData != "{}" {
 			contextParts = append(contextParts, "## 表单数据\n"+formData)
 		}
@@ -467,15 +476,15 @@ func (n *AIAgentNode) assembleInput(ctx types.RuleContext, msg types.RuleMsg) ([
 			}
 		}
 	}
-	if cfg.ContextSources.ProcessInfo {
+	if enabled(cfg.ContextSources.ProcessInfo, true) {
 		contextParts = append(contextParts, "## 流程信息\n"+n.buildProcessInfo(msg))
 	}
-	if cfg.ContextSources.PrevComments {
+	if enabled(cfg.ContextSources.PrevComments, true) {
 		if comments := n.buildPrevComments(ctx, msg); comments != "" {
 			contextParts = append(contextParts, "## 前序审批意见\n"+comments)
 		}
 	}
-	if cfg.ContextSources.Initiator {
+	if enabled(cfg.ContextSources.Initiator, true) {
 		contextParts = append(contextParts, "## 发起人\n"+n.buildInitiatorInfo(ctx, msg))
 	}
 
@@ -708,7 +717,7 @@ func (n *AIAgentNode) reservedKey() string {
 // 本节点存在 userTask 型人工任务（调用失败/未裁决兜底待办）时，重入不再调用 AI：
 //   - 仍有未完成待办 → DoOnEnd 继续等待
 //   - 人工已同意（approved）→ 直接 TellSuccess 走下一节点
-//   - 人工已拒绝（rejected）→ handleReject（terminate/backToInitiator）
+//   - 人工已拒绝（rejected）→ handleReject（terminate/toStarter）
 //
 // 过滤 TaskType=userTask：TaskCreator 切面给节点自动创建/完成的 aiAgent 型任务不参与判定。
 // 返回 true 表示本轮 OnMsg 已终结，调用方直接 return。
@@ -905,7 +914,7 @@ func dataVarsFromMsg(msg types.RuleMsg) map[string]interface{} {
 }
 
 // handleReject 处理拒绝（AI 明确拒绝、人工兜底拒绝、未裁决策略=reject 共用）。
-//   - "backToInitiator"：ExecuteNext 跳到开始节点（按 FirstNodeIndex 解析真实开始节点 ID）
+//   - "toStarter"：ExecuteNext 跳到开始节点（按 FirstNodeIndex 解析真实开始节点 ID）
 //   - "terminate"（默认/空值/未知值）：终止流程实例
 func (n *AIAgentNode) handleReject(ctx types.RuleContext, msg types.RuleMsg) {
 	instanceID := metaValue(msg, constants.KeyInstanceID)
@@ -921,8 +930,8 @@ func (n *AIAgentNode) handleReject(ctx types.RuleContext, msg types.RuleMsg) {
 	}
 
 	switch strategy {
-	case RejectStrategyBackToInitiator:
-		logrus.Infof("AIAgentNode %s: reject → backToInitiator, instance=%s", n.GetSelfId(), instanceID)
+	case RejectStrategyToStarter:
+		logrus.Infof("AIAgentNode %s: reject → toStarter, instance=%s", n.GetSelfId(), instanceID)
 		startID := getStartNodeID(ctx)
 		if startID == "" {
 			logrus.Errorf("AIAgentNode %s: cannot resolve start node id for instance %s, falling back to terminate", n.GetSelfId(), instanceID)
@@ -932,12 +941,12 @@ func (n *AIAgentNode) handleReject(ctx types.RuleContext, msg types.RuleMsg) {
 		// 跳转前清理目标节点上一轮任务，避免重入时旧记录被判定为已完成
 		if n.TaskService != nil {
 			if _, err := n.TaskService.SupersedeNodeTasks(ctx.GetContext(), instanceID, startID, "AI拒绝退回，清理上一轮任务"); err != nil {
-				logrus.WithError(err).Warnf("AIAgentNode %s: supersede target node tasks before backToInitiator failed", n.GetSelfId())
+				logrus.WithError(err).Warnf("AIAgentNode %s: supersede target node tasks before toStarter failed", n.GetSelfId())
 			}
 		}
 		// 带上当前 msg.Data（含 _ai 拒绝理由 + 表单数据）传入，退回后发起人能看到被退原因与原始数据。
 		if err := n.RuntimeService.ExecuteNext(ctx.GetContext(), instanceID, startID, dataVarsFromMsg(msg)); err != nil {
-			logrus.Errorf("AIAgentNode %s: backToInitiator failed: %v, falling back to terminate", n.GetSelfId(), err)
+			logrus.Errorf("AIAgentNode %s: toStarter failed: %v, falling back to terminate", n.GetSelfId(), err)
 			terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, "AI拒绝：退回发起人失败，降级终止")
 			return
 		}

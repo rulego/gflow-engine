@@ -228,7 +228,17 @@ func TestReassignTask_EndToEnd(t *testing.T) {
 	_, hasTime := vars["reassign_time"]
 	require.True(t, hasTime, "reassign_time key present")
 
-	// 校验监听器收到 TaskEventForwarded
+	// 校验监听器收到 TaskEventForwarded。事件在独立 goroutine 中异步派发，必须轮询等待。
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n == 1 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	require.Len(t, got, 1, "listener should receive exactly one event")

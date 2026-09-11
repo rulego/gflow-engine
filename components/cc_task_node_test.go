@@ -89,8 +89,8 @@ func TestCCTaskNode_GetSelfName_Default(t *testing.T) {
 
 func TestCCTaskNodeConfiguration_DefaultValues(t *testing.T) {
 	cfg := CCTaskNodeConfiguration{}
-	if cfg.SelfSelect != false {
-		t.Error("expected SelfSelect to default to false")
+	if len(cfg.CCUserIds) != 0 {
+		t.Error("expected CCUserIds to default to empty")
 	}
 	if len(cfg.CCUserIds) != 0 {
 		t.Error("expected CCUserIds to default to empty")
@@ -198,38 +198,37 @@ func runCCEngine(t *testing.T, configuration, dataJSON string) []string {
 	return assignees
 }
 
-// 自选语义：名单完全以实例变量为准，静态配置名单（如先配成员后切自选残留的）
-// 不参与抄送
-func TestCCTaskNode_OnMsg_SelfSelectOverridesStaticList(t *testing.T) {
+// 模板项语义：${msg.ccUserIds} 求值为数组时逐项摊平
+func TestCCTaskNode_OnMsg_TemplateFlattensVariableList(t *testing.T) {
 	assignees := runCCEngine(t,
-		`{"ccUserIds":["u-static"],"selfSelect":true}`,
+		`{"ccUserIds":["${msg.ccUserIds}"]}`,
 		`{"ccUserIds":["u-self-1","u-self-2"]}`)
 	require.Equal(t, []string{"u-self-1", "u-self-2"}, assignees)
 }
 
-// 自选但发起人未选（变量缺失）：无人被抄送，静态名单不得兜底
-func TestCCTaskNode_OnMsg_SelfSelectWithoutVariableCCsNobody(t *testing.T) {
+// 模板项引用的变量缺失：求值为空，无人被抄送
+func TestCCTaskNode_OnMsg_TemplateWithoutVariableCCsNobody(t *testing.T) {
 	assignees := runCCEngine(t,
-		`{"ccUserIds":["u-static"],"selfSelect":true}`,
+		`{"ccUserIds":["${msg.ccUserIds}"]}`,
 		`{}`)
 	require.Empty(t, assignees)
 }
 
 // 未开启自选：静态名单生效
-func TestCCTaskNode_OnMsg_StaticListWithoutSelfSelect(t *testing.T) {
+func TestCCTaskNode_OnMsg_StaticList(t *testing.T) {
 	assignees := runCCEngine(t,
-		`{"ccUserIds":["u-a","u-b"],"selfSelect":false}`,
+		`{"ccUserIds":["u-a","u-b"]}`,
 		`{}`)
 	require.ElementsMatch(t, []string{"u-a", "u-b"}, assignees)
 }
 
-// 自选/静态名单夹带跨租户 userId：被租户校验过滤，不创建越租户抄送任务。
-func TestCCTaskNode_OnMsg_SelfSelectFiltersCrossTenant(t *testing.T) {
+// 模板名单夹带跨租户 userId：被租户校验过滤，不创建越租户抄送任务。
+func TestCCTaskNode_OnMsg_TemplateFiltersCrossTenant(t *testing.T) {
 	ccTestIdentity.deny("u-self-2")
 	defer ccTestIdentity.reset()
 
 	assignees := runCCEngine(t,
-		`{"ccUserIds":["u-static"],"selfSelect":true}`,
+		`{"ccUserIds":["${msg.ccUserIds}"]}`,
 		`{"ccUserIds":["u-self-1","u-self-2"]}`)
 	require.Equal(t, []string{"u-self-1"}, assignees)
 }
@@ -241,7 +240,7 @@ func TestCCTaskNode_OnMsg_BatchTenantCheckSingleQuery(t *testing.T) {
 	defer ccTestIdentity.reset()
 
 	assignees := runCCEngine(t,
-		`{"ccUserIds":["u-b1","u-b2","u-cross"],"selfSelect":false}`,
+		`{"ccUserIds":["u-b1","u-b2","u-cross"]}`,
 		`{}`)
 	require.ElementsMatch(t, []string{"u-b1", "u-b2"}, assignees)
 	require.Equal(t, 1, ccTestIdentity.batchCallCount(), "3 recipients should be checked in one batch query")

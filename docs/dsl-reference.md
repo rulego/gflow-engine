@@ -1,13 +1,10 @@
 # 流程 DSL 参考：顶层结构与节点配置
 
 > 本文档是**设计器/DSL 编写向**的配置参考：流程定义（规则链）顶层结构、各节点 `configuration` 字段表与 JSON 示例、组件清单接口。
-> 原名《rulego节点API接口文档》（2026-06 快照）误置于 rulego 仓库，现迁回引擎仓库并校对节点类型名。
 >
 > 相关文档：
 > - [components.md](components.md)——节点**机制**（注册、生命周期、出边语义、httpCall SSRF 防护），面向引擎集成者
 > - gflow-doc 站点 `guide/dsl.md` / `guide/features/nodes.md`——用户向精简版
->
-> 类型名校对（相对原始快照）：`functions`→`serviceTask`（rulego 原生注册名 functions 仍指同类）、`flow`→`automation`、`restApiCall`→`httpCall`（BPM 专用实现，字段全换，见 2.1.11）。
 
 ## 1. 规则链（流程定义）配置说明
 
@@ -145,8 +142,8 @@
         "name": "经理审批",
         "debugMode": false,
         "configuration": {
-          "candidateType": "direct_manager",
-          "approvalType": "single"
+          "approver": {"type": "manager"},
+          "approveMode": "single"
         },
         "additionalInfo": {
           "description": "直属经理审批",
@@ -245,21 +242,19 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
 
 ##### 配置
 
-| 字段                 | 类型           | 说明                                                                                                                            |
-|--------------------|--------------|-------------------------------------------------------------------------------------------------------------------------------|
-| `candidateType`    | string       | 审批人员类型，可选：`user`（指定成员）/ `role`（指定角色）/ `dept`（指定部门，产生待认领任务）/ `direct_manager`（直接上级）/ `multi_level_manager`（多级上级）/ `initiator_select`（发起人自选）/ `initiator_self`（发起人自己） |
-| `candidateConfig`  | object       | 类型对应的子配置键：`userIds:string[]`（user 型指定成员）/ `roleIds:string[]`（role 型指定角色）/ `departmentIds:string[]`（dept 型指定部门）/ `levels:number`（direct_manager、multi_level_manager 的上级层级数）/ `selected:string`（initiator_select 型审批人表达式模板，如 `${msg.selectedUsers}`，运行时以流程变量求值得到审批人ID列表） |
-| `approvalType`     | string       | 审批类型：`single(单人), or(或签), sequential(按顺序依次审批), countersign(会签), vote(票签)                                                      |
-| `approvalRule`     | string(JSON) | 多人审批通过规则（结构为 `dto.CountersignRule`）：`{"type":"all","value":0,"isSequential":false}`。`type` 可选 `all`（全部通过，**缺省**）/ `any`（任一通过）/ `majority`（过半）/ `percent`（按百分比通过，`value` 取 0~100）/ `count`（固定票数，`value` 为通过票数）；`isSequential=true` 表示子任务按创建顺序逐个激活（false 为并行）。仅 countersign/vote 等多人会签场景消费，single 忽略 |
-| `selfApprovalType` | string       | 自审策略：可选：allow(发起人自己审批)/skip(自动跳过)/auto_approve(见下方警示)/delegate_to_manager(转交直接上级)/delegate_to_department_manager(转交部门负责人)                         |
-| `dueDate`          | string       | 静态到期时间（可选），支持 RFC3339 / `2006-01-02 15:04:05` / `2006-01-02`；节点级配置，该节点所有任务实例共用同一到期时刻，不支持流程变量；解析失败仅告警 |
-| `timeoutPolicy`    | object       | 超时策略 `{dueInMinutes:number, action:string}`（可选）：到期时间改为相对**每个任务创建时刻**的时长，配置后优先于静态 `dueDate`；`action`（remind/autoApprove/autoReject）由宿主逾期巡检执行，引擎自身不执行动作，详见 [components.md](components.md#userTask) |
+| 字段             | 类型          | 说明                                                                                                                                                                |
+|----------------|-------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `approver`     | object      | 审批人配置。`type` 可选：`user`（指定成员，`userIds:string[]`）/ `role`（指定角色，`roleIds:string[]`，运行时经 IdentityService 展开）/ `dept`（指定部门，`deptIds:string[]`，产生待认领任务）/ `manager`（直接上级，`levels:number` 取第 N 级）/ `multiLevelManager`（多级上级，`levels>0` 固定到第 N 级，`levels<0` 直到最上层）/ `initiatorSelect`（发起人自选，`expression:string` 为审批人表达式模板，如 `${msg.selectedUsers}`，运行时以流程变量求值得到审批人ID列表）/ `initiatorSelf`（发起人自己） |
+| `approveMode`  | string      | 审批方式：`single`（单人，**缺省**）/ `any`（或签）/ `sequential`（顺序审批）/ `all`（会签，全员通过，一票否决）/ `vote`（票签，阈值见 `voteRule`）                                                              |
+| `voteRule`     | object      | 票签通过阈值，仅 `approveMode=vote` 消费：`{"type":"majority","value":0}`。`type` 可选 `majority`（过半，**缺省**）/ `percent`（按百分比，`value` 取 0~100）/ `count`（固定票数，`value` 为通过票数）              |
+| `selfApproval` | string      | 自审策略（审批人与发起人为同一人时）：`none`（不过滤，**缺省**）/ `skip`（移除发起人）/ `autoApprove`（保留发起人）/ `delegateToManager`（转交直接上级）/ `delegateToDeptManager`（转交部门负责人）                              |
+| `timeout`      | object      | 超时策略 `{dueInMinutes:number, action:string}`（可选）：到期时间为相对**每个任务创建时刻**的时长；`action`（`remind`/`autoApprove`/`autoReject`）由宿主逾期巡检执行，引擎自身不执行动作，详见 [components.md](components.md#usertask) |
+| `reject`       | object      | 驳回配置 `{strategy, target}`：`strategy` 可选 `terminate`（终止实例，**缺省**）/ `toStarter`（跳回开始节点）/ `toPrev`（跳到上一个 userTask 节点）/ `toNode`（跳到 `target` 指定节点，必填链中存在的节点ID）；目标不可达时按节点 Reject/Failure 出边兜底，无出边则终止 |
+| `taskName` / `taskDescription` / `formKey` | string | 可选：任务显示名（缺省节点 name）/ 任务描述（缺省 additionalInfo.description）/ 表单标识（透传 `wf_task.form_key`） |
 
-> ⚠️ `selfApprovalType=auto_approve`：名为"自动通过"，但**当前行为与 `allow` 一致**——仅保留发起人为
-> 审批人，不会产生任何自动通过标记（见 types/enums/enums.go 中 `SelfApprovalTypeAutoApprove`
-> 的注释）。依赖"发起人自动通过"语义的场景请勿使用该取值。
+> 配置校验：部署/更新时校验 `approver`/`approveMode`/`voteRule`/`selfApproval`/`timeout`/`reject` 的取值与必填项（如 user 型必须提供 `userIds`、`toNode` 必须提供 `target`），非法配置直接拒绝部署。
 
-##### 节点 additionalInfo配置
+##### 节点 additionalInfo 配置
 
 | 字段                  | 类型     | 说明                                                             |
 |---------------------|--------|----------------------------------------------------------------|
@@ -276,10 +271,6 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
 | `terminate`        | boolean | `true` | 是否显示"终止流程"按钮（active 任务；与 startTask 上的 terminate 取 OR） |
 | `awaken`           | boolean | `true` | 是否显示"唤醒"按钮（suspended 任务 + 办理人）           |
 | `uploadAttachment` | boolean | `false` | 是否显示"上传附件"按钮（active 任务）                   |
-| `rejectStrategy`   | string  | `""`   | 驳回策略（见下方）                                 |
-| `rejectTargetNode` | string  | `""`   | 仅当 `rejectStrategy="rejectToNode"` 时有效     |
-
-  - `rejectStrategy` 取值：`""`（使用默认/终止流程）/`rejectToStarter`（驳回到开始节点）/`rejectToNode`（驳回到指定节点）/`rejectToPrev`（驳回到上一个节点）/`terminate`（终止流程）
 
 - **任务级后端强制动作**（不进入设计器，按运行态状态强制）：
 
@@ -302,8 +293,8 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
     "type": "userTask",
     "name": "经理审批",
     "configuration": {
-      "candidateType": "direct_manager",
-      "approvalType": "single"
+      "approver": {"type": "manager"},
+      "approveMode": "single"
     }
   }
   ```
@@ -314,9 +305,8 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
     "type": "userTask",
     "name": "多人或签审批",
     "configuration": {
-      "candidateType": "user",
-      "candidateConfig": {"userIds": ["user_001", "user_002"]},
-      "approvalType": "or"
+      "approver": {"type": "user", "userIds": ["user_001", "user_002"]},
+      "approveMode": "any"
     }
   }
   ```
@@ -327,9 +317,8 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
     "type": "userTask",
     "name": "逐级审批",
     "configuration": {
-      "candidateType": "multi_level_manager",
-      "candidateConfig": {"levels": 3},
-      "approvalType": "sequential"
+      "approver": {"type": "multiLevelManager", "levels": 3},
+      "approveMode": "sequential"
     }
   }
   ```
@@ -340,22 +329,22 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
     "type": "userTask",
     "name": "票签审批",
     "configuration": {
-      "candidateType": "user",
-      "candidateConfig": {"userIds": ["user_001", "user_002", "user_003"]},
-      "approvalType": "vote",
-      "approvalRule": "{\"type\":\"percent\",\"value\":60,\"isSequential\":false}"
+      "approver": {"type": "user", "userIds": ["user_001", "user_002", "user_003"]},
+      "approveMode": "vote",
+      "voteRule": {"type": "percent", "value": 60}
     }
   }
   ```
-  - 示例（发起人自选：表达式返回ID列表）
+  - 示例（发起人自选 + 驳回跳回开始节点）
   ```json
   {
     "id": "node_initiator_select",
     "type": "userTask",
     "name": "发起人自选审批人",
     "configuration": {
-      "candidateType": "initiator_select",
-      "approvalType": "or"
+      "approver": {"type": "initiatorSelect", "expression": "${msg.selectedUsers}"},
+      "approveMode": "any",
+      "reject": {"strategy": "toStarter"}
     }
   }
   ```
@@ -366,13 +355,14 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
 
 | 字段           | 类型       | 说明                                           |
 |--------------|----------|----------------------------------------------|
-| `ccUserIds`  | string[] | 抄送用户ID列表                                     |
-| `selfSelect` | boolean  | 是否发起人自选；当为 `true` 时，发起流程时候改节点用户可以自选抄送人用户ID列表 |
-##### 节点 additionalInfo配置
+| `ccUserIds`  | string[] | 抄送人列表：静态 userId 或 `${msg.xxx}` 表达式模板项；模板项运行时以流程变量求值，结果为字符串取单值、为数组则逐项摊平（发起人自选抄送即写 `["${msg.ccUserIds}"]`） |
+
+##### 节点 additionalInfo 配置
 
 | 字段                | 类型     | 说明                             |
 |-------------------|--------|--------------------------------|
 | `formPermissions` | object | 表单字段权限映射（`r`=只读、`w`=可写、`h`=隐藏） |
+
   - 示例
   ```json
   {
@@ -380,8 +370,7 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
     "type": "ccTask",
     "name": "抄送通知",
     "configuration": {
-      "ccUserIds": ["user_hr_001", "user_mgr_001"],
-      "selfSelect": false
+      "ccUserIds": ["user_hr_001", "user_mgr_001", "${msg.ccUserIds}"]
     }
   }
   ```
@@ -555,17 +544,16 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
 | `headers` | object | | 请求头，value 支持 EL 变量 |
 | `body` | string | | 请求体模板；空则不发 body |
 | `timeoutMs` | number | `10000` | 超时（毫秒） |
-| `flattenOutput` | bool | `true` | 输出模式（`*bool`，**缺省=平铺(true)**）：`true`=响应对象顶层字段平铺进 `msg.Data`（同名覆盖表单）；`false`=隔离（完整响应只写 `reservedKey`，不碰表单）。与 aiAgent 节点语义与默认值已统一 |
+| `flattenOutput` | bool | `false` | 输出模式（`*bool`，**缺省=隔离(false)**）：`false`=完整响应只写 `reservedKey`，不碰表单；`true`=响应对象顶层字段平铺进 `msg.Data`（同名覆盖表单）。查接口补全数据的场景显式开启，或用 `outputMappings` 提升字段。与 aiAgent 节点语义与默认值一致 |
 | `outputMappings` | array | 空 | 按 `[{from,to}]` 显式映射，在输出模式之后最后执行（优先级最高） |
-| `reservedKey` | string | `_http` | 非 object 响应（数组/纯文本）整体写入的 key，不污染表单字段 |
+| `reservedKey` | string | `_http` | 完整响应写入的 key（对象存对象、非对象存原文），不污染表单字段 |
 | `allowedHosts` | array | 空 | SSRF 主机白名单，支持 `host` / `host:port` |
-| `blockPrivateNetworks` | bool | `false` | 是否拦截 RFC1918 私有网段 |
 | `insecureSkipVerify` | bool | `false` | 跳过 TLS 校验（危险项，设计器不暴露） |
 | `proxyUrl` | string | | http/https 代理 |
 
 ##### 示例
 
-- 基础调用 + 响应平铺
+- 基础调用（缺省隔离，完整响应在 `msg._http`）
 ```json
 {
   "id": "node_http",
@@ -583,7 +571,7 @@ robfig/cron WithSeconds 约定）。**触发器是链级配置，不出现在画
 }
 ```
 
-- 显式映射（只取需要的字段，避免覆盖表单变量）
+- 显式映射（只取需要的字段提升为流程变量）
 ```json
 {
   "id": "node_http2",

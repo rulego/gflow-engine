@@ -221,8 +221,8 @@ func TestIsNegativeApprovalResult(t *testing.T) {
 
 func TestGetAllCountersignTypes(t *testing.T) {
 	all := GetAllCountersignTypes()
-	if len(all) != 7 {
-		t.Errorf("expected 7 countersign types, got %d", len(all))
+	if len(all) != 5 {
+		t.Errorf("expected 5 countersign types, got %d", len(all))
 	}
 }
 
@@ -381,7 +381,7 @@ func TestIsValidInstanceStatus(t *testing.T) {
 func TestApprovalTypeEnum(t *testing.T) {
 	types := map[ApprovalType]bool{
 		ApprovalTypeSingle:      true,
-		ApprovalTypeOr:          true,
+		ApprovalTypeAny:         true,
 		ApprovalTypeSequential:  true,
 		ApprovalTypeVote:        true,
 		ApprovalTypeCountersign: true,

@@ -145,9 +145,6 @@ func TestParseCountersignRule_Empty(t *testing.T) {
 	if rule.Value != 0 {
 		t.Errorf("Value = %v, want 0", rule.Value)
 	}
-	if rule.IsSequential {
-		t.Error("IsSequential should be false by default")
-	}
 }
 
 func TestParseCountersignRule_AllTypes(t *testing.T) {
@@ -156,14 +153,12 @@ func TestParseCountersignRule_AllTypes(t *testing.T) {
 		input    string
 		wantType string
 		wantVal  float64
-		wantSeq  bool
 	}{
-		{"all", `{"type":"all"}`, "all", 0, false},
-		{"any", `{"type":"any"}`, "any", 0, false},
-		{"majority", `{"type":"majority"}`, "majority", 0, false},
-		{"percent", `{"type":"percent","value":75}`, "percent", 75, false},
-		{"count", `{"type":"count","value":3}`, "count", 3, false},
-		{"sequential", `{"type":"any","isSequential":true}`, "any", 0, true},
+		{"all", `{"type":"all"}`, "all", 0},
+		{"any", `{"type":"any"}`, "any", 0},
+		{"majority", `{"type":"majority"}`, "majority", 0},
+		{"percent", `{"type":"percent","value":75}`, "percent", 75},
+		{"count", `{"type":"count","value":3}`, "count", 3},
 	}
 
 	for _, tt := range tests {
@@ -176,9 +171,6 @@ func TestParseCountersignRule_AllTypes(t *testing.T) {
 			assertEqual(t, "Type", rule.Type, tt.wantType)
 			if rule.Value != tt.wantVal {
 				t.Errorf("Value = %v, want %v", rule.Value, tt.wantVal)
-			}
-			if rule.IsSequential != tt.wantSeq {
-				t.Errorf("IsSequential = %v, want %v", rule.IsSequential, tt.wantSeq)
 			}
 		})
 	}

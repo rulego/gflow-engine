@@ -18,10 +18,10 @@ package components
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
+
+	"strings"
 
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
@@ -41,8 +41,7 @@ import (
 const UserTaskNodeType = constants.NodeTypeUserTask
 
 // UserTaskNodeConfiguration 用户任务节点配置结构（节点 configuration 字段）
-// additionalInfo 中的 formPermissions/ActionPermissions 仅前端显示控制；
-// rejectStrategy/rejectTargetNode 为运行时驳回配置（configuration 未配置时回退读取 additionalInfo）。
+// additionalInfo 中的 formPermissions/ActionPermissions 仅前端显示控制。
 type UserTaskNodeConfiguration struct {
 	// 任务显示名（可选）：覆盖节点 name 作为任务名称，
 	// 未配置时回退节点 name（additionalInfo.description 同理回退）。
@@ -52,58 +51,26 @@ type UserTaskNodeConfiguration struct {
 	// 表单标识（可选）：透传到 wf_task.form_key，前端按此渲染任务表单。
 	FormKey string `json:"formKey"`
 
-	// 审批人员类型
-	// 可选：user（指定成员）/role（指定角色）/dept（指定部门，待认领）/direct_manager（直接上级）/initiator_select（发起人自选）/initiator_self（发起人自己）/multi_level_manager（多级上级）
-	CandidateType string `json:"candidateType"`
-	// 审批人员类型配置，按 CandidateType 取用以下键：
-	// userIds []string       - user 型：指定成员ID列表
-	// roleIds []string       - role 型：指定角色ID列表（运行时经 IdentityService 展开）
-	// departmentIds []string - dept 型：指定部门ID列表（产生待认领任务，须先认领再审批）
-	// levels int             - multi_level_manager 型：逐级上级审批层级数（默认1）
-	// selected string         - initiator_select 型：审批人表达式模板（如 ${msg.selectedUsers}），
-	//   运行时以流程变量求值得到审批人ID列表
-	CandidateConfig map[string]interface{} `json:"candidateConfig"`
+	// Approver 审批人配置
+	Approver ApproverConfig `json:"approver"`
 
-	// 审批配置
-	// 审批类型：single(单人，缺省)/or(或签)/sequential(顺序依次审批)/countersign(会签)/vote(票签)
-	ApprovalType string `json:"approvalType"`
-	// 多人审批的通过规则 JSON（对应 dto.CountersignRule）：
-	//   {"type":"all","value":0,"isSequential":false}
-	// type 缺省为 all；可选 all 全部通过 / any 任一通过 / majority 过半 /
-	// percent 按百分比通过（value 取 0~100）/ count 固定通过人数（value 为票数）。
-	// isSequential=true 表示子任务按创建顺序逐个激活。仅 countersign/vote 等多人
-	// 会签场景消费该字段，single 单人审批忽略。
-	ApprovalRule string `json:"approvalRule"`
+	// ApproveMode 审批方式：single（单人，缺省）/any（或签）/all（会签）/
+	// sequential（顺序审批）/vote（票签，阈值见 VoteRule）
+	ApproveMode string `json:"approveMode"`
+	// VoteRule 票签通过阈值，仅 approveMode=vote 消费；未配置时按过半处理
+	VoteRule *VoteRule `json:"voteRule,omitempty"`
 
-	// 自审配置：审批人与提交人为同一人时的处理方式
-	// 可选：""(缺省，不做自审过滤)/allow(发起人自己审批)/skip(自动跳过)/delegate_to_manager(转交直接上级)/delegate_to_department_manager(转交部门负责人)
-	SelfApprovalType string `json:"selfApprovalType"`
+	// SelfApproval 自审处理：审批人与提交人为同一人时的处理方式
+	// none（缺省，不做自审过滤）/skip（移除发起人）/autoApprove（保留发起人）/
+	// delegateToManager（转交直接上级）/delegateToDeptManager（转交部门负责人）
+	SelfApproval string `json:"selfApproval"`
 
-	// 任务到期时间（可选）。注意这是节点级静态配置：该节点的所有任务实例共用同一个
-	// 到期时刻，不支持流程变量。
-	// 支持格式：RFC3339 / "2006-01-02 15:04:05" / "2006-01-02"
-	// 解析失败时仅告警，任务 DueDate 保持为空
-	DueDate string `json:"dueDate"`
+	// Timeout 超时处理策略：到期时间相对每个任务创建时刻的时长，到期后由宿主
+	// 逾期巡检（overdue sweeper）按 Action 处理。
+	Timeout *TimeoutPolicy `json:"timeout,omitempty"`
 
-	// 超时处理策略（可选）：到期时间改为相对每个任务创建时刻的时长，到期后由宿主
-	// 逾期巡检（overdue sweeper）按 Action 处理。配置后优先于静态 DueDate。
-	TimeoutPolicy *TimeoutPolicy `json:"timeoutPolicy,omitempty"`
-
-	// 驳回策略
-	// 可选：
-	//   - ""（默认）/ "terminate" : 终止实例
-	//   - "rejectToStarter"        : 跳回开始节点
-	//   - "rejectToPrev"           : 跳到上一个 userTask 节点
-	//   - "rejectToNode"           : 跳到 RejectTargetNode 指定的节点
-	// 跳转失败时会调用 fallbackRejection：若节点存在 Reject/Failure 出边则走该出边，否则 terminate
-	RejectStrategy string `json:"rejectStrategy"`
-	// 退回目标节点ID（仅 rejectToNode 生效）：须填链定义中存在的节点ID，填错时按
-	// fallbackRejection 兜底处理
-	RejectTargetNode string `json:"rejectTargetNode"`
-
-	// RejectType 当前版本未生效：无论配置什么都忽略。拒绝来源的差异化控制统一由
-	// RejectStrategy 表达；保留 JSON 字段仅为存量 DSL 反序列化兼容。
-	RejectType string `json:"rejectType"`
+	// Reject 驳回配置
+	Reject RejectConfig `json:"reject"`
 }
 
 // TimeoutPolicy userTask 超时处理策略。
@@ -116,14 +83,13 @@ type TimeoutPolicy struct {
 	Action       string `json:"action"`
 }
 
-// resolveDueDate 计算任务到期时间：timeoutPolicy.dueInMinutes（>0）优先，
-// 否则用 Init 解析的静态 dueDate。
+// resolveDueDate 计算任务到期时间：相对任务创建时刻的超时时长。
 func (n *UserTaskNode) resolveDueDate() *time.Time {
-	if p := n.Config.TimeoutPolicy; p != nil && p.DueInMinutes > 0 {
+	if p := n.Config.Timeout; p != nil && p.DueInMinutes > 0 {
 		t := time.Now().Add(time.Duration(p.DueInMinutes) * time.Minute)
 		return &t
 	}
-	return n.dueDate
+	return nil
 }
 
 // UserTaskNode 用户任务节点
@@ -140,8 +106,8 @@ type UserTaskNode struct {
 	TaskDescription string // 任务描述
 	// 预编译的模板
 	initiatorSelectedTemplate el.Template // 发起人自选审批人模板
-	// 解析后的任务到期时间（来自 Config.DueDate，解析失败为 nil）
-	dueDate *time.Time
+	// 会签阈值规则串（Config.approvalRuleJSON 的缓存），创建任务与阈值判定共用
+	approvalRule string
 }
 
 // Type 返回节点类型
@@ -153,7 +119,7 @@ func (n *UserTaskNode) Type() string {
 func (n *UserTaskNode) New() types.Node {
 	return &UserTaskNode{
 		Config: UserTaskNodeConfiguration{
-			ApprovalType: string(enums.ApprovalTypeSingle),
+			ApproveMode: string(enums.ApprovalTypeSingle),
 		},
 		TaskService:       n.TaskService,
 		IdentityService:   n.IdentityService,
@@ -168,6 +134,7 @@ func (n *UserTaskNode) Init(ruleConfig types.Config, configuration types.Configu
 	if err != nil {
 		return err
 	}
+	n.Config.Normalize()
 	// 保存当前节点信息，用于流程实例节点保存 CurrentActivity Name
 	n.CurrentNodeDef = base.NodeUtils.GetSelfDefinition(configuration)
 	// 任务基础配置，从节点名称和扩展字段获取
@@ -184,40 +151,22 @@ func (n *UserTaskNode) Init(ruleConfig types.Config, configuration types.Configu
 			n.TaskDescription = str.ToString(description)
 		}
 	}
-	// rejectStrategy / rejectTargetNode 未在节点 configuration 配置时，从 additionalInfo 读取
-	// （设计器把这两项写在 additionalInfo 里）
-	if n.Config.RejectStrategy == "" {
-		if v, ok := n.CurrentNodeDef.GetAdditionalInfo("rejectStrategy"); ok {
-			if s, ok := v.(string); ok {
-				n.Config.RejectStrategy = s
-			}
-		}
+	// 配置合法性在部署期由 ValidateNodeConfiguration 拦截（链加载期 Init 错误只
+	// warn，拦不住部署）；这里仅对未知的枚举取值落定缺省，保证运行期行为确定。
+	if !enums.IsValidUserTaskApprovalType(enums.ApprovalType(n.Config.ApproveMode)) {
+		logrus.Warnf("userTask node %s has unknown approveMode %q; fallback to single", n.GetSelfId(), n.Config.ApproveMode)
+		n.Config.ApproveMode = string(enums.ApprovalTypeSingle)
 	}
-	if n.Config.RejectTargetNode == "" {
-		if v, ok := n.CurrentNodeDef.GetAdditionalInfo("rejectTargetNode"); ok {
-			if s, ok := v.(string); ok {
-				n.Config.RejectTargetNode = s
-			}
-		}
+	if !enums.IsValidSelfApprovalType(enums.SelfApprovalType(n.Config.SelfApproval)) {
+		logrus.Warnf("userTask node %s has unknown selfApproval %q; fallback to none", n.GetSelfId(), n.Config.SelfApproval)
+		n.Config.SelfApproval = string(enums.SelfApprovalTypeNone)
 	}
-	// 驳回策略校验：未知取值在初始化期告警，运行时按 terminate 处理
-	if s := strings.TrimSpace(n.Config.RejectStrategy); !isValidUserTaskRejectStrategy(s) {
-		logrus.Warnf("userTask node %s has unknown rejectStrategy %q; will terminate as fallback at runtime", n.GetSelfId(), n.Config.RejectStrategy)
+	if !isValidUserTaskRejectStrategy(n.Config.Reject.Strategy) {
+		logrus.Warnf("userTask node %s has unknown reject.strategy %q; will terminate as fallback at runtime", n.GetSelfId(), n.Config.Reject.Strategy)
+		n.Config.Reject.Strategy = RejectStrategyTerminate
 	}
-	// 自审互斥校验：initiator_self 的唯一审批人是发起人，skip 会把名单清空，
-	// 任务创建必然失败（"no assignees found"）。初始化期告警；设计器发布校验会硬拦。
-	if strings.TrimSpace(n.Config.CandidateType) == string(enums.CandidateTypeInitiatorSelf) &&
-		strings.TrimSpace(n.Config.SelfApprovalType) == string(enums.SelfApprovalTypeSkip) {
-		logrus.Warnf("userTask node %s: initiator_self + selfApprovalType=skip leaves no assignee; task creation will fail at runtime", n.GetSelfId())
-	}
-	// 解析到期时间：失败仅告警，DueDate 保持为空
-	if n.Config.DueDate != "" {
-		if due := parseDueDate(n.Config.DueDate); due != nil {
-			n.dueDate = due
-		} else {
-			logrus.Warnf("userTask node %s has invalid dueDate %q, ignored", n.GetSelfId(), n.Config.DueDate)
-		}
-	}
+	// 会签阈值规则串：落库到 wf_task.approval_rule 供 service 层阈值判定复用
+	n.approvalRule = n.Config.approvalRuleJSON()
 	// 预编译表达式模板，提高运行时性能
 	if err := n.compileTemplates(); err != nil {
 		return fmt.Errorf("failed to compile templates: %w", err)
@@ -280,7 +229,7 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 	}
 
 	// 顺序审批：如果尚未完成且当前没有激活任务，则按顺序创建下一个任务
-	if enums.ApprovalType(n.Config.ApprovalType) == enums.ApprovalTypeSequential && !allCompleted {
+	if enums.ApprovalType(n.Config.ApproveMode) == enums.ApprovalTypeSequential && !allCompleted {
 		// 拒绝即停：在创建下一个顺序任务之前，先扫描已完成的任务里是否有被拒绝的。
 		// 顺序审批任一拒绝即触发驳回策略；会签的拒绝判定在下方统一处理
 		//（顺序审批的子任务按需创建，必须在此早退）。
@@ -342,7 +291,7 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 					if a == 0 && c < len(assignees) {
 						taskVars := extractVariables(ctx, msg)
 						taskVars[constants.KeySequentialAssignees] = assignees
-						// 每个后续子任务独立求到期时间：timeoutPolicy 相对各自创建时刻，
+						// 每个后续子任务独立求到期时间：timeout 相对各自创建时刻，
 						// 与首个任务（createUserTasks）口径一致
 						createErr = n.createSingleTask(ctx, processInstanceID, processID, tenantID, assignees[c], taskVars, n.resolveDueDate())
 						advanced = createErr == nil
@@ -374,9 +323,8 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 		}
 	}
 
-	// 会签一票否决仅对"全员通过"规则成立；规则配置为 any/majority/percent/count 时
-	// 少数 reject 不定局，与 complete 路径的早否决判定（仅 CountersignTypeAll）同口径。
-	if n.Config.ApprovalType == string(enums.ApprovalTypeCountersign) && rejectedCount > 0 && countersignRequiresUnanimity(n.Config.ApprovalRule) {
+	// 会签（全员通过）一票否决：任一拒绝立即触发驳回策略。
+	if n.Config.ApproveMode == string(enums.ApprovalTypeCountersign) && rejectedCount > 0 {
 		newMsg := msg.Copy()
 		if newMsg.Metadata == nil {
 			newMsg.Metadata = types.NewMetadata()
@@ -435,13 +383,13 @@ func (n *UserTaskNode) checkTasksCompletion(ctx types.RuleContext, msg types.Rul
 		}
 	}
 
-	switch enums.ApprovalType(n.Config.ApprovalType) {
+	switch enums.ApprovalType(n.Config.ApproveMode) {
 	case enums.ApprovalTypeSingle:
 		// 单人审批：只要完成就按审批结果
 		allCompleted := completedTasks == len(tasks)
 		return allCompleted, nil
 
-	case enums.ApprovalTypeOr:
+	case enums.ApprovalTypeAny:
 		// 或签：任何一个完成就完成
 		anyCompleted := completedTasks > 0
 		return anyCompleted, nil
@@ -468,7 +416,7 @@ func (n *UserTaskNode) checkTasksCompletion(ctx types.RuleContext, msg types.Rul
 		if parentID == "" {
 			return false, nil
 		}
-		isCompleted, _, err := n.TaskService.CheckCountersignSubTaskCompletion(ctx.GetContext(), parentID, n.Config.ApprovalRule)
+		isCompleted, _, err := n.TaskService.CheckCountersignSubTaskCompletion(ctx.GetContext(), parentID, n.approvalRule)
 		if err != nil {
 			return false, err
 		}
@@ -517,10 +465,10 @@ func sequentialAssigneesFrom(tasks []*model.WfTask) []string {
 // evaluateApproval 计算整体审批是否通过
 // 根据不同审批类型与规则，判断是否通过
 func (n *UserTaskNode) evaluateApproval(tasks []*model.WfTask, approvedCount, rejectedCount int) bool {
-	switch enums.ApprovalType(n.Config.ApprovalType) {
+	switch enums.ApprovalType(n.Config.ApproveMode) {
 	case enums.ApprovalTypeSingle:
 		return rejectedCount == 0 && approvedCount > 0
-	case enums.ApprovalTypeOr:
+	case enums.ApprovalTypeAny:
 		return rejectedCount == 0 && approvedCount > 0
 	case enums.ApprovalTypeSequential:
 		// 顺序审批：若任何一步拒绝则失败；全部通过则成功
@@ -542,36 +490,6 @@ func (n *UserTaskNode) evaluateApproval(tasks []*model.WfTask, approvedCount, re
 	default:
 		return rejectedCount == 0 && approvedCount > 0
 	}
-}
-
-// countersignRequiresUnanimity 判断会签规则是否要求全员通过（一票否决的适用前提）。
-// 规则为空/解析失败按默认的 all 处理；显式配置 any/majority/percent/count 时返回 false。
-func countersignRequiresUnanimity(ruleJSON string) bool {
-	type ruleShape struct {
-		Type string `json:"type"`
-	}
-	var r ruleShape
-	if strings.TrimSpace(ruleJSON) == "" || json.Unmarshal([]byte(ruleJSON), &r) != nil {
-		return true
-	}
-	return r.Type == "" || r.Type == string(enums.CountersignTypeAll)
-}
-
-// dueDateLayouts 任务到期时间支持的格式
-var dueDateLayouts = []string{time.RFC3339, constants.TimeFormatLayout, "2006-01-02"}
-
-// parseDueDate 解析到期时间配置，格式见 dueDateLayouts；空值或解析失败返回 nil。
-func parseDueDate(value string) *time.Time {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	for _, layout := range dueDateLayouts {
-		if t, err := time.Parse(layout, value); err == nil {
-			return &t
-		}
-	}
-	return nil
 }
 
 // getProcessInstanceID 从消息 metadata 获取流程实例 ID
@@ -609,19 +527,17 @@ func (n *UserTaskNode) Destroy() {}
 
 // compileTemplates 预编译所有表达式模板，提高运行时性能
 func (n *UserTaskNode) compileTemplates() error {
-	// 发起人自选：提前编译 selected 表达式
-	if strings.ToLower(strings.TrimSpace(n.Config.CandidateType)) == string(enums.CandidateTypeInitiatorSelect) {
-		if sel, ok := n.Config.CandidateConfig["selected"]; ok {
-			s := fmt.Sprintf("%v", sel)
-			if s != "" {
-				tpl, terr := el.NewTemplate(s)
-				if terr != nil {
-					// 坏模板必须让 Init 失败：静默跳过会把错误推迟到运行期，
-					// 表现为误导性的 "no assignees found for task"
-					return fmt.Errorf("failed to compile initiator selected template %q: %w", s, terr)
-				}
-				n.initiatorSelectedTemplate = tpl
+	// 发起人自选：提前编译 expression 表达式
+	if enums.CandidateType(n.Config.Approver.Type) == enums.CandidateTypeInitiatorSelect {
+		s := strings.TrimSpace(n.Config.Approver.Expression)
+		if s != "" {
+			tpl, terr := el.NewTemplate(s)
+			if terr != nil {
+				// 坏模板必须让 Init 失败：静默跳过会把错误推迟到运行期，
+				// 表现为误导性的 "no assignees found for task"
+				return fmt.Errorf("failed to compile approver expression %q: %w", s, terr)
 			}
+			n.initiatorSelectedTemplate = tpl
 		}
 	}
 	return nil

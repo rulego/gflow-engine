@@ -422,7 +422,7 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 }
 
 // SupersedeNodeTasks 把 (instanceID, taskDefKey) 命中的全部任务归档到 wf_hi_task
-// 并从 wf_task 删除，返回被归档的任务数。用于驳回回跳（rejectToPrev/Starter/Node）
+// 并从 wf_task 删除，返回被归档的任务数。用于驳回回跳（toPrev/toStarter/toNode）
 // 重新进入目标 userTask 前清理上一轮遗留的 Completed 任务，避免重入时被静默自动通过。
 //
 // 详见 TaskService 接口注释。归档+删除模式与 returnInternal 一致，仅作用范围不同

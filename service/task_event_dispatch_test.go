@@ -486,7 +486,7 @@ func TestEngine_FiresAssignedOnCountersignParallel(t *testing.T) {
 	parentTaskID := seedActiveTask(t, engine, instanceID, "userTask1", "starter-1")
 
 	assignees := []string{"user-a", "user-b", "user-c"}
-	// 空 rule → parseCountersignRule 返回默认并行规则（IsSequential=false）
+	// 空 rule → parseCountersignRule 返回默认全员通过规则
 	ctx := SetUserToCtx(context.Background(), newUserIdentity("starter-1"))
 	if err := taskSvc.CreateCountersignSubTasks(ctx, parentTaskID, assignees, ""); err != nil {
 		t.Fatalf("CreateCountersignSubTasks failed: %v", err)
@@ -507,46 +507,6 @@ func TestEngine_FiresAssignedOnCountersignParallel(t *testing.T) {
 		t.Errorf("parallel countersign expected %d assigned events, got %d", len(assignees), assignedCount)
 	}
 }
-
-// TestEngine_FiresAssignedOnCountersignSequential verifies sequential
-// countersign fires TaskEventAssigned ONLY for the first sub-task: given 3
-// assignees, only the first is activated, so exactly 1 assigned event fires.
-func TestEngine_FiresAssignedOnCountersignSequential(t *testing.T) {
-	rec := &recordingListener{}
-	engine := buildEngineForEvents(t, rec)
-	taskSvc := engine.GetTaskServiceInternal()
-
-	instanceID := "inst-countersign-sequential"
-	seedInstance(t, engine, instanceID, "starter-1")
-	parentTaskID := seedActiveTask(t, engine, instanceID, "userTask1", "starter-1")
-
-	assignees := []string{"user-a", "user-b", "user-c"}
-	// isSequential=true → 顺序会签，仅创建首个子任务
-	rule := `{"isSequential":true}`
-	ctx := SetUserToCtx(context.Background(), newUserIdentity("starter-1"))
-	if err := taskSvc.CreateCountersignSubTasks(ctx, parentTaskID, assignees, rule); err != nil {
-		t.Fatalf("CreateCountersignSubTasks failed: %v", err)
-	}
-
-	evs := rec.waitForEvents(t, 1, 2*time.Second)
-	assignedCount := 0
-	for _, evt := range evs {
-		if evt.Type != TaskEventAssigned {
-			continue
-		}
-		assignedCount++
-		if evt.ParentTaskID != parentTaskID {
-			t.Errorf("event ParentTaskID = %q, want %q", evt.ParentTaskID, parentTaskID)
-		}
-	}
-	if assignedCount != 1 {
-		t.Errorf("sequential countersign expected exactly 1 assigned event (first only), got %d", assignedCount)
-	}
-}
-
-// TestEngine_DoesNotFireRejectedOnNormalLifecycle is a regression guard that
-// rejection-resolved-to-jump paths never fire TaskEventRejected: a normal
-// task lifecycle (transfer only) must produce no rejected events.
 func TestEngine_DoesNotFireRejectedOnNormalLifecycle(t *testing.T) {
 	rec := &recordingListener{}
 	engine := buildEngineForEvents(t, rec)

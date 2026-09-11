@@ -69,8 +69,9 @@ type HttpCallNodeConfiguration struct {
 	TimeoutMs int `json:"timeoutMs"`
 	// OutputMappings 响应字段映射；在输出模式与平铺之后最后执行（优先级最高），见 MergeAgentOutput
 	OutputMappings []OutputMapping `json:"outputMappings"`
-	// FlattenOutput 输出模式：true=平铺（响应对象顶层字段并入 msg.Data 顶层，同名覆盖表单，
-	// httpCall 主用途是查接口补全数据，默认平铺）；false=隔离（完整响应只放 ReservedKey 下，不碰表单）。
+	// FlattenOutput 输出模式：false=隔离（缺省，完整响应只放 ReservedKey 下，不碰表单）；
+	// true=平铺（响应对象顶层字段并入 msg.Data 顶层，同名覆盖表单）。查接口补全数据
+	// 的场景显式开启平铺，或用 OutputMappings 把需要的字段提升为流程变量。
 	// 两种模式下完整响应都会保留在 msg.<ReservedKey>。
 	FlattenOutput *bool `json:"flattenOutput"`
 	// ReservedKey 完整响应写入的 msg.Data key（对象存对象、非对象存原文），默认 "_http"。
@@ -83,9 +84,6 @@ type HttpCallNodeConfiguration struct {
 	// 且每一跳 30x 重定向的目标也会重新校验(CheckRedirect),未命中即 TellFailure。
 	// 命中白名单的主机视为设计者显式信任,跳过动态主机危险地址拦截。
 	AllowedHosts []string `json:"allowedHosts"`
-	// BlockPrivateNetworks 已废弃。动态主机与重定向目标默认拦截 RFC1918 私有网段，
-	// 放行内网请改用 allowedHosts。
-	BlockPrivateNetworks bool `json:"blockPrivateNetworks"`
 
 	// 危险项：默认关闭，仅支持通过 DSL 配置
 	// InsecureSkipVerify 跳过 HTTPS 证书校验，默认 false
@@ -309,7 +307,7 @@ func (n *HttpCallNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 
 	// 输出合并与 aiAgent 同一套三规则（MergeAgentOutput）：完整响应始终写 ReservedKey(默认 _http)，
 	// 平铺模式(默认)再把对象顶层字段并入 msg.Data，映射最后执行（优先级最高）。
-	flatten := n.Config.FlattenOutput == nil || *n.Config.FlattenOutput
+	flatten := n.Config.FlattenOutput != nil && *n.Config.FlattenOutput
 	if err := MergeAgentOutput(&msg, body, n.Config.OutputMappings, n.Config.ReservedKey, flatten); err != nil {
 		ctx.TellFailure(msg, fmt.Errorf("merge http output: %w", err))
 		return

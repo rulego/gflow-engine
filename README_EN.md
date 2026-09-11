@@ -14,7 +14,7 @@ English | [简体中文](README.md)
 > with a flow designer, form designer, approval UI and AI review built in.
 > Site: <https://gflow.rulego.cc/en/> · Live demo: <http://8.134.32.225:8081> (`admin` / `admin123`)
 
-`GFlow Engine` is a lightweight, embeddable approval workflow engine built on [RuleGo](https://github.com/rulego/rulego). Process definitions reuse the `RuleGo` rule-chain DSL (JSON), while tasks, process instances and history are persisted to a relational database by the engine itself — no separate process middleware to deploy. Approval nodes and automation nodes (rule chains, HTTP calls, AI agents, sub-processes) live in the same process DSL — downstream actions run automatically once approved; Chinese-style approval semantics (or-sign, countersign, dynamic add/remove signers, return) work out of the box.
+`GFlow Engine` is a lightweight, embeddable approval workflow engine built on [RuleGo](https://github.com/rulego/rulego). Process definitions reuse the `RuleGo` rule-chain DSL (JSON), while tasks, process instances and history are persisted to a relational database by the engine itself — no separate process middleware to deploy. Approval nodes and automation nodes (rule chains, HTTP calls, AI agents, sub-processes) live in the same process DSL — downstream actions run automatically once approved; Chinese-style approval semantics (any-sign, all-sign, threshold vote, sequential approval, dynamic add/remove signers, return) work out of the box.
 
 > Note: the DSL is a BPMN-style approval flow in JSON form; it does not parse BPMN 2.0 XML.
 
@@ -25,7 +25,7 @@ English | [简体中文](README.md)
   * **Approval and automation in one chain:** `serviceTask` calls Go functions, `automation` invokes `RuleGo` rule chains, `aiAgent` talks to agent rule chains ([rulego-components-ai](https://github.com/rulego/rulego-components-ai)), and `httpCall` performs synchronous HTTP calls.
   * **Sub-processes:** the `subProcess` node starts an independent child instance and returns to the parent flow on completion.
 * **Chinese-style approval semantics & process model**
-  * **Chinese-style approval semantics:** single sign-off, countersign (parallel/sequential, all/majority), dynamic add/remove signers, transfer, delegation, claim, return, withdraw, suspend/resume, overdue handling — out of the box, no extra development.
+  * **Chinese-style approval semantics:** single sign-off, any-sign, all-sign (unanimous with one-vote veto), threshold vote (majority/percent/count), sequential approval, dynamic add/remove signers, transfer, delegation, claim, return, withdraw, suspend/resume, overdue handling — out of the box, no extra development.
   * **Candidate-group tasks:** tasks can be offered to users, roles or departments; the candidate pool (`wf_task_assignee`) is stored separately and expanded through `IdentityService` at query time.
   * **Approval comments:** task comments live in `wf_task_comment` and survive task archival; approval actions record their comment in the same transaction.
   * **Versioned definitions:** each `process_key` keeps multiple published versions; running instances continue on the version they started with.
@@ -190,7 +190,7 @@ err = engine.GetTaskService().CompleteWithApproval(ctx, service.Actor{
 > `ErrPermissionDenied`. Construct the `Actor` on the server side from your authentication
 > layer (session/token) — never trust client input directly.
 
-A complete runnable example (single sign-off, parallel and sequential countersign) lives in [examples/leave_approval](examples/leave_approval) — it runs zero-dependency on an in-memory SQLite database by default (`GFLOW_DSN` switches to PostgreSQL/MySQL). An `httpCall` + `switch` combination example (query an external API, map the response into process variables, route by the result) lives in [examples/http_call](examples/http_call). The engine ships with an in-memory mock identity service for tests only — inject your own `IdentityService` as described in the next section for production.
+A complete runnable example (single sign-off, all-sign, sequential approval) lives in [examples/leave_approval](examples/leave_approval) — it runs zero-dependency on an in-memory SQLite database by default (`GFLOW_DSN` switches to PostgreSQL/MySQL). An `httpCall` + `switch` combination example (query an external API, map the response into process variables, route by the result) lives in [examples/http_call](examples/http_call). The engine ships with an in-memory mock identity service for tests only — inject your own `IdentityService` as described in the next section for production.
 
 ## Identity integration (organizational data)
 
@@ -215,7 +215,7 @@ func (s *OrgIdentityService) GetUserIDsByRoleID(ctx context.Context, tenantID, r
 // Remaining methods and their purpose:
 //   GetUserIDsByDepartmentID        users by department (dept candidate tasks)
 //   GetDepartmentManagerUserID      department manager (dept candidate tasks)
-//   GetUserManagerID                direct manager (direct_manager candidate tasks)
+//   GetUserManagerID                direct manager (manager candidate tasks)
 //   GetUserManagerHierarchy         manager hierarchy (multi_level_manager candidate tasks)
 //   GetUserDepartmentID             department of a user
 //   GetRoleIDsByUserID              roles of a user (todo visibility for role candidates)
@@ -233,16 +233,16 @@ engine, err := service.NewWorkflowEngineBuilder().
 	Build()
 ```
 
-Mapping from candidate configuration (`candidateType`) to interface methods:
+Mapping from approver configuration (`approver.type`) to interface methods:
 
-| candidateType | Resolving methods |
+| approver.type | Resolving methods |
 |---|---|
-| `user` | none (user IDs given directly via `candidateUsers`) |
+| `user` | none (user IDs given directly via `userIds`) |
 | `role` | `GetUserIDsByRoleID`; todo visibility via `GetRoleIDsByUserID` |
 | `dept` | `GetUserIDsByDepartmentID` / `GetDepartmentManagerUserID`; todo visibility via `GetDepartmentIDsByUserID` |
-| `direct_manager` | `GetUserManagerID` |
-| `multi_level_manager` | `GetUserManagerHierarchy` |
-| `initiator_select` / `initiator_self` | none (chosen by initiator / the initiator) |
+| `manager` | `GetUserManagerID` |
+| `multiLevelManager` | `GetUserManagerHierarchy` |
+| `initiatorSelect` / `initiatorSelf` | none (chosen by initiator / the initiator) |
 
 > Optional hardening: if the implementation also implements `TenantMembershipChecker` (`IsUserInTenant`), the engine verifies that transfer/delegation/reassign targets belong to the task's tenant and blocks cross-tenant reassignment; without it the check is skipped (with a warning logged).
 
