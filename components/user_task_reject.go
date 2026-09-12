@@ -54,10 +54,18 @@ func (n *UserTaskNode) handleRejection(ctx types.RuleContext, msg types.RuleMsg,
 		terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：终止流程")
 		return
 	case RejectStrategyToStarter:
+		if rejectRestartTouchesGateway(nodeGraphFromDefinition(ctx), getStartNodeID(ctx)) {
+			n.degradeCrossBranchRejection(ctx, msg, instanceID)
+			return
+		}
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至发起人")
 		n.jumpToStartNode(ctx, msg, instanceID)
 		return
 	case RejectStrategyToPrev:
+		if n.rejectJumpCrossesParallel(ctx, n.findPrevUserTaskNodeID(ctx)) {
+			n.degradeCrossBranchRejection(ctx, msg, instanceID)
+			return
+		}
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至上一审批节点")
 		n.jumpToPrevUserTask(ctx, msg, instanceID)
 		return
@@ -65,6 +73,10 @@ func (n *UserTaskNode) handleRejection(ctx types.RuleContext, msg types.RuleMsg,
 		if strings.TrimSpace(n.Config.Reject.Target) == "" {
 			logrus.Warnf("Node %s reject.strategy=toNode but reject.target empty, fallback", n.GetSelfId())
 			n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：未配置 reject.target，降级处理")
+			return
+		}
+		if n.rejectJumpCrossesParallel(ctx, strings.TrimSpace(n.Config.Reject.Target)) {
+			n.degradeCrossBranchRejection(ctx, msg, instanceID)
 			return
 		}
 		n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退至指定节点 "+n.Config.Reject.Target)
@@ -293,6 +305,60 @@ func rejectResetNodes(g *nodeGraph, target, self string) []string {
 		}
 	}
 	return out
+}
+
+// rejectJumpCrossesParallel 判断回退目标的重执行区域是否穿过并行网关
+// （fork/join/inclusive）。目标为空（toPrev 无前驱等）时按不穿过处理，
+// 交由既有降级路径收尾。部署期校验拦截新定义，这里兜底存量定义与
+// 绕过校验的写入路径。
+func (n *UserTaskNode) rejectJumpCrossesParallel(ctx types.RuleContext, target string) bool {
+	return rejectRegionCrossesParallel(nodeGraphFromDefinition(ctx), target, n.GetSelfId())
+}
+
+// degradeCrossBranchRejection 跨并行分支回退的降级收尾：不执行跳转，沿节点
+// 预留的 Reject/Failure 出边走，否则终止实例。rejected 事件的 Reason 与
+// end_reason 均带降级原因，保证通知与审批记录口径一致。
+func (n *UserTaskNode) degradeCrossBranchRejection(ctx types.RuleContext, msg types.RuleMsg, instanceID string) {
+	logrus.Warnf("Node %s rollback crosses a parallel gateway, degrading", n.GetSelfId())
+	n.fireRejectedEvent(ctx, msg, instanceID, "审批驳回，回退路径跨并行分支")
+	n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：回退路径跨并行分支，降级终止")
+}
+
+// rejectRegionCrossesParallel 判断 target→self 的重执行区域（target 正向可达 ∩
+// self 反向可达，与部署期 RollbackRegionForked 同口径）内是否出现并行网关：
+// 重入 fork/inclusive 会向各分支重复派发任务，重入 join 会因兄弟分支的消息
+// 不再到来而永久等待。
+func rejectRegionCrossesParallel(g *nodeGraph, target, self string) bool {
+	if g == nil || target == "" {
+		return false
+	}
+	reachableFromTarget := bfsSet(g.forward, target)
+	reachesSelf := bfsSet(g.backward, self)
+	for id := range reachableFromTarget {
+		if reachesSelf[id] {
+			switch g.nodeTypes[id] {
+			case "fork", "join", constants.NodeTypeInclusive:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// rejectRestartTouchesGateway 判断从链首节点重跑整条链是否会经过并行网关。
+// toStarter 的语义是从头重走，链首下游出现任何并行网关都意味着重启后分支
+// 重复派发或汇合点被重复投喂。
+func rejectRestartTouchesGateway(g *nodeGraph, startNodeID string) bool {
+	if g == nil || startNodeID == "" {
+		return false
+	}
+	for id := range bfsSet(g.forward, startNodeID) {
+		switch g.nodeTypes[id] {
+		case "fork", "join", constants.NodeTypeInclusive:
+			return true
+		}
+	}
+	return false
 }
 
 // bfsSet 从 start 沿邻接表可达的全部节点（含 start 自身，若存在于表中）。

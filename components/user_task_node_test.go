@@ -3,6 +3,7 @@ package components
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -915,5 +916,95 @@ func TestResolveDueDate_Timeout(t *testing.T) {
 	n.Config.Timeout = &TimeoutPolicy{DueInMinutes: 60}
 	if got := n.resolveDueDate(); got == nil {
 		t.Errorf("policy without action should still set due date, got nil")
+	}
+}
+
+// 构造 nodeGraph 邻接表的小工具：nodes 为 id:type 对，edges 为 from>to 对
+func testNodeGraph(nodes []string, edges []string) *nodeGraph {
+	g := &nodeGraph{
+		nodeTypes: make(map[string]string),
+		forward:   make(map[string][]string),
+		backward:  make(map[string][]string),
+	}
+	for _, spec := range nodes {
+		id, typ, _ := strings.Cut(spec, ":")
+		g.nodeTypes[id] = typ
+	}
+	for _, spec := range edges {
+		from, to, _ := strings.Cut(spec, ">")
+		g.forward[from] = append(g.forward[from], to)
+		g.backward[to] = append(g.backward[to], from)
+	}
+	return g
+}
+
+// 驳回回跳的跨并行分支判定：区域内含 fork/join/inclusive 即拦截，
+// 分支内部回退与线性链回退放行
+func TestRejectRegionCrossesParallel(t *testing.T) {
+	// start(虚拟) → fork → (ta1 → ta2 | tb) → join → end
+	forkGraph := testNodeGraph(
+		[]string{"fork:fork", "ta1:userTask", "ta2:userTask", "tb:userTask", "join:join", "end:end"},
+		[]string{"fork>ta1", "fork>tb", "ta1>ta2", "ta2>join", "tb>join", "join>end"},
+	)
+	// start → n1 → n2 → end 线性链
+	linearGraph := testNodeGraph(
+		[]string{"n1:userTask", "n2:userTask", "end:end"},
+		[]string{"n1>n2", "n2>end"},
+	)
+	cases := []struct {
+		name   string
+		g      *nodeGraph
+		target string
+		self   string
+		want   bool
+	}{
+		{"fork 前目标回退穿 fork", forkGraph, "fork", "tb", true},
+		{"join 前目标回退穿 join", forkGraph, "ta2", "tb", false},
+		{"分支内部回退放行", forkGraph, "ta1", "ta2", false},
+		{"跨分支目标区域为空", forkGraph, "ta1", "tb", false},
+		{"线性链回退放行", linearGraph, "n1", "n2", false},
+		{"nil 图放行", nil, "n1", "n2", false},
+		{"空目标放行", forkGraph, "", "tb", false},
+	}
+	for _, c := range cases {
+		if got := rejectRegionCrossesParallel(c.g, c.target, c.self); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// 链首重跑判定：链首下游可达任何并行网关即拦截，纯线性链放行
+func TestRejectRestartTouchesGateway(t *testing.T) {
+	// start(虚拟) → fork → (ta | tb) → join → end，链首节点 ta 在分支内
+	forkGraph := testNodeGraph(
+		[]string{"ta:userTask", "tb:userTask", "fork:fork", "join:join", "end:end"},
+		[]string{"fork>ta", "fork>tb", "ta>join", "tb>join", "join>end"},
+	)
+	// start → n1 → n2 → end 线性链
+	linearGraph := testNodeGraph(
+		[]string{"n1:userTask", "n2:userTask", "end:end"},
+		[]string{"n1>n2", "n2>end"},
+	)
+	// start → inc → (ta | tb) → join → end，inclusive 分裂
+	inclusiveGraph := testNodeGraph(
+		[]string{"inc:inclusive", "ta:userTask", "tb:userTask", "join:join", "end:end"},
+		[]string{"inc>ta", "inc>tb", "ta>join", "tb>join", "join>end"},
+	)
+	cases := []struct {
+		name  string
+		g     *nodeGraph
+		start string
+		want  bool
+	}{
+		{"链首在分支内仍会重喂 join", forkGraph, "ta", true},
+		{"线性链放行", linearGraph, "n1", false},
+		{"inclusive 分裂拦截", inclusiveGraph, "inc", true},
+		{"空链首放行", forkGraph, "", false},
+		{"nil 图放行", nil, "n1", false},
+	}
+	for _, c := range cases {
+		if got := rejectRestartTouchesGateway(c.g, c.start); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
 	}
 }

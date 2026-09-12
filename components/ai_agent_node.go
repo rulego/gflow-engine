@@ -938,6 +938,12 @@ func (n *AIAgentNode) handleReject(ctx types.RuleContext, msg types.RuleMsg) {
 			terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, "AI拒绝：开始节点缺失，降级终止")
 			return
 		}
+		// 链首重跑会经过并行网关时分支重复派发、汇合点重复投喂，退回降级终止
+		if rejectRestartTouchesGateway(nodeGraphFromDefinition(ctx), startID) {
+			logrus.Warnf("AIAgentNode %s: toStarter crosses a parallel gateway, falling back to terminate", n.GetSelfId())
+			terminateInstance(n.RuntimeService, n.GetSelfId(), ctx, msg, instanceID, "AI拒绝：回退路径跨并行分支，降级终止")
+			return
+		}
 		// 跳转前清理目标节点上一轮任务，避免重入时旧记录被判定为已完成
 		if n.TaskService != nil {
 			if _, err := n.TaskService.SupersedeNodeTasks(ctx.GetContext(), instanceID, startID, "AI拒绝退回，清理上一轮任务"); err != nil {

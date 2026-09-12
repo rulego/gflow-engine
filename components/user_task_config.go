@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/rulego/gflow-engine/service"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/rulego/utils/el"
 	"github.com/rulego/rulego/utils/maps"
@@ -192,20 +193,88 @@ func validateUserTaskNodeConfig(cfg map[string]interface{}, nodeID string, graph
 	}
 	c.Normalize()
 	issues := c.Validate()
-	if c.Reject.Strategy == RejectStrategyToNode {
-		if target := strings.TrimSpace(c.Reject.Target); target != "" && graph != nil {
-			if !graph.HasNode(target) {
-				issues = append(issues, fmt.Sprintf("reject.target %q not found in chain nodes", c.Reject.Target))
-			} else if !graph.UpstreamReachable(nodeID, target) {
-				// 回退目标必须是已走过的上游节点：指向下游会跳过未审节点，
-				// 指向并行分支则与本节点没有先后关系。
-				issues = append(issues, fmt.Sprintf("reject.target %q is not an upstream node of %q; rollback target must be a passed node", target, nodeID))
-			} else if graph.RollbackRegionForked(target, nodeID) {
-				// 回退路径穿过 fork 时各分支会被重复派发任务，穿过 join 时
-				// 兄弟分支的消息不再到来、汇合点永久等待。
-				issues = append(issues, fmt.Sprintf("rollback path from %q to %q crosses fork/join; cross-branch rollback is not supported", target, nodeID))
-			}
+	if c.Reject.Strategy == RejectStrategyToStarter {
+		// toStarter 语义是整条链从头重走：链首下游只要出现并行网关，
+		// 重启就会向分支重复派发或重复投喂汇合点，部署期直接拦截。
+		if chainStartRestartForked(graph) {
+			issues = append(issues, "reject.strategy=toStarter restarts the chain whose downstream crosses fork/join/inclusive; cross-branch rollback is not supported")
+		}
+	} else if target, ok := rejectRollbackTarget(graph, nodeID, &c); ok {
+		if !graph.HasNode(target) {
+			issues = append(issues, fmt.Sprintf("reject.target %q not found in chain nodes", target))
+		} else if !graph.UpstreamReachable(nodeID, target) {
+			// 回退目标必须是已走过的上游节点：指向下游会跳过未审节点，
+			// 指向并行分支则与本节点没有先后关系。
+			issues = append(issues, fmt.Sprintf("reject.target %q is not an upstream node of %q; rollback target must be a passed node", target, nodeID))
+		} else if graph.RollbackRegionForked(target, nodeID) {
+			// 回退路径穿过 fork/inclusive 时各分支会被重复派发任务，穿过 join 时
+			// 兄弟分支的消息不再到来、汇合点永久等待。
+			issues = append(issues, fmt.Sprintf("rollback path from %q to %q crosses fork/join/inclusive; cross-branch rollback is not supported", target, nodeID))
 		}
 	}
 	return issues
+}
+
+// chainStartRestartForked 判断从链首节点重跑整条链是否会经过并行网关
+// （fork/join/inclusive）。graph 缺失或链首未解析时按不经过处理。
+func chainStartRestartForked(graph *service.ChainGraph) bool {
+	if graph == nil || graph.StartNodeID == "" {
+		return false
+	}
+	visited := map[string]bool{graph.StartNodeID: true}
+	queue := []string{graph.StartNodeID}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		switch graph.NodeTypes[cur] {
+		case "fork", "join", constants.NodeTypeInclusive:
+			return true
+		}
+		for _, next := range graph.Forward[cur] {
+			if !visited[next] {
+				visited[next] = true
+				queue = append(queue, next)
+			}
+		}
+	}
+	return false
+}
+
+// rejectRollbackTarget 解析驳回策略的生效回退目标，与运行期跳转同口径：
+// toNode 取 reject.target，toPrev 取前驱节点。ok=false 表示无需目标校验
+// （toNode 未配置目标、toPrev 无前驱或 graph 缺失，运行期对这些形态都有
+// 安全的降级路径）。toStarter 的链首重跑检查不在此处，见 chainStartRestartForked。
+func rejectRollbackTarget(graph *service.ChainGraph, nodeID string, c *UserTaskNodeConfiguration) (string, bool) {
+	if graph == nil {
+		return "", false
+	}
+	switch c.Reject.Strategy {
+	case RejectStrategyToNode:
+		target := strings.TrimSpace(c.Reject.Target)
+		return target, target != ""
+	case RejectStrategyToPrev:
+		target := prevUserTaskNodeID(graph, nodeID)
+		return target, target != ""
+	}
+	return "", false
+}
+
+// prevUserTaskNodeID 与运行期 findPrevUserTaskNodeID 同口径：优先取直接前驱
+// 中的 userTask，否则取首个非开始节点前驱；找不到返回空串。
+func prevUserTaskNodeID(graph *service.ChainGraph, nodeID string) string {
+	if graph == nil {
+		return ""
+	}
+	upstream := graph.Backward[nodeID]
+	for _, id := range upstream {
+		if graph.NodeTypes[id] == UserTaskNodeType {
+			return id
+		}
+	}
+	for _, id := range upstream {
+		if t := graph.NodeTypes[id]; t != constants.NodeTypeStart && t != StartTaskNodeType {
+			return id
+		}
+	}
+	return ""
 }

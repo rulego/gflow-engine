@@ -271,6 +271,116 @@ func TestE2E_DeployValidation_RejectToNodeUpstreamAccepted(t *testing.T) {
 	require.NoError(t, err, "rollback to an upstream node in a linear chain is legal")
 }
 
+// toStarter 在并行分支内：回退目标解析为链首节点，重执行区域必然穿过 fork，
+// 重入会向所有分支重复派发任务，与 toNode 指向 fork 之前同险，部署期拦截。
+func TestE2E_DeployValidation_RejectToStarterInParallelBranchRejected(t *testing.T) {
+	env := newE2EEnv(t)
+	def := forkChainDef("cfg_tostarter_fork_e2e", "ta", "tb")
+	for _, nd := range def["metadata"].(map[string]interface{})["nodes"].([]map[string]interface{}) {
+		if nd["id"] == "tb" {
+			nd["configuration"].(map[string]interface{})["reject"] = map[string]interface{}{"strategy": "toStarter"}
+		}
+	}
+	err := env.deployRawExpectError("cfg_tostarter_fork_e2e", "分支内回退发起人拦截", def)
+	require.Error(t, err, "toStarter inside a parallel branch must fail deployment")
+	assert.ErrorIs(t, err, service.ErrValidation)
+	assert.Contains(t, err.Error(), "crosses fork/join", "error should explain the parallel-branch restriction")
+}
+
+// toPrev 的前驱是 join：回退重入 join 后兄弟分支的消息不再到来，汇合点永久
+// 等待、实例卡 active，部署期拦截。
+func TestE2E_DeployValidation_RejectToPrevAfterJoinRejected(t *testing.T) {
+	env := newE2EEnv(t)
+	def := forkChainDef("cfg_toprev_join_e2e", "ta", "tb")
+	md := def["metadata"].(map[string]interface{})
+	nodes := md["nodes"].([]map[string]interface{})
+	conns := md["connections"].([]map[string]interface{})
+	nodes = append(nodes,
+		map[string]interface{}{"id": "tc", "type": "userTask", "name": "汇合后审批", "configuration": map[string]interface{}{
+			"approver": map[string]interface{}{"type": "user", "userIds": []string{"u3"}}, "approveMode": "single",
+			"reject": map[string]interface{}{"strategy": "toPrev"},
+		}})
+	for _, nd := range nodes {
+		if nd["id"] == "tb" {
+			delete(nd["configuration"].(map[string]interface{}), "reject")
+		}
+	}
+	conns = append(conns, map[string]interface{}{"fromId": "join", "toId": "tc", "type": "Success"})
+	deleteConns(conns, "join", "end")
+	conns = append(conns, map[string]interface{}{"fromId": "tc", "toId": "end", "type": "Success"})
+	md["nodes"] = nodes
+	md["connections"] = conns
+
+	err := env.deployRawExpectError("cfg_toprev_join_e2e", "汇合点后回上一节点拦截", def)
+	require.Error(t, err, "toPrev whose resolved predecessor is a join must fail deployment")
+	assert.ErrorIs(t, err, service.ErrValidation)
+	assert.Contains(t, err.Error(), "crosses fork/join", "error should explain the parallel-branch restriction")
+}
+
+// 线性链上 toStarter 与 toPrev：不涉并行分支，合法场景部署必须放行。
+func TestE2E_DeployValidation_RejectToStarterAndToPrevLinearAccepted(t *testing.T) {
+	env := newE2EEnv(t)
+	err := env.deployRawExpectError("cfg_linear_jump_e2e", "线性回退发起人放行", map[string]interface{}{
+		"ruleChain": map[string]interface{}{"id": "cfg_linear_jump_e2e", "name": "线性回退发起人放行", "root": true},
+		"metadata": map[string]interface{}{
+			"firstNodeIndex": 0,
+			"nodes": []map[string]interface{}{
+				{"id": "n1", "type": "userTask", "name": "一级", "configuration": map[string]interface{}{
+					"approver": map[string]interface{}{"type": "user", "userIds": []string{"u1"}}, "approveMode": "single",
+				}},
+				{"id": "n2", "type": "userTask", "name": "二级", "configuration": map[string]interface{}{
+					"approver": map[string]interface{}{"type": "user", "userIds": []string{"u2"}}, "approveMode": "single",
+					"reject": map[string]interface{}{"strategy": "toStarter"},
+				}},
+				{"id": "n3", "type": "userTask", "name": "三级", "configuration": map[string]interface{}{
+					"approver": map[string]interface{}{"type": "user", "userIds": []string{"u3"}}, "approveMode": "single",
+					"reject": map[string]interface{}{"strategy": "toPrev"},
+				}},
+				{"id": "end", "type": "end", "name": "End"},
+			},
+			"connections": []map[string]interface{}{
+				{"fromId": "start", "toId": "n1", "type": "Success"},
+				{"fromId": "n1", "toId": "n2", "type": "Success"},
+				{"fromId": "n2", "toId": "n3", "type": "Success"},
+				{"fromId": "n3", "toId": "end", "type": "Success"},
+			},
+		},
+	})
+	require.NoError(t, err, "toStarter/toPrev on a linear chain is legal")
+}
+
+// toNode 回退区域穿过 inclusive 分支网关：与 fork 同类风险（重入后分支重复
+// 派发或未激活分支凭空执行），部署期同样拦截。
+func TestE2E_DeployValidation_RejectToNodeBeforeInclusiveRejected(t *testing.T) {
+	env := newE2EEnv(t)
+	def := forkChainDef("cfg_preinc_e2e", "ta", "tb")
+	md := def["metadata"].(map[string]interface{})
+	nodes := md["nodes"].([]map[string]interface{})
+	conns := md["connections"].([]map[string]interface{})
+	nodes = append(nodes,
+		map[string]interface{}{"id": "tc", "type": "userTask", "name": "前置审批", "configuration": map[string]interface{}{
+			"approver": map[string]interface{}{"type": "user", "userIds": []string{"u0"}}, "approveMode": "single",
+		}})
+	conns = append(conns, map[string]interface{}{"fromId": "tc", "toId": "fork", "type": "Success"})
+	deleteConns(conns, "start", "fork")
+	conns = append(conns, map[string]interface{}{"fromId": "start", "toId": "tc", "type": "Success"})
+	md["nodes"] = nodes
+	md["connections"] = conns
+	for _, nd := range nodes {
+		if nd["id"] == "fork" {
+			nd["type"] = "inclusive"
+		}
+		if nd["id"] == "tb" {
+			nd["configuration"].(map[string]interface{})["reject"] = map[string]interface{}{"strategy": "toNode", "target": "tc"}
+		}
+	}
+
+	err := env.deployRawExpectError("cfg_preinc_e2e", "inclusive前目标拦截", def)
+	require.Error(t, err, "toNode target before an inclusive gateway must fail deployment")
+	assert.ErrorIs(t, err, service.ErrValidation)
+	assert.Contains(t, err.Error(), "crosses fork/join", "error should explain the parallel-branch restriction")
+}
+
 // selfApproval=autoApprove：受理人==发起人的任务创建即自动按通过完成。
 // 单签且审批人就是发起人：实例无人工参与自动走完，任务落 approved 与系统意见。
 func TestE2E_SelfApproval_AutoApprove_CompletesWithoutManualAction(t *testing.T) {

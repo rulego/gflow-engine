@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/rulego/api/types"
 )
 
@@ -28,10 +29,11 @@ import (
 // （reject.target 的存在性、是否上游节点、回退路径是否跨并行分支），由
 // ValidateChainConfigurations 构建后随校验器下发。
 type ChainGraph struct {
-	NodeIDs   map[string]struct{}
-	NodeTypes map[string]string
-	Forward   map[string][]string // nodeID -> 下游节点ID
-	Backward  map[string][]string // nodeID -> 上游节点ID
+	NodeIDs     map[string]struct{}
+	NodeTypes   map[string]string
+	Forward     map[string][]string // nodeID -> 下游节点ID
+	Backward    map[string][]string // nodeID -> 上游节点ID
+	StartNodeID string              // 链首节点 ID（FirstNodeIndex 解析，toStarter 回退目标）
 }
 
 // HasNode 判断节点是否在链内。
@@ -68,9 +70,9 @@ func (g *ChainGraph) UpstreamReachable(from, target string) bool {
 }
 
 // RollbackRegionForked 计算 target→self 的驳回重执行区域（target 正向可达 ∩
-// self 反向可达，与运行期 rejectResetNodes 同口径），区域内含 fork/join 节点时
-// 返回 true：重入 fork 会向各分支重复派发任务，重入 join 会因兄弟分支的消息
-// 不再到来而永久等待。
+// self 反向可达，与运行期 rejectResetNodes 同口径），区域内含并行网关时返回
+// true：重入 fork/inclusive 会向各分支重复派发任务，重入 join 会因兄弟分支的
+// 消息不再到来而永久等待。
 func (g *ChainGraph) RollbackRegionForked(target, self string) bool {
 	if g == nil {
 		return false
@@ -102,7 +104,7 @@ func (g *ChainGraph) RollbackRegionForked(target, self string) bool {
 	for id := range forwardSeen {
 		if backwardSeen[id] {
 			switch g.NodeTypes[id] {
-			case "fork", "join":
+			case "fork", "join", constants.NodeTypeInclusive:
 				return true
 			}
 		}
@@ -171,6 +173,9 @@ func buildChainGraph(chain *types.RuleChain) *ChainGraph {
 	for _, conn := range chain.Metadata.Connections {
 		g.Forward[conn.FromId] = append(g.Forward[conn.FromId], conn.ToId)
 		g.Backward[conn.ToId] = append(g.Backward[conn.ToId], conn.FromId)
+	}
+	if idx := chain.Metadata.FirstNodeIndex; idx >= 0 && idx < len(chain.Metadata.Nodes) {
+		g.StartNodeID = chain.Metadata.Nodes[idx].Id
 	}
 	return g
 }
