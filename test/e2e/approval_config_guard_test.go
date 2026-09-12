@@ -6,7 +6,7 @@
 //   - 驳回跳转失败兜底：节点只有 Failure 出边时必须沿 Failure 边路由（不得静默丢消息卡 active）
 //   - 驳回跳转失败且无 Reject/Failure 出边：兜底终止实例
 //   - all 会签子任务继承 due_date（timeout 配置必须作用到实际办理的子任务）
-//   - selfApproval=autoApprove：发起人任务创建即自动通过（单签、或签）
+//   - selfApproval=autoApprove：发起人任务创建即自动通过（单签、或签、会签子任务、顺序推进位）
 package e2e
 
 import (
@@ -347,6 +347,88 @@ func TestE2E_SelfApproval_AutoApprove_OrSignOnlyConsumesInitiatorTicket(t *testi
 		"SELECT COUNT(*) FROM wf_hi_task WHERE process_instance_id = ? AND assignee = ? AND end_reason = ?",
 		instID, "starter", string(enums.ApprovalResultApproved)).Scan(&starterTaskApproved).Error)
 	assert.Equal(t, int64(1), starterTaskApproved, "initiator's task must be archived as approved")
+}
+
+// selfApproval=autoApprove 在会签（all）下命中发起人的子任务：会签受理人挂在
+// 带 parent_id 的子任务上，自动通过必须穿透主任务过滤命中子任务。
+func TestE2E_SelfApproval_AutoApprove_CountersignConsumesInitiatorSubTask(t *testing.T) {
+	env := newE2EEnv(t)
+	env.deployRawProcess("self_auto_all_e2e", "self_auto_all_e2e", "会签发起人自动通过", map[string]interface{}{
+		"ruleChain": map[string]interface{}{"id": "self_auto_all_e2e", "name": "会签发起人自动通过", "root": true},
+		"metadata": map[string]interface{}{
+			"firstNodeIndex": 0,
+			"nodes": []map[string]interface{}{
+				{"id": "approve_node", "type": "userTask", "name": "审批", "configuration": map[string]interface{}{
+					"approver":     map[string]interface{}{"type": "user", "userIds": []string{"starter", "u2"}},
+					"approveMode":  "all",
+					"selfApproval": "autoApprove",
+				}},
+				{"id": "end", "type": "end", "name": "End"},
+			},
+			"connections": []map[string]interface{}{
+				{"fromId": "start", "toId": "approve_node", "type": "Success"},
+				{"fromId": "approve_node", "toId": "end", "type": "Success"},
+			},
+		},
+	})
+
+	instID := env.startInstance("self_auto_all_e2e", "starter")
+	// 先等会签子任务落库（发起人与 u2 各一张带 parent_id 的子任务）
+	require.Eventually(t, func() bool {
+		return len(env.activeTasksFor(instID, "u2")) > 0
+	}, 5*time.Second, 50*time.Millisecond, "countersign sub-tasks should be created")
+	require.Eventually(t, func() bool {
+		var n int64
+		// 会签子任务在节点整体落定前可能仍留在运行表，两表合计断言
+		require.NoError(t, env.db.Raw(
+			"SELECT (SELECT COUNT(*) FROM wf_hi_task WHERE process_instance_id = ? AND assignee = ? AND end_reason = ?)"+
+				" + (SELECT COUNT(*) FROM wf_task WHERE process_instance_id = ? AND assignee = ? AND status = ?)",
+			instID, "starter", string(enums.ApprovalResultApproved),
+			instID, "starter", string(enums.TaskStatusCompleted)).Scan(&n).Error)
+		return n == 1
+	}, 5*time.Second, 50*time.Millisecond, "initiator's countersign sub-task must be auto approved")
+
+	// 会签要求全员通过：u2 的子任务保持待办，手动通过后实例完结
+	tasks := env.activeTasksFor(instID, "u2")
+	require.NotEmpty(t, tasks, "u2's countersign sub-task should remain active")
+	env.approveAs(tasks[0].ID, "u2", "同意")
+	require.Eventually(t, func() bool {
+		return env.instanceStatus(instID) == string(enums.InstanceStatusCompleted)
+	}, 5*time.Second, 50*time.Millisecond, "instance should complete after remaining countersign ticket")
+}
+
+// selfApproval=autoApprove 在顺序审批下命中后续推进创建的发起人任务：
+// 发起人排第 2 位，第 1 人通过后推进创建发起人任务并立即自动通过，实例自动完结。
+func TestE2E_SelfApproval_AutoApprove_SequentialAdvancesThroughInitiator(t *testing.T) {
+	env := newE2EEnv(t)
+	env.deployRawProcess("self_auto_seq_e2e", "self_auto_seq_e2e", "顺序发起人自动通过", map[string]interface{}{
+		"ruleChain": map[string]interface{}{"id": "self_auto_seq_e2e", "name": "顺序发起人自动通过", "root": true},
+		"metadata": map[string]interface{}{
+			"firstNodeIndex": 0,
+			"nodes": []map[string]interface{}{
+				{"id": "approve_node", "type": "userTask", "name": "审批", "configuration": map[string]interface{}{
+					"approver":     map[string]interface{}{"type": "user", "userIds": []string{"u1", "starter"}},
+					"approveMode":  "sequential",
+					"selfApproval": "autoApprove",
+				}},
+				{"id": "end", "type": "end", "name": "End"},
+			},
+			"connections": []map[string]interface{}{
+				{"fromId": "start", "toId": "approve_node", "type": "Success"},
+				{"fromId": "approve_node", "toId": "end", "type": "Success"},
+			},
+		},
+	})
+
+	instID := env.startInstance("self_auto_seq_e2e", "starter")
+	require.Eventually(t, func() bool {
+		return len(env.activeTasksFor(instID, "u1")) > 0
+	}, 5*time.Second, 50*time.Millisecond, "first sequential task should go to u1")
+	tasks := env.activeTasksFor(instID, "u1")
+	env.approveAs(tasks[0].ID, "u1", "同意")
+	require.Eventually(t, func() bool {
+		return env.instanceStatus(instID) == string(enums.InstanceStatusCompleted)
+	}, 5*time.Second, 50*time.Millisecond, "initiator's sequential task must auto approve after first approver")
 }
 
 // forkChainDef 构造 start → fork → (ta | tb) → join → end 的双分支链定义，

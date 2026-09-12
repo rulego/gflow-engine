@@ -102,6 +102,11 @@ func validateHTTPCallConfig(cfg map[string]interface{}) []string {
 	if strings.TrimSpace(c.Url) == "" {
 		return []string{"url is empty"}
 	}
+	// 运行期支持 ${msg.xxx} 模板 URL（首段即模板时静态解析不出 scheme），
+	// 部署期无法判定最终 scheme，放行由运行期请求兜底
+	if strings.Contains(c.Url, "${") {
+		return nil
+	}
 	if u, err := url.Parse(c.Url); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return []string{"url scheme must be http/https"}
 	}

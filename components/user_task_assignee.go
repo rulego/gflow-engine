@@ -24,6 +24,7 @@ import (
 
 	"github.com/rulego/gflow-engine/service"
 	"github.com/rulego/gflow-engine/types/constants"
+	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/rulego/api/types"
 )
@@ -279,7 +280,13 @@ func (n *UserTaskNode) autoApproveOwnerTasks(ctx types.RuleContext, msg types.Ru
 	if owner == "" {
 		return
 	}
-	tasks, err := n.getExistingTasks(ctx.GetContext(), processInstanceID)
+	// 会签/票签的受理人挂在带 ParentID 的子任务上，不能复用 getExistingTasks
+	//（其 ParentIDIsNull 过滤只返回无办理人的主任务）
+	query := &dto.TaskQuery{
+		InstanceID: &processInstanceID,
+		TaskDefKey: n.GetSelfId(),
+	}
+	tasks, _, err := n.TaskService.GetTaskList(ctx.GetContext(), service.ActorFromCtx(ctx.GetContext()), query)
 	if err != nil {
 		logrus.WithError(err).Warnf("auto approve: query tasks of node %s failed, skip", n.GetSelfId())
 		return

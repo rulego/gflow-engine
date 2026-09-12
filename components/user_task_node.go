@@ -307,6 +307,9 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 				}
 				if advanced {
 					logrus.Debugf("Sequential next task created for node %s", n.GetSelfId())
+					// 发起人自动通过：顺序推进创建的后续任务同样命中发起人时立即完成
+					//（锁段已退出，完成后经 AfterCommit→ExecuteNext 重入推进下一环）
+					n.autoApproveOwnerTasks(ctx, msg, processInstanceID)
 					ctx.DoOnEnd(msg, nil, "")
 					return
 				}
