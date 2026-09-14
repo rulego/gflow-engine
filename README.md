@@ -6,13 +6,6 @@
 [English](README_EN.md) | 简体中文
 
 > **GFlow** —— AI 先审 · 人再签 · 签完自动办
->
-> **GFlow Engine**——GFlow 产品家族的核心，可嵌入的审批工作流引擎（开源版）。
-> 以 Go 库形式发布，不含界面、不提供 HTTP 服务，由宿主应用集成驱动。
->
-> 需要开箱即用？**GFlow Platform（极风工作流）** 即 GFlow 企业版，
-> 提供流程设计器、表单设计器、审批界面与 AI 审批。
-> 官网 <https://gflow.rulego.cc/> · 在线演示 <http://8.134.32.225:8081>（`admin` / `admin123`）
 
 `GFlow Engine` 是一个基于 [RuleGo](https://github.com/rulego/rulego) 的轻量级、可嵌入审批工作流引擎。流程定义复用 `RuleGo` 规则链 DSL（JSON），审批任务、流程实例、历史归档等状态由引擎持久化到关系数据库，无需部署独立的流程中间件。审批节点与自动化节点（规则链、HTTP、AI 智能体、子流程）在同一条流程 DSL 里混排——审批通过即可自动执行后续动作；或签、会签、动态加签/减签、退回等中国式审批语义开箱即用。
 
@@ -20,23 +13,46 @@
 
 ## 特性
 
-* **流程即规则链，审批与自动化同链**
-  * **规则链即流程：** 流程 DSL 复用 `RuleGo` 规则链，网关（`switch` 条件分支）、并行分支（`fork`/`inclusive`/`join`）等原生节点可直接编排，流程即规则、规则即流程。
-  * **审批与自动化同链编排：** `serviceTask` 调用 Go 函数，`automation` 节点调用 `RuleGo` 规则链，`aiAgent` 节点对接智能体规则链（[rulego-components-ai](https://github.com/rulego/rulego-components-ai)），`httpCall` 节点同步调用外部接口。
-  * **子流程：** `subProcess` 节点启动独立子流程实例，嵌套审批闭环。
-* **中国式审批语义与流程模型**
-  * **中国式审批语义：** 或签（any）、会签（all，一票否决）、票签（vote，过半/百分比/指定票数）、顺序审批、动态加签/减签、转办、委托、签收/抢单、退回、撤回、挂起/恢复、超时催办，开箱即用无需二次开发。
-  * **候选组待办：** 任务可按人员/角色/部门发起，候选人池（`wf_task_assignee`）独立存储，查询时经 `IdentityService` 展开。
-  * **审批意见：** 评论存于 `wf_task_comment`，任务归档后仍可读写；审批动作与意见在同一事务落库。
-  * **流程定义版本化：** 同一 `process_key` 按 `version` 递增保留多个发布版本，存量实例继续运行旧版本。
-* **集成与扩展**
-  * **可插拔身份体系：** 实现 `IdentityService` 对接真实的用户/角色/部门数据（按角色、部门、组、多级主管解析审批人）；内置 Mock 实现仅用于测试。
-  * **事件钩子：** 17 个任务全生命周期事件在事务提交后派发，完整目录见 [docs/events.md](docs/events.md)；构建器支持注册一个或多个监听器。平台级钩子：跨租户逾期扫描（`ScanOverdueTasks`）、批量可认领实例判断（`GetClaimableInstanceIDs`）。
-  * **可插拔数据库方言：** 内置 PostgreSQL / MySQL，通过 `DialectProvider` 可扩展其它数据库（SQLite、达梦、人大金仓等，见 examples 目录）。
-* **架构与部署**
-  * **运行时/历史双表：** 进行中数据与归档数据分离，报表和审计查询不拖累运行时。
-  * **多租户：** 全链路 `tenant_id` 隔离，规则链执行池按租户划分。
-  * **轻量部署：** 无必须的外部中间件（内置本地内存锁，分布式锁可插拔），适合嵌入现有应用。
+* **中国式审批语义，开箱即用**：或签、会签、票签（过半/百分比/指定票数）、顺序审批、动态加签/减签、转办、委派、签收/抢单、退回、撤回、超时催办，无需二次开发；流程定义支持多版本共存，存量实例按启动时的版本继续跑完。
+* **审批与自动化在一条流程里**：流程 DSL 复用 `RuleGo` 规则链，审批节点可与条件分支、并行分支、规则链、HTTP 调用、AI 智能体、子流程自由编排——审批通过即自动执行后续动作（入账、通知、回写业务系统）。
+* **可嵌入宿主，身份权限宿主掌控**：纯 Go 库集成，不绑定用户体系；审批人按人员/角色/部门/多级主管解析（`IdentityService`）；每个操作都校验办理人权限，全链路多租户隔离。
+* **轻量可靠**：无需消息队列等外部中间件；PostgreSQL / MySQL 开箱即用（方言可扩展达梦、人大金仓等）；运行时/历史双表分离，审计报表不拖累线上；17 个任务事件钩子驱动通知等副作用（[docs/events.md](docs/events.md)）。
+
+## GFlow Platform（企业版）
+
+**GFlow Platform（极风工作流）** 是基于 GFlow Engine 打造的开箱即用审批工作流平台（即 GFlow 企业版），前端后端全套：
+
+- **审批中心**：发起申请、待办 / 已办 / 抄送我、审批统计，审批全流程开箱即用
+- **流程设计器 + 表单设计器**：业务人员拖拽搭建流程和表单，不写代码
+- **AI 审批**：AI 智能体加入审批流，完成单据初审
+- **管理端**：流程定义、实例、任务、自动化、组织权限一站管理
+
+- 官网：<https://gflow.rulego.cc/>
+- 在线演示：<http://8.134.32.225:8081>（`admin` / `admin123`）
+
+## 界面预览
+
+以下为 GFlow Platform 的真实界面截图。
+
+<p align="center">
+  <img src="docs/images/screens/designer.jpg" alt="GFlow Platform 流程设计器：树形画布，审批人、审批方式、驳回规则集中一处配置" width="820" />
+  <br/><sub><b>流程设计器</b> —— 树形画布 + 审批配置抽屉，业务人员零代码上手</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/screens/screens-pair-1.jpg" alt="GFlow Platform 工作台与发起申请" width="820" />
+  <br/><sub><b>工作台 · 发起申请</b> —— 待办一屏掌握，选模板填表单、一分钟发起</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/screens/screens-pair-2.jpg" alt="GFlow Platform 审批中心待办与审批详情（含条件路由命中与后续环节）" width="820" />
+  <br/><sub><b>审批中心 · 审批详情</b> —— 收件箱式待办；时间线展示条件命中与后续每个环节谁来审</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/screens/mobile-trio.jpg" alt="GFlow Platform 移动端 H5：我的审批、审批详情与发起申请" width="720" />
+  <br/><sub><b>移动端 H5</b> —— 手机上直接发起申请、处理审批、查看进度</sub>
+</p>
 
 ## 安装
 
@@ -64,9 +80,7 @@ mysql -u root -p -e "CREATE DATABASE gflow DEFAULT CHARACTER SET utf8mb4"
 mysql -u root -p gflow < scripts/00.init_bpm_mysql.sql
 ```
 
-建表清单：`wf_process`（流程定义）、`wf_instance` / `wf_hi_instance`（实例运行时/历史）、`wf_task` / `wf_hi_task`（任务运行时/历史）、`wf_task_assignee`（候选人池）、`wf_task_comment`（审批意见）。
-
-> 初始化脚本为幂等设计（`CREATE TABLE IF NOT EXISTS`），在已有库上重跑不会删除/改写任何数据。单元测试使用 SQLite 内存库，无需执行脚本；可选的真实库行锁测试（`TestWithInstanceTx_RealDB_ForUpdateSerializes`）仅在设置 `TEST_PG_DSN` 或 `TEST_MYSQL_DSN`（指向任意现存库）时运行，会自建并清理 `gflow_locktest` 临时库。
+引擎共 7 张 `wf_` 前缀表：流程定义、实例与任务（各含运行时/历史两张）、候选人池、审批意见，字段说明见 [docs/migration.md](docs/migration.md)。
 
 ## 快速开始
 
@@ -177,14 +191,6 @@ err = engine.GetTaskService().CompleteWithApproval(ctx, service.Actor{
 })
 ```
 
-> **安全说明——操作人由显式 `actor Actor` 参数传入：**
-> 所有审批/变更类操作（`CompleteWithApproval`/`Approve`/`Reject`/`Claim`/`Unclaim`/
-> `Transfer`/`Reassign`/`Return`/`Withdraw`/`WithdrawByInstance`/`DeleteTask` 等）的
-> 操作人都是显式 `actor service.Actor` 参数，引擎以 `actor.UserID` 校验 assignee 权限。
-> 没有任何操作人身份的调用会以 `ErrAuthenticationRequired` 拒绝；操作人不是任务
-> 办理人则以 `ErrPermissionDenied` 拒绝。`Actor` 必须由宿主服务端从认证层
-> （session/token）构造，绝不直接透传客户端输入。
-
 完整可运行示例（单签、会签、顺序审批）见 [examples/leave_approval](examples/leave_approval)——默认跑在内存 SQLite 上，零依赖直接运行（`GFLOW_DSN` 可切 PostgreSQL/MySQL）；`httpCall` + `switch` 组合示例（查询外部接口 → 响应映射进流程变量 → 按结果路由）见 [examples/http_call](examples/http_call)。引擎默认内置内存 Mock 身份服务（仅用于测试），生产集成请按下一节注入自己的 `IdentityService`。
 
 ## 接入组织架构（IdentityService）
@@ -267,13 +273,6 @@ engine, err := service.NewWorkflowEngineBuilder().
 * **数据库方言：** 实现 `service.DialectProvider` 注册新数据库，见 [examples/custom_dialect](examples/custom_dialect)（达梦、人大金仓）。
 * **分布式锁：** 引擎内置本地内存锁（`lock.NewLocalLock`）；多实例部署请自行实现 `lock.Locker` 接口（如基于 Redis 的 SET NX + Lua 脚本释放），并经 `WorkflowEngineBuilder.SetLocker` 注入。
 * **任务事件：** `TaskEventListener` / `CCTaskCreatedListener` 接收任务生命周期事件，驱动站内通知等副作用；完整事件目录、载荷字段与对接示例见 [docs/events.md](docs/events.md)。
-
-## 生态
-
-- [RuleGo](https://github.com/rulego/rulego) ：底层规则引擎
-- 文档：<https://gflow.rulego.cc/>
-- GFlow Engine 源码：[Gitee](https://gitee.com/rulego/gflow-engine) · [GitHub](https://github.com/rulego/gflow-engine)
-- **GFlow Platform**（极风工作流）：GFlow 企业版，基于 GFlow Engine 的开箱即用审批工作流平台（服务端 + 前端 + 设计器），官网 <https://gflow.rulego.cc/>，在线演示 <http://8.134.32.225:8081>
 
 ## 联系与商业授权
 

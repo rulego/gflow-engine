@@ -6,13 +6,6 @@
 English | [简体中文](README.md)
 
 > **GFlow** — AI pre-screens · Humans approve · Automation follows
->
-> **GFlow Engine** — the embeddable approval workflow engine at the core of the GFlow product family (open-source edition).
-> It ships as a Go library: no UI, no HTTP server — you drive it from your own application.
->
-> Need something ready to run? **GFlow Platform（极风工作流）** is the GFlow Enterprise Edition,
-> with a flow designer, form designer, approval UI and AI review built in.
-> Site: <https://gflow.rulego.cc/en/> · Live demo: <http://8.134.32.225:8081> (`admin` / `admin123`)
 
 `GFlow Engine` is a lightweight, embeddable approval workflow engine built on [RuleGo](https://github.com/rulego/rulego). Process definitions reuse the `RuleGo` rule-chain DSL (JSON), while tasks, process instances and history are persisted to a relational database by the engine itself — no separate process middleware to deploy. Approval nodes and automation nodes (rule chains, HTTP calls, AI agents, sub-processes) live in the same process DSL — downstream actions run automatically once approved; Chinese-style approval semantics (any-sign, all-sign, threshold vote, sequential approval, dynamic add/remove signers, return) work out of the box.
 
@@ -20,23 +13,46 @@ English | [简体中文](README.md)
 
 ## Features
 
-* **Rule chain as process, approval + automation in one DSL**
-  * **Rule chain as process:** the DSL is a `RuleGo` rule chain. Native nodes such as gateways (`switch`) and parallel branches (`fork`/`inclusive`/`join`) can be mixed into approval flows directly.
-  * **Approval and automation in one chain:** `serviceTask` calls Go functions, `automation` invokes `RuleGo` rule chains, `aiAgent` talks to agent rule chains ([rulego-components-ai](https://github.com/rulego/rulego-components-ai)), and `httpCall` performs synchronous HTTP calls.
-  * **Sub-processes:** the `subProcess` node starts an independent child instance and returns to the parent flow on completion.
-* **Chinese-style approval semantics & process model**
-  * **Chinese-style approval semantics:** single sign-off, any-sign, all-sign (unanimous with one-vote veto), threshold vote (majority/percent/count), sequential approval, dynamic add/remove signers, transfer, delegation, claim, return, withdraw, suspend/resume, overdue handling — out of the box, no extra development.
-  * **Candidate-group tasks:** tasks can be offered to users, roles or departments; the candidate pool (`wf_task_assignee`) is stored separately and expanded through `IdentityService` at query time.
-  * **Approval comments:** task comments live in `wf_task_comment` and survive task archival; approval actions record their comment in the same transaction.
-  * **Versioned definitions:** each `process_key` keeps multiple published versions; running instances continue on the version they started with.
-* **Integration & extension**
-  * **Pluggable identity:** implement `IdentityService` to resolve approvers from your real user/role/department data (by role, department, group or manager hierarchy). The built-in mock is for tests only.
-  * **Event hooks:** 17 task lifecycle events dispatched after commit (full catalog in [docs/events.md](docs/events.md)); register one or many listeners via the builder. Platform hooks: cross-tenant overdue scan (`ScanOverdueTasks`) and batch claimable-instance lookup (`GetClaimableInstanceIDs`).
-  * **Pluggable SQL dialects:** PostgreSQL / MySQL out of the box; register others (SQLite, Dameng, Kingbase, ...) via `DialectProvider` — see the examples directory.
-* **Architecture & deployment**
-  * **Runtime/history split:** in-flight data and archived data live in separate tables, so reporting and audits never contend with the hot path.
-  * **Multi-tenancy:** `tenant_id` isolation end to end, with per-tenant rule-engine pools.
-  * **Lightweight:** no mandatory external middleware (a local in-memory lock is built in; distributed locking is pluggable). Fits embedding into existing applications.
+* **Chinese-style approval semantics out of the box:** any-sign, all-sign (unanimous with one-vote veto), threshold vote (majority/percent/count), sequential approval, dynamic add/remove signers, transfer, delegation, claim, return, withdraw, overdue handling — no extra development. Definitions are versioned: running instances stay on the version they started with.
+* **Approvals and automation in one flow:** the process DSL is a `RuleGo` rule chain — approval nodes mix freely with gateways, parallel branches, rule chains, HTTP calls, AI agents and sub-processes. Once approved, downstream actions run automatically (booking, notifications, writing back to your systems).
+* **Embeds in your host, identity stays yours:** integrate as a pure Go library with no user-store coupling; approvers resolve by user/role/department/manager hierarchy via `IdentityService`; every operation is permission-checked against the actor, with multi-tenancy end to end.
+* **Lightweight and dependable:** no mandatory middleware; PostgreSQL / MySQL out of the box (pluggable dialects for Dameng, Kingbase, ...); runtime/history table split keeps audits off the hot path; 17 task event hooks drive notifications and other side effects ([docs/events.md](docs/events.md)).
+
+## GFlow Platform (Enterprise Edition)
+
+**GFlow Platform (极风工作流)** is a ready-to-run approval workflow platform built on GFlow Engine (the enterprise edition of GFlow), with both frontend and backend included:
+
+- **Approval center**: initiate requests; to-do / done / CC'd to me; approval statistics
+- **Process designer + form designer**: business staff build flows and forms by drag & drop, zero code
+- **AI approval**: AI agents join the approval flow and pre-screen requests
+- **Admin console**: process definitions, instances, tasks, automation, organization & permissions
+
+- Site: <https://gflow.rulego.cc/en/>
+- Live demo: <http://8.134.32.225:8081> (`admin` / `admin123`)
+
+## Screenshots
+
+Real screenshots of GFlow Platform (极风工作流).
+
+<p align="center">
+  <img src="docs/images/screens/designer.jpg" alt="GFlow Platform process designer: tree-style canvas with approvers, approval mode and fallback rules configured in one drawer" width="820" />
+  <br/><sub><b>Process Designer</b> — tree-style canvas + approval configuration drawer, zero code for business admins</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/screens/screens-pair-1.jpg" alt="GFlow Platform workbench and new request" width="820" />
+  <br/><sub><b>Workbench · New Request</b> — to-dos at a glance; pick a template, fill the form, done in a minute</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/screens/screens-pair-2.jpg" alt="GFlow Platform approval inbox and approval detail with condition hits and upcoming nodes" width="820" />
+  <br/><sub><b>Approval Inbox · Approval Detail</b> — inbox-style to-dos; the timeline shows condition hits and every upcoming approver</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/screens/mobile-trio.jpg" alt="GFlow Platform mobile H5: my approvals, approval detail and new request" width="720" />
+  <br/><sub><b>Mobile H5</b> — start, approve and track requests right from your phone</sub>
+</p>
 
 ## Installation
 
@@ -64,9 +80,7 @@ mysql -u root -p -e "CREATE DATABASE gflow DEFAULT CHARACTER SET utf8mb4"
 mysql -u root -p gflow < scripts/00.init_bpm_mysql.sql
 ```
 
-Tables created: `wf_process` (definitions), `wf_instance` / `wf_hi_instance` (runtime/history instances), `wf_task` / `wf_hi_task` (runtime/history tasks), `wf_task_assignee` (candidate pool), `wf_task_comment` (approval comments).
-
-> The init scripts are idempotent (`CREATE TABLE IF NOT EXISTS`) — re-running them on an existing database never deletes or modifies data. Unit tests run on an in-memory SQLite database and need no scripts. The optional real-database lock test (`TestWithInstanceTx_RealDB_ForUpdateSerializes`) runs only when `TEST_PG_DSN` or `TEST_MYSQL_DSN` points to an existing database; it creates and drops its own `gflow_locktest` scratch database.
+The engine owns 7 `wf_`-prefixed tables: process definitions, instances and tasks (runtime + history each), the candidate pool, and approval comments — see [docs/migration.md](docs/migration.md) for column details.
 
 ## Quick start
 
@@ -181,15 +195,6 @@ err = engine.GetTaskService().CompleteWithApproval(ctx, service.Actor{
 })
 ```
 
-> **Security note — the operator is the explicit `actor Actor` parameter:** all approval
-> and mutation operations (`CompleteWithApproval`, `Approve`, `Reject`, `Claim`, `Unclaim`,
-> `Transfer`, `Reassign`, `Return`, `Withdraw`, `WithdrawByInstance`, `DeleteTask`, ...)
-> receive the operator as an explicit `actor service.Actor` parameter; the engine checks
-> assignee permission against `actor.UserID`. A call with no operator identity is rejected
-> with `ErrAuthenticationRequired`, and an operator who is not the task assignee gets
-> `ErrPermissionDenied`. Construct the `Actor` on the server side from your authentication
-> layer (session/token) — never trust client input directly.
-
 A complete runnable example (single sign-off, all-sign, sequential approval) lives in [examples/leave_approval](examples/leave_approval) — it runs zero-dependency on an in-memory SQLite database by default (`GFLOW_DSN` switches to PostgreSQL/MySQL). An `httpCall` + `switch` combination example (query an external API, map the response into process variables, route by the result) lives in [examples/http_call](examples/http_call). The engine ships with an in-memory mock identity service for tests only — inject your own `IdentityService` as described in the next section for production.
 
 ## Identity integration (organizational data)
@@ -272,13 +277,6 @@ For the full node reference (configuration fields, approval modes, reject strate
 * **SQL dialect:** implement `service.DialectProvider` to support additional databases — see [examples/custom_dialect](examples/custom_dialect) (Dameng, Kingbase).
 * **Distributed locking:** the engine ships a built-in local in-memory lock (`lock.NewLocalLock`). For multi-instance deployments, implement the `lock.Locker` interface (e.g. Redis `SET NX` with a Lua-script release) and inject it via `WorkflowEngineBuilder.SetLocker`.
 * **Task events:** `TaskEventListener` / `CCTaskCreatedListener` receive task lifecycle events to drive notifications and other side effects — see [docs/events.md](docs/events.md) for the full event catalog, payload fields and integration guide.
-
-## Ecosystem
-
-- [RuleGo](https://github.com/rulego/rulego) — the underlying rule engine
-- Documentation: <https://gflow.rulego.cc/en/>
-- GFlow Engine source: [Gitee](https://gitee.com/rulego/gflow-engine) · [GitHub](https://github.com/rulego/gflow-engine)
-- **GFlow Platform**（极风工作流）— the GFlow Enterprise Edition, a ready-to-run approval platform built on GFlow Engine (backend + UI + designers); site: <https://gflow.rulego.cc/>, live demo at <http://8.134.32.225:8081>
 
 ## Contact & commercial licensing
 
