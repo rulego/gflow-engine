@@ -15,12 +15,6 @@ import (
 	"github.com/rulego/rulego/api/types"
 	"github.com/rulego/rulego/utils/maps"
 	"github.com/sirupsen/logrus"
-
-	// 注册 rulego-components-ai 的 ai/agent 节点。
-	// AIAgentNode 通过 ctx.TellFlow 调用智能体规则链，
-	// 智能体定义本身是含 ai/agent 节点的子规则链，
-	// 因此 gflow-engine 必须能识别 ai/agent 类型。
-	_ "github.com/rulego/rulego-components-ai/agent"
 )
 
 // registerNode 幂等注册节点。rulego.Registry 是进程级全局单例，
