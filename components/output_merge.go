@@ -19,7 +19,7 @@ package components
 import (
 	"strings"
 
-	"github.com/bytedance/sonic"
+	"encoding/json"
 	"github.com/rulego/rulego/api/types"
 	"github.com/tidwall/gjson"
 )
@@ -59,10 +59,10 @@ func MergeAgentOutput(msg *types.RuleMsg, output []byte, mappings []OutputMappin
 	}
 
 	// 读出原 msg.Data(表单字段)作为合并基座。解析失败(非 JSON)或为 "null" 则用空 map
-	// （sonic.Unmarshal "null" 会置 nil，后续写入 panic，必须防护）。
+	// （json.Unmarshal "null" 会置 nil，后续写入 panic，必须防护）。
 	dataMap := map[string]interface{}{}
 	if orig := msg.GetData(); len(orig) > 0 {
-		_ = sonic.Unmarshal([]byte(orig), &dataMap)
+		_ = json.Unmarshal([]byte(orig), &dataMap)
 		if dataMap == nil {
 			dataMap = map[string]interface{}{}
 		}
@@ -74,7 +74,7 @@ func MergeAgentOutput(msg *types.RuleMsg, output []byte, mappings []OutputMappin
 		mappingSource := output
 		if objBytes, ok := ExtractJSONObject(output); ok {
 			var obj map[string]interface{}
-			if err := sonic.Unmarshal(objBytes, &obj); err == nil && obj != nil {
+			if err := json.Unmarshal(objBytes, &obj); err == nil && obj != nil {
 				dataMap[reservedKey] = obj
 				if flatten {
 					for k, v := range obj {
@@ -101,7 +101,7 @@ func MergeAgentOutput(msg *types.RuleMsg, output []byte, mappings []OutputMappin
 		}
 	}
 
-	b, err := sonic.Marshal(dataMap)
+	b, err := json.Marshal(dataMap)
 	if err != nil {
 		return err
 	}
@@ -125,7 +125,7 @@ func ExtractJSONObject(b []byte) ([]byte, bool) {
 		if end, ok := matchJSONObject(s, start); ok {
 			cand := s[start : end+1]
 			var m map[string]interface{}
-			if err := sonic.Unmarshal([]byte(cand), &m); err == nil {
+			if err := json.Unmarshal([]byte(cand), &m); err == nil {
 				return []byte(cand), true
 			}
 		}
@@ -215,7 +215,7 @@ func toMetadataString(value interface{}) string {
 	case string:
 		return v
 	default:
-		b, _ := sonic.Marshal(v)
+		b, _ := json.Marshal(v)
 		return string(b)
 	}
 }
