@@ -25,8 +25,8 @@ github.com/chzyer/readline v1.5.0/go.mod h1:x22KAscuvRqlLoK9CsoYsmxoXZMMFVyOl86c
 github.com/chzyer/test v0.0.0-20210722231415-061457976a23/go.mod h1:Q3SI9o4m/ZMnBNeIyt5eFwwo7qiLfzFZmjNmxjkiQlU=
 github.com/cloudwego/base64x v0.1.6 h1:t11wG9AECkCDk5fMSoxmufanudBtJ+/HemLstXDLI2M=
 github.com/cloudwego/base64x v0.1.6/go.mod h1:OFcloc187FXDaYHvrNIjxSe8ncn0OOM8gEHfghB2IPU=
-github.com/cloudwego/eino v0.10.0-alpha.9 h1:Hq5jGO4LRpd5BDIbhLUViJN5DiSQ7CAkWLlM0s5prMA=
-github.com/cloudwego/eino v0.10.0-alpha.9/go.mod h1:OBD1mrkfkt/pJa4rkg1P0VnaMeOVl7l8IAdEqY//3IQ=
+github.com/cloudwego/eino v0.9.19 h1:i71YUBK3nwY4L53dkzRgZpAcPSZ4v4eRponN7W9sDtk=
+github.com/cloudwego/eino v0.9.19/go.mod h1:OBD1mrkfkt/pJa4rkg1P0VnaMeOVl7l8IAdEqY//3IQ=
 github.com/cloudwego/eino-ext/components/model/openai v0.1.13 h1:5XHRTiTD5bt9KQrMHcfvuWNklEC3tpm3XHejdozt9vM=
 github.com/cloudwego/eino-ext/components/model/openai v0.1.13/go.mod h1:mgIoqYYOc0eECCqvLbEYpOJrQNTNxkwXzSJzFU+v5sQ=
 github.com/cloudwego/eino-ext/libs/acl/openai v0.1.17 h1:EeVcR1TslRA2IdNW1h/2LaGbPlffwGhQm99jM3zWZiI=
@@ -175,8 +175,8 @@ github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/f
 github.com/rollbar/rollbar-go v1.0.2/go.mod h1:AcFs5f0I+c71bpHlXNNDbOWJiKwjFDtISeXco0L5PKQ=
 github.com/rulego/rulego v0.37.2 h1:H2EA3ET/D30FurGaSEUr82HMG1Lz6B70LwsEoE9hjg4=
 github.com/rulego/rulego v0.37.2/go.mod h1:C+5ohZtTIBNB4l1UY3aVLX+OKAXOHbryRn0I3+no8cs=
-github.com/rulego/rulego-components-ai v0.37.1-0.20260816034641-6c42204bd4b6 h1:RCftJYGHlWSET1nKSsHauaPBiinymkMsdJgFnAe2pMA=
-github.com/rulego/rulego-components-ai v0.37.1-0.20260816034641-6c42204bd4b6/go.mod h1:xdl9QbrKEDO33BQGkHuKDEL0pB1db6vAHfNTr4zuIh0=
+github.com/rulego/rulego-components-ai v0.37.1-0.20260920092958-723a541f8cab h1:/Ln/+iC4GrKPygedrU2WF2fyD+kZf1tSqG/nzFW8YFw=
+github.com/rulego/rulego-components-ai v0.37.1-0.20260920092958-723a541f8cab/go.mod h1:fTdJtIlBuuFnsJuWYMsEOSRjTFPhrllOsAcD32itUMM=
 github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPxbbu5VWo=
 github.com/sirupsen/logrus v1.9.4 h1:TsZE7l11zFCLZnZ+teH4Umoq5BhEIfIzfRDZ1Uzql2w=
 github.com/sirupsen/logrus v1.9.4/go.mod h1:ftWc9WdOfJ0a92nsE2jF5u5ZwH8Bv2zdeOC42RjbV2g=
