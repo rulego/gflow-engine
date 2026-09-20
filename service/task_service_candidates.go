@@ -14,6 +14,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
@@ -57,8 +58,10 @@ func expandCandidateMembers(ctx context.Context, identity IdentityService, tenan
 }
 
 // collectCandidateMembersExcluding 展开任务候选池成员（role/dept 经 identity 展开 + person），去重并排除指定用户。
-func (s *TaskServiceImpl) collectCandidateMembersExcluding(ctx context.Context, tenantID, taskID, excludeUserID string) []string {
-	rows, err := s.taskAssigneeDAO.GetByTaskID(ctx, tenantID, taskID)
+// assignees 传 scope.TaskAssignees()：本方法在实例行锁事务内调用，走全局连接会与事务互等连接，
+// 单连接配置下死锁到事务超时。
+func (s *TaskServiceImpl) collectCandidateMembersExcluding(ctx context.Context, assignees *dao.TaskAssigneeDAO, tenantID, taskID, excludeUserID string) []string {
+	rows, err := assignees.GetByTaskID(ctx, tenantID, taskID)
 	if err != nil || len(rows) == 0 {
 		return nil
 	}

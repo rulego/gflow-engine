@@ -88,6 +88,7 @@ func initE2EEngine(t *testing.T) {
 		SetConfig(cfg).
 		SetDialectProvider(&sqliteDialectProvider{}).
 		SetIDGenerator(service.NewIDGenerator()).
+		SetTaskEventListener(e2eEvents.onEvent).
 		Build()
 	require.NoError(t, err, "build engine")
 	require.NotNil(t, engine)
@@ -99,9 +100,10 @@ func initE2EEngine(t *testing.T) {
 	require.NoError(t, engine.Start(context.Background()), "start engine")
 	require.NoError(t,
 		components.Register(components.ComponentDeps{
-			TaskService:     engine.GetTaskServiceInternal(),
-			IdentityService: engine.GetIdentityService(),
-			RuntimeService:  engine.GetRuntimeServiceInternal(),
+			TaskService:       engine.GetTaskServiceInternal(),
+			IdentityService:   engine.GetIdentityService(),
+			RuntimeService:    engine.GetRuntimeServiceInternal(),
+			TaskEventListener: engine.GetTaskEventListener(),
 		}), "register components")
 
 	// 测试代码直接复用引擎内部的 *gorm.DB——这样所有读写都走同一个连接池，
@@ -139,9 +141,56 @@ type e2eTestEnv struct {
 	db     *gorm.DB
 }
 
+// e2eEvents 挂在共享单例引擎上的被动事件记录器：只记录不断言，事件回归用例
+// 从这里取快照。引擎在单例初始化时一次性构建，listener 只能在 Builder 注入。
+var e2eEvents = &e2eEventRecorder{}
+
+type e2eEventRecorder struct {
+	mu     sync.Mutex
+	events []service.TaskEvent
+}
+
+func (r *e2eEventRecorder) onEvent(_ context.Context, evt service.TaskEvent) {
+	r.mu.Lock()
+	r.events = append(r.events, evt)
+	r.mu.Unlock()
+}
+
+func (r *e2eEventRecorder) reset() {
+	r.mu.Lock()
+	r.events = nil
+	r.mu.Unlock()
+}
+
+// waitFor 阻塞等待至少出现一个指定类型的事件（事件派发是异步的）。
+func (r *e2eEventRecorder) waitFor(t *testing.T, typ service.TaskEventType, timeout time.Duration) []service.TaskEvent {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		r.mu.Lock()
+		found := false
+		for _, evt := range r.events {
+			if evt.Type == typ {
+				found = true
+			}
+		}
+		r.mu.Unlock()
+		if found {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]service.TaskEvent(nil), r.events...)
+}
+
 func newE2EEnv(t *testing.T) *e2eTestEnv {
 	t.Helper()
 	initE2EEngine(t)
+	// cache=shared 内存库会因连接被异常废弃而重建为空库，逐测试幂等补表，
+	// 避免一次连接抖动让后续所有用例连环报 no such table。
+	createE2ETables(t, e2eDB)
 	resetE2ETables(t)
 	return &e2eTestEnv{t: t, engine: e2eEngine, db: e2eDB}
 }
@@ -530,6 +579,50 @@ func TestE2E_SequentialApproval_RejectionStopsChain(t *testing.T) {
 		"second approver must NOT receive task after rejection")
 	assert.Empty(t, env.activeTasksFor(instanceID, "user_hr_001"),
 		"third approver must NOT receive task after rejection")
+}
+
+// ---------------------------------------------------------------------------
+// 测试 2.1：驳回事件必须携带真实操作人。
+// 回归：审计日志驳回记录操作人为空的根因——链执行 ctx 不进入节点回调，
+// 驳回事件从节点派发时取不到操作人。修法：API 驱动把操作人写进链元数据
+// （executeNextLocked），驳回事件从元数据回读。
+// ---------------------------------------------------------------------------
+
+func TestE2E_RejectEventCarriesOperator(t *testing.T) {
+	env := newE2EEnv(t)
+	e2eEvents.reset()
+	env.deploySimpleProcess("rej_op_e2e", "Reject Operator",
+		"single",
+		[]string{"approver-op"},
+		map[string]interface{}{
+			"reject": map[string]interface{}{"strategy": "terminate"},
+		})
+
+	instanceID := env.startInstance("rej_op_e2e", "starter-op")
+
+	require.Eventually(t, func() bool {
+		return len(env.activeTasksFor(instanceID, "approver-op")) > 0
+	}, 2*time.Second, 50*time.Millisecond)
+
+	tasks := env.activeTasksFor(instanceID, "approver-op")
+	require.Len(t, tasks, 1)
+
+	env.rejectAs(tasks[0].ID, "approver-op", "不同意")
+
+	evs := e2eEvents.waitFor(t, service.TaskEventRejected, 2*time.Second)
+	var got *service.TaskEvent
+	for i := range evs {
+		if evs[i].Type == service.TaskEventRejected && evs[i].InstanceID == instanceID {
+			got = &evs[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("no rejected event for instance %s in %d events", instanceID, len(evs))
+	}
+	if got.FromUser != "approver-op" {
+		t.Errorf("rejected event FromUser = %q, want %q（空值=操作审计丢人）", got.FromUser, "approver-op")
+	}
 }
 
 // ---------------------------------------------------------------------------

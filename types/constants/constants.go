@@ -35,6 +35,10 @@ const (
 	KeyBusinessKey = "business_key"
 	// KeyOwner 拥有者
 	KeyOwner = "owner"
+	// KeyOperator 链元数据里的实际操作人（用户ID）。OnMsg 不透传执行 ctx，
+	// 操作人由 API 驱动在 executeNextLocked 注入，驳回等审批事件回读，
+	// 操作审计才能落到真实操作人。
+	KeyOperator = "operator"
 	// KeyAssignee 受理人
 	KeyAssignee = "assignee"
 	// KeyTenantID 租户ID

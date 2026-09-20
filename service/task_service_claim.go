@@ -169,7 +169,7 @@ func (s *TaskServiceImpl) claimInternal(ctx context.Context, scope *InstanceScop
 	// 认领通知：通知其他候选成员任务已被认领。
 	// AfterCommit 派发：回滚不产生幽灵通知；候选成员收集也在提交前完成。
 	if listener := s.workflowEngine.GetTaskEventListener(); listener != nil {
-		if others := s.collectCandidateMembersExcluding(ctx, task.TenantID, task.ID, userID); len(others) > 0 {
+		if others := s.collectCandidateMembersExcluding(ctx, scope.TaskAssignees(), task.TenantID, task.ID, userID); len(others) > 0 {
 			instID := ""
 			if task.ProcessInstanceID != nil {
 				instID = *task.ProcessInstanceID
@@ -337,7 +337,7 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 		if task.ProcessInstanceID != nil {
 			instID = *task.ProcessInstanceID
 		}
-		if others := s.collectCandidateMembersExcluding(ctx, task.TenantID, task.ID, userID); len(others) > 0 {
+		if others := s.collectCandidateMembersExcluding(ctx, scope.TaskAssignees(), task.TenantID, task.ID, userID); len(others) > 0 {
 			evt := TaskEvent{
 				Type:       TaskEventUnclaimed,
 				TaskID:     task.ID,

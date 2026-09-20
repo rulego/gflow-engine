@@ -105,8 +105,12 @@ func (n *UserTaskNode) fireRejectedEvent(ctx types.RuleContext, msg types.RuleMs
 			startUserID = inst.StartUserID
 		}
 	}
-	// 驳回人：链执行 ctx 继承自 API 请求，携带 Actor
+	// 驳回人：API 驱动经链元数据透传（见 executeNextLocked），取不到再回退
+	// 执行 ctx 绑定的 Actor。
 	fromUser := operatorFromCtx(ctx.GetContext())
+	if fromUser == "" {
+		fromUser = msg.GetMetadata().GetValue(constants.KeyOperator)
+	}
 	// TaskID 尽力回查当前节点任务，任务已归档则留空
 	taskDefKey := n.GetSelfId()
 	var taskID string
