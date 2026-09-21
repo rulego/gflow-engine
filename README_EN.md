@@ -25,6 +25,7 @@ English | [简体中文](README.md)
 - **Approval center**: initiate requests; to-do / done / CC'd to me; approval statistics
 - **Process designer + form designer**: business staff build flows and forms by drag & drop, zero code
 - **AI approval**: AI agents join the approval flow and pre-screen requests
+- **IM integration**: approval to-dos pushed in real time as work-notify cards to DingTalk / WeCom / Feishu; tap the card to land on the approval detail with passwordless sign-in; directory sync and account binding out of the box
 - **Admin console**: process definitions, instances, tasks, automation, organization & permissions
 
 - Site: <https://gflow.rulego.cc/en/>
@@ -52,6 +53,11 @@ Real screenshots of GFlow Platform (极风工作流).
 <p align="center">
   <img src="docs/images/screens/mobile-trio.jpg" alt="GFlow Platform mobile H5: my approvals, approval detail and new request" width="720" />
   <br/><sub><b>Mobile H5</b> — start, approve and track requests right from your phone</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/screens/im-notify.jpg" alt="GFlow Platform IM work notifications: approval to-do cards in DingTalk, WeCom and Feishu; tap Go handle to land on the approval detail without signing in" width="820" />
+  <br/><sub><b>IM Work Notifications</b> — approval to-dos pushed to DingTalk / WeCom / Feishu; tap the card to handle it with passwordless sign-in</sub>
 </p>
 
 ## Installation

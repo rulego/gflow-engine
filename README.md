@@ -25,6 +25,7 @@
 - **审批中心**：发起申请、待办 / 已办 / 抄送我、审批统计，审批全流程开箱即用
 - **流程设计器 + 表单设计器**：业务人员拖拽搭建流程和表单，不写代码
 - **AI 审批**：AI 智能体加入审批流，完成单据初审
+- **IM 集成**：审批待办实时推送钉钉 / 企业微信 / 飞书工作通知，点开卡片免登直达办理，通讯录同步与账号绑定开箱即用
 - **管理端**：流程定义、实例、任务、自动化、组织权限一站管理
 
 - 官网：<https://gflow.rulego.cc/>
@@ -52,6 +53,11 @@
 <p align="center">
   <img src="docs/images/screens/mobile-trio.jpg" alt="GFlow Platform 移动端 H5：我的审批、审批详情与发起申请" width="720" />
   <br/><sub><b>移动端 H5</b> —— 手机上直接发起申请、处理审批、查看进度</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/screens/im-notify.jpg" alt="GFlow Platform IM 工作通知：钉钉、企业微信、飞书的审批待办卡片，点击去处理免登直达审批详情" width="820" />
+  <br/><sub><b>IM 工作通知</b> —— 审批待办推送钉钉 / 企业微信 / 飞书，点开卡片免登直达办理</sub>
 </p>
 
 ## 安装
