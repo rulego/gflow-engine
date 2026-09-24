@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
 )
 
@@ -37,6 +38,10 @@ func (s *TaskServiceImpl) ProxyAudit(ctx context.Context, actor Actor, taskID st
 	}
 	if task.Assignee == nil || *task.Assignee == "" {
 		return fmt.Errorf("%w: 任务尚未签收办理人，无法代审（可先认领或改派）", ErrValidation)
+	}
+	// 仅审批任务可代审：ccTask 等信息类任务被出票会污染审批历史
+	if task.TaskType != constants.TaskTypeUserTask {
+		return fmt.Errorf("%w: 仅审批任务可以代审", ErrValidation)
 	}
 	if task.Owner != nil && *task.Owner != "" {
 		return fmt.Errorf("%w: 任务已委派，请等被委派人办理或归还后再代审", ErrValidation)

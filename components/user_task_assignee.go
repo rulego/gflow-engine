@@ -56,8 +56,9 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 			}
 			members, err := n.IdentityService.GetUserIDsByRoleID(ctx, tenantID, rid)
 			if err != nil {
-				logrus.WithError(err).WithField("roleID", rid).Warn("Failed to resolve role members")
-				continue
+				// 查询报错向上抛：身份服务故障不是"审批人为空"，吞掉会静默走
+				// 兜底策略（auto_approve 下等于无审批放行）
+				return nil, fmt.Errorf("failed to resolve role members of %s: %w", rid, err)
 			}
 			for _, m := range members {
 				assignees = addUnique(assignees, assigneeSet, m)
@@ -83,7 +84,11 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 				return nil, fmt.Errorf("failed to resolve manager of %s: %w", current, err)
 			}
 			if mgr == "" {
-				return nil, fmt.Errorf("no manager found at level %d of owner %s", i+1, owner)
+				// 组织顶端的发起人没有上级是数据常态而非故障：按空成员处理，
+				// 落 emptyApproverPolicy 兜底（与 multi_level_manager 到顶即停同口径）
+				logrus.WithFields(logrus.Fields{"node": n.GetSelfId(), "owner": owner, "level": i + 1}).
+					Info("no manager found; empty approvers fall back to node policy")
+				return nil, nil
 			}
 			managerID = mgr
 			current = mgr
@@ -92,12 +97,13 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 	case enums.CandidateTypeInitiatorSelect:
 		// selected 模板按 msg.xxx 引用流程变量，执行时以 {msg: variables} 提供信封
 		if n.initiatorSelectedTemplate != nil {
-			if v, err := n.initiatorSelectedTemplate.Execute(map[string]interface{}{types.MsgKey: variables}); err == nil {
-				for _, uid := range toStringSlice(v) {
-					assignees = addUnique(assignees, assigneeSet, uid)
-				}
-			} else {
-				logrus.WithError(err).Warn("Failed to execute initiator selected template")
+			v, err := n.initiatorSelectedTemplate.Execute(map[string]interface{}{types.MsgKey: variables})
+			if err != nil {
+				// 模板求值报错（变量缺失/类型不符）向上抛，不落空静默走兜底
+				return nil, fmt.Errorf("failed to execute initiator selected template: %w", err)
+			}
+			for _, uid := range toStringSlice(v) {
+				assignees = addUnique(assignees, assigneeSet, uid)
 			}
 		} else {
 			logrus.Warn("initiatorSelectedTemplate is nil")
@@ -142,8 +148,9 @@ func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner str
 			}
 			members, err := n.IdentityService.GetUserIDsByDepartmentID(ctx, tenantID, did)
 			if err != nil {
-				logrus.WithError(err).WithField("deptID", did).Warn("Failed to resolve dept members")
-				continue
+				// 查询报错向上抛：身份服务故障不是"审批人为空"，吞掉会静默走
+				// 兜底策略（auto_approve 下等于无审批放行）
+				return nil, fmt.Errorf("failed to resolve dept members of %s: %w", did, err)
 			}
 			for _, m := range members {
 				assignees = addUnique(assignees, assigneeSet, m)

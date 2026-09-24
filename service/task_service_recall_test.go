@@ -870,3 +870,133 @@ func TestRecall_BlockedByProxyMark(t *testing.T) {
 		Actor{UserID: "jia", TenantID: "t1"}, "inst-px10", ""), "同伴的代审票不应阻断自己收回")
 	require.Nil(t, recallTaskByID(t, q, "t-p10-b"), "收回后前沿待办终止")
 }
+
+// 回归：任务清单曾按默认 pageSize=10 截断，本人票落在第 11 行起时收回被误拒、
+// 守卫看不到页外的更晚记录而误放行。翻页取全量后两种失真都应消失。
+func TestRecall_GuardSeesTasksBeyondDefaultPage(t *testing.T) {
+	q := secFixDB(t)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"})
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedInstance(t, q, "inst-page", string(enums.InstanceStatusActive))
+	base := time.Now().Add(-2 * time.Hour)
+	// 11 条更早的他人完成记录占满默认第一页（created_at 升序），本人票与前沿
+	// 待办被排到页外
+	for i := 0; i < 11; i++ {
+		at := base.Add(time.Duration(i) * time.Minute)
+		recallSeedTask(t, q, fmt.Sprintf("t-fill-%d", i), "inst-page", "a", constants.TaskTypeUserTask,
+			string(enums.TaskStatusCompleted), fmt.Sprintf("u%d", i), at, at, "")
+	}
+	recallSeedTask(t, q, "t-jia", "inst-page", "a", constants.TaskTypeUserTask,
+		string(enums.TaskStatusCompleted), "jia", base.Add(40*time.Minute), base.Add(41*time.Minute), "")
+	recallSeedTask(t, q, "t-front", "inst-page", "b", constants.TaskTypeUserTask,
+		string(enums.TaskStatusActive), "bing", base.Add(42*time.Minute), time.Time{}, "")
+	svc, _ := newRecallSvc(q, def, nil)
+
+	require.NoError(t, svc.Recall(ctx, Actor{UserID: "jia", TenantID: "t1"}, "inst-page", ""),
+		"票在默认分页之外也应可收回")
+	require.Nil(t, recallTaskByID(t, q, "t-front"), "页外的前沿待办必须被终止，不能残留幽灵待办")
+	rebuilt, _ := q.WfTask.WithContext(ctx).Where(q.WfTask.ProcessInstanceID.Eq("inst-page")).
+		Where(q.WfTask.TaskDefKey.Eq("a")).Where(q.WfTask.Status.Eq(string(enums.TaskStatusActive))).
+		Where(q.WfTask.Assignee.Eq("jia")).First()
+	require.NotNil(t, rebuilt, "应重建收回人的待审任务")
+}
+
+// 回归：系统自动完成的票（emptyApproverPolicy/selfApproval 兜底自动通过，
+// UpdatedBy=system）不是人的决定，收回会把无人参与的通过变成收回人的待办。
+func TestRecall_Blocked_SystemAutoCompleted(t *testing.T) {
+	q := secFixDB(t)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"})
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedInstance(t, q, "inst-sys", string(enums.InstanceStatusActive))
+	base := time.Now().Add(-time.Hour)
+	recallSeedTask(t, q, "t-sys", "inst-sys", "a", constants.TaskTypeUserTask,
+		string(enums.TaskStatusCompleted), "jia", base, base.Add(time.Minute), "")
+	if _, err := q.WfTask.WithContext(ctx).Where(q.WfTask.ID.Eq("t-sys")).
+		UpdateSimple(q.WfTask.UpdatedBy.Value("system")); err != nil {
+		t.Fatalf("set updated_by: %v", err)
+	}
+	recallSeedTask(t, q, "t-sys-b", "inst-sys", "b", constants.TaskTypeUserTask,
+		string(enums.TaskStatusActive), "bing", base.Add(2*time.Minute), time.Time{}, "")
+	svc, _ := newRecallSvc(q, def, nil)
+
+	err := svc.Recall(ctx, Actor{UserID: "jia", TenantID: "t1"}, "inst-sys", "")
+	require.ErrorContains(t, err, "系统自动完成")
+}
+
+// 回归：阈值达成后被终止的会签同侪要随收回复活，父任务里第一轮合并的
+// approved 也要剥掉，否则第二轮判定在旧结果之上覆盖合并。
+func TestRecall_RevivesThresholdTerminatedSiblings(t *testing.T) {
+	q := secFixDB(t)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"})
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedInstance(t, q, "inst-revive", string(enums.InstanceStatusActive))
+	base := time.Now().Add(-time.Hour)
+	parentVars := `{"approved":true,"biz":"keep"}`
+	recallSeedTask(t, q, "t-r-parent", "inst-revive", "a", constants.TaskTypeUserTask,
+		string(enums.TaskStatusCompleted), "", base, base.Add(3*time.Minute), parentVars)
+	recallSeedTask(t, q, "t-r-jia", "inst-revive", "a", constants.TaskTypeUserTask,
+		string(enums.TaskStatusCompleted), "jia", base, base.Add(time.Minute), "")
+	recallSeedTask(t, q, "t-r-yi", "inst-revive", "a", constants.TaskTypeUserTask,
+		string(enums.TaskStatusCompleted), "yi", base, base.Add(2*time.Minute), "")
+	threshold := countersignThresholdEndReason
+	for _, id := range []string{"t-r-jia", "t-r-yi"} {
+		if _, err := q.WfTask.WithContext(ctx).Where(q.WfTask.ID.Eq(id)).
+			UpdateSimple(q.WfTask.ParentID.Value("t-r-parent")); err != nil {
+			t.Fatalf("set parent: %v", err)
+		}
+	}
+	// 丙的票被阈值达成终止：挂在 wf_task 里等待复活
+	terminated := &model.WfTask{
+		ID: "t-r-bing", ProcessInstanceID: secFixStrPtr("inst-revive"), ProcessID: "proc-1",
+		TaskDefKey: "a", Name: "a", TaskType: constants.TaskTypeUserTask,
+		Status: string(enums.TaskStatusTerminated), Assignee: secFixStrPtr("bing"),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: base,
+		EndedAt: secFixTimePtr(base.Add(2 * time.Minute)), EndReason: &threshold,
+		ParentID: secFixStrPtr("t-r-parent"),
+	}
+	require.NoError(t, q.WfTask.Create(terminated))
+	recallSeedTask(t, q, "t-r-b", "inst-revive", "b", constants.TaskTypeUserTask,
+		string(enums.TaskStatusActive), "bing", base.Add(4*time.Minute), time.Time{}, "")
+	svc, _ := newRecallSvc(q, def, nil)
+
+	require.NoError(t, svc.Recall(ctx, Actor{UserID: "jia", TenantID: "t1"}, "inst-revive", ""))
+	parent := recallTaskByID(t, q, "t-r-parent")
+	require.NotNil(t, parent)
+	require.Equal(t, string(enums.TaskStatusActive), parent.Status)
+	require.NotNil(t, parent.Variables)
+	require.NotContains(t, *parent.Variables, "approved", "第一轮合并的审批结果要剥掉")
+	require.Contains(t, *parent.Variables, "biz", "业务变量保留")
+	revived := recallTaskByID(t, q, "t-r-bing")
+	require.NotNil(t, revived, "被阈值终止的同侪要复活")
+	require.Equal(t, string(enums.TaskStatusActive), revived.Status)
+	require.Nil(t, revived.EndedAt)
+	require.Nil(t, revived.EndReason)
+}
+
+// 单元：收回计数与父任务变量剥离的边界行为。
+func TestRecallVarHelpers(t *testing.T) {
+	vars := `{"a":1}`
+	bumped := bumpRecallCount(secFixStrPtr(vars))
+	require.Contains(t, *bumped, fmt.Sprintf(`"%s":1`, constants.VarsRecallCount))
+	for i := 0; i < 25; i++ {
+		bumped = bumpRecallCount(bumped)
+	}
+	require.True(t, recallCountExhausted(bumped))
+	require.False(t, recallCountExhausted(secFixStrPtr(vars)))
+	require.False(t, recallCountExhausted(secFixStrPtr("not-json")), "损坏变量按未达上限处理")
+
+	stripped := stripCountersignMergedKeys(secFixStrPtr(`{"approved":false,"k":"v"}`))
+	require.Contains(t, *stripped, `"k":"v"`)
+	require.NotContains(t, *stripped, "approved")
+	require.Equal(t, "not-json", *stripCountersignMergedKeys(secFixStrPtr("not-json")),
+		"解析失败原样返回，不清空父任务变量")
+	require.Nil(t, stripCountersignMergedKeys(nil))
+}
+
+func secFixTimePtr(t time.Time) *time.Time { return &t }

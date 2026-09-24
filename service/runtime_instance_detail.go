@@ -333,7 +333,17 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 			}
 		}
 	}
-	if instance.Status == string(enums.InstanceStatusCompleted) && !designerDisabled(starterActionPermissions, "recall") &&
+	// 完成实例的可重开前提：末尾存在已完成的 userTask 节点。末尾完成的是
+	// 系统节点时重入无从谈起，按钮位与写路径同拒，避免可点但必失败
+	completedInstanceHasUserTask := false
+	for _, t := range tasks {
+		if t != nil && t.TaskType == constants.TaskTypeUserTask && t.Status == string(enums.TaskStatusCompleted) {
+			completedInstanceHasUserTask = true
+			break
+		}
+	}
+	if instance.Status == string(enums.InstanceStatusCompleted) && completedInstanceHasUserTask &&
+		!designerDisabled(starterActionPermissions, "recall") &&
 		(instance.StartUserID == currentUserId || isWorkflowAdmin(&actor)) && withinRecallWindow(starterActionPermissions, instance.EndedAt) {
 		resp.ActionPermissions["recall"] = true
 	}

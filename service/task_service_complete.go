@@ -251,6 +251,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	reqVars := request.Variables
 	if callingMode == CallingModeAPI {
 		reqVars = s.filterVariablesByFormPermissions(ctx, scope, task, request.Variables)
+		stripEngineReservedVars(reqVars)
 	}
 	mergedVariables, err := s.mergeVariables(task.Variables, reqVars)
 	if err != nil {
@@ -363,6 +364,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 						TaskName:   task.Name,
 						ToUsers:    []string{instance.StartUserID},
 						FromUser:   approverID,
+						Source:     EventSourceFromCtx(ctx),
 						Reason:     request.Comment,
 						Timestamp:  time.Now(),
 					}, ctx)
@@ -486,6 +488,38 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 				}
 				return nil
 			}
+			// 阈值未达、节点未定局：普通自投驳回本人自知，代审驳回必须让被代审人
+			// 知情，不能等节点定局才可见。ToUsers 留空——宿主的代审定向通知按
+			// OnBehalfOf 发给被代审人，不进逐用户循环，避免误发"流程已驳回"
+			if proxyAuditFromCtx(ctx) && request.ApprovalResult == enums.ApprovalResultRejected &&
+				task.ProcessInstanceID != nil && s.workflowEngine != nil && s.workflowEngine.GetTaskEventListener() != nil {
+				evtTaskID := task.ID
+				evtDefKey := task.TaskDefKey
+				evtInstance := *task.ProcessInstanceID
+				evtProcessID := task.ProcessID
+				evtTenantID := task.TenantID
+				evtTaskName := task.Name
+				evtComment := request.Comment
+				evtFrom := commentOperator
+				evtOnBehalf := OnBehalfOfFromCtx(ctx)
+				scope.AfterCommit(func() error {
+					DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), TaskEvent{
+						Type:       TaskEventRejected,
+						TaskID:     evtTaskID,
+						TaskDefKey: evtDefKey,
+						InstanceID: evtInstance,
+						ProcessID:  evtProcessID,
+						TenantID:   evtTenantID,
+						TaskName:   evtTaskName,
+						FromUser:   evtFrom,
+						OnBehalfOf: evtOnBehalf,
+						Reason:     evtComment,
+						Timestamp:  time.Now(),
+					}, ctx)
+					return nil
+				})
+			}
+			return nil
 		}
 		return nil
 	}
@@ -570,6 +604,23 @@ func proxyMarkVariables(vars *string, operator string, now time.Time) (*string, 
 	return &out, nil
 }
 
+// stripEngineReservedVars 就地剥除审批提交变量里的引擎保留键。proxy_*/fallback_*
+// 是引擎写入的审计/兜底标记：API 提交同名变量会伪造代审留痕（时间线误标、
+// 收回守卫被自锁），或给"审批人恰为发起人"的下游任务预埋 fallback_reason
+// 骗进兜底自动通过钩子。
+func stripEngineReservedVars(vars map[string]interface{}) {
+	if vars == nil {
+		return
+	}
+	for _, k := range []string{
+		constants.VarsProxyOperator, constants.VarsProxyTime,
+		constants.VarsFallbackPolicy, constants.VarsFallbackFrom,
+		constants.VarsFallbackReason, constants.VarsFallbackTime,
+	} {
+		delete(vars, k)
+	}
+}
+
 // stripProxyKeys 剥离代审标记键：proxy_operator/proxy_time 是任务级审计数据，
 // 不得作为流程变量流转——下游任务沾上会被时间线误标「由 X 代审」、被 recall
 // 守卫误拦。无标记时原样返回。
@@ -652,14 +703,25 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 // 用于或签节点完成后清理剩余候选任务，避免幽灵待办。
 func (s *TaskServiceImpl) cancelSiblingActiveTasks(ctx context.Context, scope *InstanceScope, completed *model.WfTask) error {
 	taskDAO := scope.Tasks()
-	q := &dto.TaskQuery{
-		InstanceID: completed.ProcessInstanceID,
-		TaskDefKey: completed.TaskDefKey,
-	}
-	q.Status = []string{string(enums.TaskStatusActive)}
-	siblings, _, err := taskDAO.List(ctx, q)
-	if err != nil {
-		return err
+	// 翻页取全量：默认 pageSize=10 会留下第 11 个起的幽灵待办
+	var siblings []*model.WfTask
+	for page := 1; ; page++ {
+		pageTasks, total, err := taskDAO.List(ctx, &dto.TaskQuery{
+			InstanceID: completed.ProcessInstanceID,
+			TaskDefKey: completed.TaskDefKey,
+			PageRequest: dto.PageRequest{
+				Page:     page,
+				PageSize: recallTaskFetchPageSize,
+				Status:   []string{string(enums.TaskStatusActive)},
+			},
+		})
+		if err != nil {
+			return err
+		}
+		siblings = append(siblings, pageTasks...)
+		if int64(len(siblings)) >= total || len(pageTasks) == 0 {
+			break
+		}
 	}
 	now := time.Now()
 	username := ""
@@ -683,6 +745,10 @@ func (s *TaskServiceImpl) cancelSiblingActiveTasks(ctx context.Context, scope *I
 	return nil
 }
 
+// countersignThresholdEndReason 会签/票签阈值达成终止剩余子任务写入的 end_reason。
+// 收回路径据此识别哪些同侪是"被阈值终止"而需要复活。
+const countersignThresholdEndReason = "terminated by countersign threshold reached"
+
 // cancelRemainingCountersignSubTasks 会签/票签父任务完成后终止其剩余未决子任务。
 // 阈值类规则（majority/percent/count/any）与全员会签达标后，未投票子任务留在
 // wf_task 会形成幽灵待办；统一置 Terminated 并注明由阈值达成终止，保留审计痕迹。
@@ -699,7 +765,7 @@ func (s *TaskServiceImpl) cancelRemainingCountersignSubTasks(ctx context.Context
 	if u := GetUserFromCtx(ctx); u != nil {
 		username = u.UserName
 	}
-	reason := "terminated by countersign threshold reached"
+	reason := countersignThresholdEndReason
 	cancelled := 0
 	for _, st := range subTasks {
 		if st.Status != string(enums.TaskStatusActive) && st.Status != string(enums.TaskStatusPending) {

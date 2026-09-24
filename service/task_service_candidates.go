@@ -318,10 +318,19 @@ func (s *TaskServiceImpl) GetNodeApprovalStatus(ctx context.Context, actor Actor
 	approvedList := make([]*dto.NodeApproverDTO, 0)
 	pendingList := make([]*dto.NodeApproverDTO, 0)
 
+	// 已出票按 end_reason 细分通过/驳回：一律标 approved 会把驳回票（含代审
+	// 驳回）显示成"已同意"
+	completedStatus := func(t *model.WfTask) string {
+		if t.EndReason != nil && *t.EndReason == string(enums.ApprovalResultRejected) {
+			return string(enums.ApproverStatusRejected)
+		}
+		return string(enums.ApproverStatusApproved)
+	}
+
 	for _, completedTask := range completedTasks {
 		if completedTask.Assignee != nil {
 			approver := nodeApproverFromTask(completedTask,
-				string(enums.ApproverStatusApproved),
+				completedStatus(completedTask),
 				utils.FormatTimePtr(completedTask.EndedAt), 0)
 			approvedList = append(approvedList, approver)
 		}
@@ -333,16 +342,16 @@ func (s *TaskServiceImpl) GetNodeApprovalStatus(ctx context.Context, actor Actor
 			status := string(enums.ApproverStatusPending)
 			var approvalTime *string
 			if subTask.Status == string(enums.TaskStatusCompleted) {
-				status = string(enums.ApproverStatusApproved)
+				status = completedStatus(subTask)
 				approvalTime = utils.FormatTimePtr(subTask.EndedAt)
 			}
 
 			approver := nodeApproverFromTask(subTask, status, approvalTime, subTask.SequenceOrder)
 
-			if status == string(enums.ApproverStatusApproved) {
-				approvedList = append(approvedList, approver)
-			} else {
+			if status == string(enums.ApproverStatusPending) {
 				pendingList = append(pendingList, approver)
+			} else {
+				approvedList = append(approvedList, approver)
 			}
 		}
 	}

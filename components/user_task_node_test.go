@@ -756,9 +756,12 @@ func TestResolveAssignees_ManagerLevels(t *testing.T) {
 		require.Equal(t, []string{"m2"}, got)
 	})
 
-	t.Run("manager 层级不足时报错而不是静默降级", func(t *testing.T) {
-		_, err := newNode("manager", 5).resolveAssignees(context.Background(), "t", "staff", nil)
-		require.ErrorContains(t, err, "no manager found at level 3")
+	t.Run("manager 层级不足返回空落兜底，不报错", func(t *testing.T) {
+		// 组织顶端的发起人没有上级是数据常态：空成员交给 emptyApproverPolicy 兜底，
+		// 与 multiLevelManager 到顶即停同口径（身份服务报错仍向上抛）
+		got, err := newNode("manager", 5).resolveAssignees(context.Background(), "t", "staff", nil)
+		require.NoError(t, err)
+		require.Empty(t, got)
 	})
 
 	t.Run("multiLevelManager levels=2 逐级全审", func(t *testing.T) {

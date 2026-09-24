@@ -39,6 +39,10 @@ const (
 	// 操作人由 API 驱动在 executeNextLocked 注入，驳回等审批事件回读，
 	// 操作审计才能落到真实操作人。
 	KeyOperator = "operator"
+	// KeyOnBehalfOf 链元数据里的代审被代人（用户ID）。代审的驳回/终止级联在
+	// rulego 节点里派发，RuleContext 不携带调用链 ctx，被代人只能随链元数据
+	// 下传回读（与 KeyOperator 同机制），代审通知才不会在驳回方向断链。
+	KeyOnBehalfOf = "on_behalf_of"
 	// KeyAssignee 受理人
 	KeyAssignee = "assignee"
 	// KeyTenantID 租户ID
@@ -74,7 +78,21 @@ const (
 	VarsProxyOperator = "proxy_operator"
 	// VarsProxyTime 代审时间（TimeFormatLayout 文本），与 VarsProxyOperator 同次写入
 	VarsProxyTime = "proxy_time"
+	// VarsFallbackPolicy/FallbackFrom/FallbackReason/FallbackTime 审批人为空兜底的
+	// 留痕四件套（applyFallbackVars 写入）。与代审标记同属引擎保留键：只允许
+	// 引擎写入，API 审批提交的同名变量在合并前剥除，防止伪造兜底标记把
+	// "审批人恰为发起人"的常规任务骗进自动通过钩子。
+	VarsFallbackPolicy = "fallback_policy"
+	VarsFallbackFrom   = "fallback_from"
+	VarsFallbackReason = "fallback_reason"
+	VarsFallbackTime   = "fallback_time"
+	// VarsRecallCount 实例变量里的累计收回次数，达到 MaxRecallCountPerInstance
+	// 后拒绝继续收回，防止收回→重投→再收回循环骚扰后续审批人
+	VarsRecallCount = "_recallCount"
 )
+
+// MaxRecallCountPerInstance 单实例累计收回次数上限
+const MaxRecallCountPerInstance = 20
 const (
 	// EndReasonPrefixRejected 拒绝终止写入 end_reason 的前缀
 	EndReasonPrefixRejected = "审批拒绝"

@@ -204,10 +204,19 @@ func (n *UserTaskNode) createClaimTaskWithCandidates(ctx types.RuleContext, proc
 			_ = n.TaskService.DeleteTask(ctx.GetContext(), service.SystemActor(), taskID, "candidate write failed")
 			return fmt.Errorf("failed to add fallback candidates for task %s: %w", taskID, cErr)
 		}
-		// person 候选的成员即候选本身，适配 notifyCandidateCreated 的展开器形态
-		n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, filtered,
-			func(_ context.Context, _ string, id string) ([]string, error) { return []string{id}, nil },
-			reason)
+		// person 候选的成员即候选本身，适配 notifyCandidateCreated 的展开器形态；
+		// 占位候选 __parked__ 只用于封池，不对应真实用户，不进通知收件人
+		notifyIDs := make([]string, 0, len(filtered))
+		for _, id := range filtered {
+			if id != parkedCandidatePlaceholder {
+				notifyIDs = append(notifyIDs, id)
+			}
+		}
+		if len(notifyIDs) > 0 {
+			n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, notifyIDs,
+				func(_ context.Context, _ string, id string) ([]string, error) { return []string{id}, nil },
+				reason)
+		}
 	}
 	return nil
 }

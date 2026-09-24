@@ -88,10 +88,13 @@ const (
 type ApproverStatus string
 
 const (
-	// ApproverStatusApproved 已审批
+	// ApproverStatusApproved 已审批（通过）
 	ApproverStatusApproved ApproverStatus = "approved"
 	// ApproverStatusPending 待审批
 	ApproverStatusPending ApproverStatus = "pending"
+	// ApproverStatusRejected 已审批（驳回）。同属已出票，按 end_reason 与
+	// approved 区分，代审驳回的票不再显示成"已同意"
+	ApproverStatusRejected ApproverStatus = "rejected"
 )
 
 // EndReason 任务结束原因标记（wf_task.end_reason 的引擎内置取值，便于历史检索）

@@ -7,8 +7,14 @@ package components
 // left untouched (terminating their in-flight tasks would starve the join).
 
 import (
+	"context"
 	"testing"
+	"time"
 
+	"github.com/rulego/gflow-engine/service"
+	"github.com/rulego/gflow-engine/types/constants"
+	"github.com/rulego/rulego/api/types"
+	"github.com/rulego/rulego/engine"
 	"github.com/stretchr/testify/require"
 )
 
@@ -81,3 +87,29 @@ func TestRejectResetNodes_NilGraph(t *testing.T) {
 }
 
 // 会签（approveMode=all）即全员通过，一票否决条件已内化到模式判断，无独立规则解析
+
+// 回归：代审驳回方向的事件曾丢 OnBehalfOf——RuleContext 不携带调用链 ctx，
+// 派发器的 ctx 注入取不到，被代人只能从链元数据回读（executeNextLocked 写入）。
+func TestFireRejectedEvent_CarriesOnBehalfOfFromMetadata(t *testing.T) {
+	got := make(chan service.TaskEvent, 1)
+	node := &UserTaskNode{
+		TaskEventListener: func(_ context.Context, evt service.TaskEvent) {
+			got <- evt
+		},
+	}
+	md := types.NewMetadata()
+	md.PutValue(constants.KeyOperator, "admin")
+	md.PutValue(constants.KeyOnBehalfOf, "victim")
+	msg := types.NewMsg(0, "inst-1", types.JSON, md, "{}")
+
+	node.fireRejectedEvent(engine.NewRuleContext(context.Background(), types.Config{}, nil, nil, nil, nil, nil, nil),
+		msg, "inst-1", "不同意")
+
+	select {
+	case evt := <-got:
+		require.Equal(t, "admin", evt.FromUser)
+		require.Equal(t, "victim", evt.OnBehalfOf, "代审驳回事件必须带被代人，宿主的代审通知靠它")
+	case <-time.After(3 * time.Second):
+		t.Fatal("rejected 事件未派发")
+	}
+}

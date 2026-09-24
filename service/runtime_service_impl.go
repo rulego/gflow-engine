@@ -1304,6 +1304,11 @@ func (s *RuntimeServiceImpl) executeNextLocked(ctx context.Context, processInsta
 	if u := GetUserFromCtx(ctx); u != nil && u.UserID != "" && !IsSystemActor(u) {
 		md.PutValue(constants.KeyOperator, u.UserID)
 	}
+	// 代审被代人同样随链元数据下传：驳回/终止级联在 rulego 节点里派发，
+	// RuleContext 不携带调用链 ctx，事件只能从元数据回读被代人
+	if ob := OnBehalfOfFromCtx(ctx); ob != "" {
+		md.PutValue(constants.KeyOnBehalfOf, ob)
+	}
 
 	// 流程变量载荷:优先用调用方传入的 variables;为空(nil/空 map)时回退到实例存储的启动
 	// 业务变量(instance.Variables)。return/jump 等路径传 nil,若直接用空串会让重新生成的任务

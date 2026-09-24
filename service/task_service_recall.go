@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/query"
 	"github.com/rulego/gflow-engine/types/constants"
@@ -57,6 +58,11 @@ func (s *TaskServiceImpl) Recall(ctx context.Context, actor Actor, instanceID, r
 	}
 	if u := GetUserFromCtx(ctx); u != nil && inst.TenantID != u.TenantID {
 		return fmt.Errorf("%w: process instance", ErrNotFound)
+	}
+	// 累计收回次数上限：收回→重投→再收回可无限循环，每轮都终止/重建下游待办，
+	// 会被拿来骚扰后续审批人。计数记在实例变量上，终态收回随归档变量延续。
+	if recallCountExhausted(inst.Variables) {
+		return fmt.Errorf("%w: 本流程累计收回次数已达上限（%d 次），无法收回", ErrValidation, constants.MaxRecallCountPerInstance)
 	}
 
 	switch inst.Status {
@@ -147,7 +153,7 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 			BusinessKey:     hi.BusinessKey,
 			Name:            hi.Name,
 			Status:          string(enums.InstanceStatusActive),
-			Variables:       hi.Variables,
+			Variables:       bumpRecallCount(hi.Variables),
 			CurrentActivity: hi.CurrentActivity,
 			Priority:        hi.Priority,
 			ParentID:        hi.ParentID,
@@ -168,7 +174,17 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 		return fmt.Errorf("failed to reopen completed instance: %w", err)
 	}
 
-	// 末节点投票人收到作废通知；重入后的新任务由组件派发 assigned 事件
+	// 重入末节点重建任务。失败则整体退回归档态补偿——不补偿会留下
+	// active 但零任务的僵尸实例，且在途收回通道救不了它（无 completed 任务可寻）
+	if err := internal.ExecuteNext(ctx, instanceID, lastNode, nil); err != nil {
+		if cerr := s.rearchiveCompletedInstance(ctx, s.taskDAO.Query, hi, instanceID); cerr != nil {
+			return fmt.Errorf("末节点重入失败且补偿失败，实例 %s 可能停留为无任务运行态需人工处理: 重入错误=%v 补偿错误=%w", instanceID, err, cerr)
+		}
+		return fmt.Errorf("%w: 末节点重入失败，已回滚为已完成态: %v", ErrValidation, err)
+	}
+
+	// 末节点投票人收到作废通知；重入后的新任务由组件派发 assigned 事件。
+	// 放在重入成功之后：重入失败走补偿回归档态时，票没有作废，不该先发失真通知
 	if listener := s.workflowEngine.GetTaskEventListener(); listener != nil {
 		DispatchTaskEvent(listener, TaskEvent{
 			Type:       TaskEventRecalled,
@@ -181,15 +197,6 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 			Reason:     reason,
 			Timestamp:  time.Now(),
 		}, ctx)
-	}
-
-	// 重入末节点重建任务。失败则整体退回归档态补偿——不补偿会留下
-	// active 但零任务的僵尸实例，且在途收回通道救不了它（无 completed 任务可寻）
-	if err := internal.ExecuteNext(ctx, instanceID, lastNode, nil); err != nil {
-		if cerr := s.rearchiveCompletedInstance(ctx, s.taskDAO.Query, hi, instanceID); cerr != nil {
-			return fmt.Errorf("末节点重入失败且补偿失败，实例 %s 可能停留为无任务运行态需人工处理: 重入错误=%v 补偿错误=%w", instanceID, err, cerr)
-		}
-		return fmt.Errorf("%w: 末节点重入失败，已回滚为已完成态: %v", ErrValidation, err)
 	}
 	return nil
 }
@@ -320,7 +327,7 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 
 	taskDAO := scope.Tasks()
 	hiTaskDAO := scope.HiTasks()
-	tasks, _, err := taskDAO.List(ctx, &dto.TaskQuery{InstanceID: &instanceID})
+	tasks, err := listAllInstanceTasksTx(ctx, taskDAO, instanceID)
 	if err != nil {
 		return fmt.Errorf("failed to list instance tasks: %w", err)
 	}
@@ -342,6 +349,12 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 	username := ""
 	if u := GetUserFromCtx(ctx); u != nil {
 		username = u.UserName
+	}
+
+	// 收回计数随本次事务落实例变量（见 Recall 入口的上限守卫）
+	instance.Variables = bumpRecallCount(instance.Variables)
+	if err := scope.Instances().Update(ctx, instance); err != nil {
+		return fmt.Errorf("failed to update instance recall count: %w", err)
 	}
 
 	// 终止前沿任务：T 完成之后创建的全部在途任务（下一节点的待办、顺序会签
@@ -375,13 +388,39 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 			}
 		}
 	}
-	notifyUsers := make([]string, 0)
+	// 前沿候选池待认领任务无 assignee，通知对象直查 person 候选展开；
+	// 角色/部门候选的成员展开依赖身份服务，跟随待办消失不强求逐人可达
+	termIDList := make([]string, 0, len(termIDs))
+	for id := range termIDs {
+		termIDList = append(termIDList, id)
+	}
+	candidateUsers := make([]string, 0)
+	if len(termIDList) > 0 {
+		var cands []*model.WfTaskAssignee
+		aq := scope.Tx().WfTaskAssignee
+		if err := aq.WithContext(ctx).
+			Where(aq.TaskID.In(termIDList...)).
+			Where(aq.EntityType.Eq(string(enums.EntityTypePerson))).
+			Scan(&cands); err == nil {
+			for _, c := range cands {
+				if c != nil && c.EntityID != "" {
+					candidateUsers = append(candidateUsers, c.EntityID)
+				}
+			}
+		}
+	}
+	notifyUsers := make([]string, 0, len(termIDs)+len(candidateUsers))
+	notifyUsers = append(notifyUsers, candidateUsers...)
 	for _, x := range tasks {
 		if !termIDs[x.ID] {
 			continue
 		}
 		if x.Assignee != nil && *x.Assignee != "" {
 			notifyUsers = append(notifyUsers, *x.Assignee)
+		}
+		// 被委派任务的原审批人待办同样消失，一并通知
+		if x.Owner != nil && *x.Owner != "" && (x.Assignee == nil || *x.Assignee != *x.Owner) {
+			notifyUsers = append(notifyUsers, *x.Owner)
 		}
 		x.Status = string(enums.TaskStatusTerminated)
 		x.EndedAt = &now
@@ -424,10 +463,38 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 				"updated_by": username,
 				"updated_at": now,
 			}
+			// 第一轮会签已把子任务的 approved/comment 合并进父任务变量，不清掉
+			// 会残留到第二轮（merge 是覆盖写，最终值取决于子任务遍历序）
+			if stripped := stripCountersignMergedKeys(p.Variables); stripped != p.Variables {
+				updates["variables"] = stripped
+			}
 			if _, uerr := scope.Tx().WfTask.WithContext(ctx).
 				Where(scope.Tx().WfTask.ID.Eq(*t.ParentID)).
 				Updates(updates); uerr != nil {
 				return fmt.Errorf("failed to revert parent task: %w", uerr)
+			}
+			// 阈值达成时被终止的同侪子任务一并复活：他们既丢了补票机会，
+			// 缺席还会缩小重判的分母（percent/count 规则下可翻转结论）
+			for _, x := range tasks {
+				if x.ID == t.ID || x.ParentID == nil || *x.ParentID != *t.ParentID {
+					continue
+				}
+				if x.Status != string(enums.TaskStatusTerminated) || x.EndReason == nil ||
+					*x.EndReason != countersignThresholdEndReason {
+					continue
+				}
+				siblingUpdates := map[string]interface{}{
+					"status":     string(enums.TaskStatusActive),
+					"ended_at":   nil,
+					"end_reason": nil,
+					"updated_by": username,
+					"updated_at": now,
+				}
+				if _, uerr := scope.Tx().WfTask.WithContext(ctx).
+					Where(scope.Tx().WfTask.ID.Eq(x.ID)).
+					Updates(siblingUpdates); uerr != nil {
+					return fmt.Errorf("failed to revive countersign sibling task: %w", uerr)
+				}
 			}
 		}
 	}
@@ -449,7 +516,7 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 		evtName := recreated.Name
 		evtProcessID := recreated.ProcessID
 		evtTenantID := instance.TenantID
-		evtToUsers := notifyUsers
+		evtToUsers := uniqueStrings(notifyUsers)
 		evtFrom := userID
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(listener, TaskEvent{
@@ -508,12 +575,18 @@ func findRecallableCompletedTask(tasks []*model.WfTask, userID string) *model.Wf
 }
 
 // evaluateRecallGuard 收回守卫（写路径与详情权限位共用，只读不改数据）：
-// 代审票 → 更晚办理记录 → 停泊 → 自动化路径，任一不过即拒绝。
+// 代审票 → 系统自动完成票 → 更晚办理记录 → 停泊 → 自动化路径，任一不过即拒绝。
 func evaluateRecallGuard(tasks []*model.WfTask, t *model.WfTask, chain *types.RuleChain) error {
 	// 代审出的票不可收回：票已由管理员行使且带 proxy 标记，异议走管理员
 	// （终态收回/终止）；写路径与详情按钮共用此守卫，一处拦截两处生效
 	if hasProxyMark(t) {
 		return fmt.Errorf("%w: 该审批由管理员代审，无法收回", ErrValidation)
+	}
+	// 系统自动完成的票（emptyApproverPolicy/selfApproval 的自动通过）不是人的
+	// 决定：收回会把无人参与的通过变成收回人的个人待办，可无限拖延流程。
+	// UpdatedBy 落的是完成动作操作人，人工审批写真实姓名，内部自动完成固定 system
+	if t.UpdatedBy != nil && *t.UpdatedBy == constants.UserSystem {
+		return fmt.Errorf("%w: 该审批由系统自动完成，无法收回", ErrValidation)
 	}
 	for _, x := range tasks {
 		if x == nil || x.ID == t.ID {
@@ -697,4 +770,87 @@ func hasProxyMark(t *model.WfTask) bool {
 		return v != ""
 	}
 	return false
+}
+
+// recallTaskFetchPageSize 收回路径翻页取全量任务的单页大小（对齐实例详情的
+// fetch-all 口径，循环只为防御极端形态）
+const recallTaskFetchPageSize = 1000
+
+// listAllInstanceTasksTx 行锁事务内翻页取全单实例任务集。守卫（更晚办理记录、
+// 停泊判定）、前沿终止集、加签豁免共用这一份快照——默认 pageSize=10 会在
+// 会签/加签/驳回回跳重跑场景截断，截掉的恰是守卫要看的更晚记录与该终止的
+// 前沿任务，收回因此双向失真（误拒或误放行+幽灵待办）。
+func listAllInstanceTasksTx(ctx context.Context, taskDAO *dao.TaskDAO, instanceID string) ([]*model.WfTask, error) {
+	var all []*model.WfTask
+	for page := 1; ; page++ {
+		pageTasks, total, err := taskDAO.List(ctx, &dto.TaskQuery{
+			InstanceID:  &instanceID,
+			PageRequest: dto.PageRequest{Page: page, PageSize: recallTaskFetchPageSize},
+		})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, pageTasks...)
+		if int64(len(all)) >= total || len(pageTasks) == 0 {
+			return all, nil
+		}
+	}
+}
+
+// recallCountExhausted 实例累计收回次数是否已达上限。解析失败按未达上限处理：
+// 损坏变量不该把正常收回卡死。
+func recallCountExhausted(vars *string) bool {
+	m, err := ParseVariablesJSON(vars)
+	if err != nil {
+		return false
+	}
+	if v, ok := m[constants.VarsRecallCount].(float64); ok {
+		return int(v) >= constants.MaxRecallCountPerInstance
+	}
+	return false
+}
+
+// bumpRecallCount 实例变量累计收回次数 +1（解析失败按 0 起算重建设）。
+func bumpRecallCount(vars *string) *string {
+	m, _ := ParseVariablesJSON(vars)
+	if m == nil {
+		m = map[string]interface{}{}
+	}
+	cur := 0
+	if v, ok := m[constants.VarsRecallCount].(float64); ok {
+		cur = int(v)
+	}
+	m[constants.VarsRecallCount] = cur + 1
+	out, err := json.Marshal(m)
+	if err != nil {
+		return vars
+	}
+	s := string(out)
+	return &s
+}
+
+// stripCountersignMergedKeys 清除会签合并写入父任务变量的审批结果键。与
+// stripApprovalResultKeys 的差异：解析失败原样返回——父任务变量承载全单业务
+// 数据，不能因 JSON 损坏被清空。
+func stripCountersignMergedKeys(vars *string) *string {
+	m, err := ParseVariablesJSON(vars)
+	if err != nil || len(m) == 0 {
+		return vars
+	}
+	changed := false
+	for _, key := range []string{constants.VarsApproved, constants.VarsComment} {
+		if _, ok := m[key]; ok {
+			delete(m, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return vars
+	}
+	out, merr := json.Marshal(m)
+	if merr != nil {
+		return vars
+	}
+	s := string(out)
+	return &s
 }

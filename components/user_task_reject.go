@@ -111,6 +111,9 @@ func (n *UserTaskNode) fireRejectedEvent(ctx types.RuleContext, msg types.RuleMs
 	if fromUser == "" {
 		fromUser = msg.GetMetadata().GetValue(constants.KeyOperator)
 	}
+	// 代审被代人：RuleContext 不携带调用链 ctx，派发器的 ctx 注入在这里取不到，
+	// 只能从链元数据回读（代审驳回方向的通知依赖它）
+	onBehalfOf := msg.GetMetadata().GetValue(constants.KeyOnBehalfOf)
 	// TaskID 尽力回查当前节点任务，任务已归档则留空
 	taskDefKey := n.GetSelfId()
 	var taskID string
@@ -129,6 +132,7 @@ func (n *UserTaskNode) fireRejectedEvent(ctx types.RuleContext, msg types.RuleMs
 		TenantID:   tenantID,
 		TaskName:   n.GetSelfName(),
 		FromUser:   fromUser,
+		OnBehalfOf: onBehalfOf,
 		Reason:     reason,
 		Timestamp:  time.Now(),
 	}

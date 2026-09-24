@@ -76,6 +76,17 @@ func terminateInstance(rs service.RuntimeService, nodeID string, ctx types.RuleC
 	if actor.TenantID == "" {
 		actor.TenantID = metaValue(msg, constants.KeyTenantID)
 	}
+	// rulego 根 ctx 不携带调用链身份，操作人与代审被代人从链元数据回读
+	// （executeNextLocked 写入），terminated 事件的 FromUser/OnBehalfOf 才不缺失
+	if actor.UserID == "" || actor.UserID == constants.UserSystem {
+		if op := metaValue(msg, constants.KeyOperator); op != "" {
+			actor.UserID = op
+			termCtx = service.SetUserToCtx(termCtx, &actor)
+		}
+	}
+	if ob := metaValue(msg, constants.KeyOnBehalfOf); ob != "" {
+		termCtx = service.WithOnBehalfOf(termCtx, ob)
+	}
 	if err := rs.TerminateProcessInstance(termCtx, actor, instanceID, reason); err != nil {
 		logrus.Errorf("node %s: terminate instance %s failed: %v", nodeID, instanceID, err)
 		ctx.TellFailure(msg, err)
