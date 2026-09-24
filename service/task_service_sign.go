@@ -14,6 +14,7 @@ import (
 
 	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 )
@@ -144,6 +145,7 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 			Name:              fmt.Sprintf("[加签] %s", task.Name),
 			Description:       &desc,
 			ProcessInstanceID: task.ProcessInstanceID,
+			ProcessID:         task.ProcessID,
 			TaskDefKey:        task.TaskDefKey,
 			TaskType:          task.TaskType,
 			ParentID:          &taskID,
@@ -154,6 +156,7 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 			Status:            string(enums.TaskStatusActive),
 			ApprovalType:      task.ApprovalType,
 			ApprovalRule:      task.ApprovalRule,
+			CreatedBy:         constants.UserSystem,
 			CreatedAt:         time.Now(),
 			UpdatedAt:         &now,
 			TenantID:          task.TenantID,

@@ -159,10 +159,15 @@ type ExecutionInfo struct {
 	// delegated 委派 / withdrawn 撤回 等；未结束时为 nil
 	EndReason    *string `json:"endReason"`
 	ApprovalType string  `json:"approvalType"`
-	Comment      *string `json:"comment"`
+	// ProxyBy 代审管理员 userId：该票由管理员代替 assignee 审出；空表示本人办理。
+	// 时间线据此渲染「由 X 代审」，与 recall 守卫读同一份任务变量。
+	ProxyBy string  `json:"proxyBy,omitempty"`
+	Comment *string `json:"comment"`
 	// SubExecutions 子任务明细：加签（countersign 父子结构）场景下挂该任务的
 	// 会签子任务，普通审批任务为空
 	SubExecutions []ExecutionInfo `json:"subExecutions"`
 	// IsCandidate 候选待认领任务（无 assignee + pending，等候选成员 claim）
 	IsCandidate bool `json:"isCandidate"`
+	// Delegated 委派中（Owner 在位）：V1 代审不支持该状态的任务
+	Delegated bool `json:"delegated,omitempty"`
 }

@@ -338,6 +338,23 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		resp.ActionPermissions["recall"] = true
 	}
 
+	// 管理员代审按钮：流程开关未显式关闭（缺省即开，opt-out）+ WorkflowAdmin +
+	// 存在可代审的在途任务（已签收、非委派中）。与 ProxyAudit 写路径同口径；
+	// 按钮位只保证存在一个合格任务，加签未决/任务在此后被委派等时序外情况由
+	// 写路径兜底拒绝。API 准入另有宿主 workflow:task:proxy 权限位（前端按钮同判）。
+	if instance.Status == string(enums.InstanceStatusActive) &&
+		isWorkflowAdmin(&actor) && !designerDisabled(starterActionPermissions, "proxyAudit") {
+		for _, t := range tasks {
+			if t != nil && t.TaskType == constants.TaskTypeUserTask &&
+				t.Status == string(enums.TaskStatusActive) &&
+				t.Assignee != nil && *t.Assignee != "" &&
+				(t.Owner == nil || *t.Owner == "") {
+				resp.ActionPermissions["proxyAudit"] = true
+				break
+			}
+		}
+	}
+
 	if currentUserTask != nil {
 		switch currentUserTaskStatus {
 		case string(enums.TaskStatusActive):
@@ -469,6 +486,14 @@ func Task2ExecutionInfo(task *model.WfTask, tasks []*model.WfTask) dto.Execution
 		SubExecutions: GetSubTasks(task.ID, tasks),
 	}
 	executionInfo.IsCandidate = (task.Assignee == nil || *task.Assignee == "") && task.Status == string(enums.TaskStatusPending)
+	// 委派中（Owner 在位）：代审对象列表须剔除——ExecutionInfo 不透出 owner 原值，
+	// 只透出该布尔（V1 代审不支持委派中任务）
+	executionInfo.Delegated = task.Owner != nil && *task.Owner != ""
+	if m, perr := ParseVariablesJSON(task.Variables); perr == nil {
+		if v, ok := m[constants.VarsProxyOperator].(string); ok {
+			executionInfo.ProxyBy = v
+		}
+	}
 	if task.EndedAt != nil {
 		executionInfo.EndedAt = task.EndedAt.Format(constants.TimeFormatLayout)
 	}

@@ -212,6 +212,12 @@ type TaskService interface {
 	// 推进路径无自动化节点、流程停泊在人工任务上、流程级开关 recall 已开启。
 	Recall(ctx context.Context, actor Actor, instanceID, reason string) error
 
+	// ProxyAudit 管理员代审：代替当前办理人给出审批结果（票记原办理人名下）。
+	// 前置：流程级 actionPermissions.proxyAudit 未显式关闭（缺省即开）+
+	// WorkflowAdmin/系统身份 + 任务已签收且非委派中。被代审的票不可再收回
+	// （evaluateRecallGuard 拦截）。
+	ProxyAudit(ctx context.Context, actor Actor, taskID string, approved bool, comment string) error
+
 	// ========== 节点审批人管理 ==========
 
 	// GetNodeApprovalStatus 获取节点审批状态信息（actor 含租户时做任务归属校验，跨租户拒绝）

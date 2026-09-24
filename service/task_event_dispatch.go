@@ -46,6 +46,13 @@ func DispatchTaskEvent(listener TaskEventListener, evt TaskEvent, ctx context.Co
 	if evt.EventID == "" {
 		evt.EventID = getDefaultIDGenerator().GenerateID()
 	}
+	// 代审路径：被代人从 ctx 统一注入。只注 approved/rejected/terminated——
+	// 出票触发的级联（驳回终止等）属于同一代审动作；assigned 等下游任务事件
+	// 的办理人与被代人无关，带上只会误导监听器
+	if evt.OnBehalfOf == "" &&
+		(evt.Type == TaskEventApproved || evt.Type == TaskEventRejected || evt.Type == TaskEventTerminated) {
+		evt.OnBehalfOf = OnBehalfOfFromCtx(ctx)
+	}
 	// Strip cancellation chain: the original ctx may be the transaction ctx,
 	// which gets cancelled on commit/rollback. We keep the values (tenant,
 	// user, trace) but lose the cancellation signal so a late listener fire

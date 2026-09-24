@@ -35,6 +35,7 @@ const (
 	EventSourceWithdraw = "withdraw" // 撤回内部级联（终止/事件链）
 	EventSourceReject   = "reject"   // 驳回策略级联
 	EventSourceInternal = "internal" // 引擎内部驱动（无外部操作人）
+	EventSourceProxy    = "proxy"    // 管理员代审出票
 )
 
 // ctxKeyEventSource 事件来源标记的 context key。
@@ -70,6 +71,7 @@ type TaskEvent struct {
 	FromUser     string    // 触发操作的用户ID；系统驱动为空
 	Reason       string    // 驳回/终止/撤回原因
 	Source       string    // 事件来源（EventSource*）
+	OnBehalfOf   string    // 被代审人 userId：管理员代审出票的事件携带，宿主据此通知原办理人
 	Timestamp    time.Time // 事件发生时间
 }
 

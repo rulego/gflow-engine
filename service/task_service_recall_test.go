@@ -39,10 +39,11 @@ func (e *recallEngineDouble) GetRuntimeService() RuntimeService {
 
 func (e *recallEngineDouble) GetRuntimeServiceInternal() RuntimeServiceInternal { return e.internal }
 
-// recallInternalDouble 补齐内部接口，记录 ExecuteNext 重入节点供断言
+// recallInternalDouble 补齐内部接口，记录 ExecuteNext 重入节点与下传变量供断言
 type recallInternalDouble struct {
 	testRuntimeDouble
 	execNextNode string
+	execNextVars map[string]interface{}
 }
 
 func (d *recallInternalDouble) GetExecution(context.Context, string) (types.RuleEngine, error) {
@@ -63,8 +64,9 @@ func (d *recallInternalDouble) SubProcessChildState(context.Context, string) (bo
 func (d *recallInternalDouble) SubProcessChildTerminated(context.Context, string) (bool, error) {
 	return false, nil
 }
-func (d *recallInternalDouble) ExecuteNext(_ context.Context, _, node string, _ map[string]interface{}) error {
+func (d *recallInternalDouble) ExecuteNext(_ context.Context, _, node string, vars map[string]interface{}) error {
 	d.execNextNode = node
+	d.execNextVars = vars
 	return nil
 }
 
@@ -820,4 +822,51 @@ func TestRecall_DefaultOnWithoutSwitch(t *testing.T) {
 	svc, _ := newRecallSvc(q, def, nil)
 
 	require.NoError(t, svc.Recall(ctx, Actor{UserID: "jia", TenantID: "t1"}, "inst-dft", ""))
+}
+
+// 代审出的票不可收回：错误文案点名管理员代审；同会签轮次同伴的未代审票不受影响。
+func TestRecall_BlockedByProxyMark(t *testing.T) {
+	q := secFixDB(t)
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedInstance(t, q, "inst-px9", string(enums.InstanceStatusActive))
+	base := time.Now().Add(-time.Hour)
+	// 单人票带代审标记
+	recallSeedTask(t, q, "t-px9", "inst-px9", "a", constants.TaskTypeUserTask, string(enums.TaskStatusCompleted),
+		"jia", base, base.Add(time.Minute), `{"proxy_operator":"admin","approved":true}`)
+	recallSeedTask(t, q, "t-px9b", "inst-px9", "b", constants.TaskTypeUserTask, string(enums.TaskStatusActive),
+		"yi", base.Add(2*time.Minute), time.Time{}, "")
+	svc, _ := newRecallSvc(q, def, nil)
+
+	err := svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"}),
+		Actor{UserID: "jia", TenantID: "t1"}, "inst-px9", "")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrValidation))
+	require.Contains(t, err.Error(), "管理员代审")
+
+	// 会签同伴场景：自己的票无代审标记，同轮次他人带标记的更晚投票不阻断自己收回
+	recallSeedInstance(t, q, "inst-px10", string(enums.InstanceStatusActive))
+	recallSeedTask(t, q, "t-p10-parent", "inst-px10", "a", constants.TaskTypeUserTask, string(enums.TaskStatusCompleted),
+		"", base, base.Add(3*time.Minute), "")
+	recallSeedTask(t, q, "t-p10-jia", "inst-px10", "a", constants.TaskTypeUserTask, string(enums.TaskStatusCompleted),
+		"jia", base, base.Add(time.Minute), "")
+	if _, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-p10-jia")).
+		UpdateSimple(q.WfTask.ParentID.Value("t-p10-parent")); err != nil {
+		t.Fatalf("set parent: %v", err)
+	}
+	recallSeedTask(t, q, "t-p10-yi", "inst-px10", "a", constants.TaskTypeUserTask, string(enums.TaskStatusCompleted),
+		"yi", base.Add(2*time.Minute), base.Add(2*time.Minute), `{"proxy_operator":"admin","approved":true}`)
+	if _, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-p10-yi")).
+		UpdateSimple(q.WfTask.ParentID.Value("t-p10-parent")); err != nil {
+		t.Fatalf("set parent: %v", err)
+	}
+	recallSeedTask(t, q, "t-p10-b", "inst-px10", "b", constants.TaskTypeUserTask, string(enums.TaskStatusActive),
+		"bing", base.Add(4*time.Minute), time.Time{}, "")
+
+	require.NoError(t, svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"}),
+		Actor{UserID: "jia", TenantID: "t1"}, "inst-px10", ""), "同伴的代审票不应阻断自己收回")
+	require.Nil(t, recallTaskByID(t, q, "t-p10-b"), "收回后前沿待办终止")
 }

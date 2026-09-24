@@ -191,7 +191,17 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 		if operatorID == "" {
 			return ErrAuthenticationRequired
 		}
-		if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != operatorID {
+		// 代审通道按双信号判定（proxyAuditFromCtx）：被代人标记 + proxy 事件来源。
+		// 普通 approve/reject 即使 WorkflowAdmin 也走下方 assignee 校验，不隐式获得代审权。
+		if proxyAuditFromCtx(ctx) {
+			onBehalfOf := OnBehalfOfFromCtx(ctx)
+			if task.Assignee == nil || *task.Assignee == "" {
+				return fmt.Errorf("task has no assignee, cannot audit on behalf: %w", ErrValidation)
+			}
+			if *task.Assignee != onBehalfOf {
+				return fmt.Errorf("task assigned to %s, on-behalf target %s: %w", *task.Assignee, onBehalfOf, ErrValidation)
+			}
+		} else if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != operatorID {
 			return fmt.Errorf("task assigned to %s, operator %s: %w", *task.Assignee, operatorID, ErrPermissionDenied)
 		}
 		// 租户隔离：有身份的操作人租户非空时任务必须同租户。
@@ -204,7 +214,11 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 
 	// 委派归还：被委派人(approve/reject)应把任务归还原审批人(Owner)，不直接完成流转。
 	// delegatee 若直接 complete+advance，原 owner 将永不审查，因此走 resolveDelegatedApproval。
+	// 代审与委派归还语义纠缠（Complete 会归还而非出票），入口与锁内双拦。
 	if task.Owner != nil && *task.Owner != "" {
+		if proxyAuditFromCtx(ctx) {
+			return fmt.Errorf("%w: 任务已委派，暂不支持代审", ErrValidation)
+		}
 		return s.resolveDelegatedApproval(ctx, scope, task, request)
 	}
 
@@ -245,6 +259,22 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	// 同步局部 task.Variables 为合并后的值：下方 ExecuteNext 下传读 task.Variables，
 	// 若不同步，会下传审批前的旧变量(审批人提交的覆盖值丢失)。
 	task.Variables = mergedVariables
+
+	// 代审留痕：proxy_operator/proxy_time 写入任务变量（callingMode 必须 API——
+	// 代审后的 ExecuteNext 沿用本 ctx，下游 autoApprove 等 internal 路径不得被打标记）。
+	// 标记只留在任务行上，随 hi_task 归档存续；流转出口由 stripProxyKeys 剥离
+	if callingMode == CallingModeAPI && proxyAuditFromCtx(ctx) {
+		operatorID := ""
+		if u := GetUserFromCtx(ctx); u != nil {
+			operatorID = u.UserID
+		}
+		marked, mErr := proxyMarkVariables(mergedVariables, operatorID, time.Now())
+		if mErr != nil {
+			return mErr
+		}
+		mergedVariables = marked
+		task.Variables = mergedVariables
+	}
 
 	// 创建更新任务对象，只更新必要字段
 	username := ""
@@ -293,6 +323,19 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	}
 	if err := s.recordApprovalComment(ctx, scope, task, commentOperator, request.Comment); err != nil {
 		return fmt.Errorf("failed to record approval comment: %w", err)
+	}
+
+	// 代审系统评论落 wf_task_comment：operator=代审管理员，随票（票面归被代人）归档
+	if callingMode == CallingModeAPI && proxyAuditFromCtx(ctx) {
+		onBehalfOf := OnBehalfOfFromCtx(ctx)
+		action := "通过"
+		if request.ApprovalResult == enums.ApprovalResultRejected {
+			action = "驳回"
+		}
+		sys := fmt.Sprintf("代审：管理员 %s 代 %s %s该审批", displayAssignee(commentOperator), onBehalfOf, action)
+		if err := s.recordApprovalComment(ctx, scope, task, commentOperator, sys); err != nil {
+			return fmt.Errorf("failed to record proxy audit comment: %w", err)
+		}
 	}
 
 	// 审批通过 → 通知发起人进度（发起人不能只在驳回/终止时收到通知，
@@ -368,6 +411,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 					if err != nil {
 						return fmt.Errorf("failed to re-parse parent task variables after merge on early veto: %w", err)
 					}
+					vars = stripProxyKeys(vars)
 					parentInst := parentTask.ProcessInstanceID
 					parentKey := parentTask.TaskDefKey
 					// 父任务已定局，剩余未决子任务一并终止，否则留下幽灵待办且 fork 分支凑不齐
@@ -432,6 +476,8 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 					if err != nil {
 						return fmt.Errorf("failed to parse parent task variables on countersign completion: %w", err)
 					}
+					// 子任务（可能被代审）的标记键不随父任务变量下传
+					vars = stripProxyKeys(vars)
 					parentInst := parentTask.ProcessInstanceID
 					parentKey := parentTask.TaskDefKey
 					scope.AfterCommit(func() error {
@@ -456,6 +502,8 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 		if err != nil {
 			return err
 		}
+		// 代审标记不下传：下一节点任务的变量快照来自这里
+		vars = stripProxyKeys(vars)
 		inst := task.ProcessInstanceID
 		key := task.TaskDefKey
 		scope.AfterCommit(func() error {
@@ -491,6 +539,10 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 			continue
 		}
 		for k, v := range sv {
+			// 代审标记属于子任务自己的票，不合并进父任务
+			if k == constants.VarsProxyOperator || k == constants.VarsProxyTime {
+				continue
+			}
 			merged[k] = v
 		}
 	}
@@ -500,6 +552,41 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 	}
 	str := string(out)
 	parentTask.Variables = &str
+}
+
+// proxyMarkVariables 在任务变量上写入代审标记（proxy_operator/proxy_time）。
+// 纯逻辑不触 DAO；解析失败按损坏数据拒绝——标记丢失的代审票会被 recall 守卫放行。
+func proxyMarkVariables(vars *string, operator string, now time.Time) (*string, error) {
+	m, err := ParseVariablesJSON(vars)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse task variables for proxy mark: %w", err)
+	}
+	m[constants.VarsProxyOperator] = operator
+	m[constants.VarsProxyTime] = now.Format(constants.TimeFormatLayout)
+	out, err := utils2.ToJSON(m)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize proxy mark: %w", err)
+	}
+	return &out, nil
+}
+
+// stripProxyKeys 剥离代审标记键：proxy_operator/proxy_time 是任务级审计数据，
+// 不得作为流程变量流转——下游任务沾上会被时间线误标「由 X 代审」、被 recall
+// 守卫误拦。无标记时原样返回。
+func stripProxyKeys(m map[string]interface{}) map[string]interface{} {
+	if _, ok := m[constants.VarsProxyOperator]; !ok {
+		if _, ok2 := m[constants.VarsProxyTime]; !ok2 {
+			return m
+		}
+	}
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		if k == constants.VarsProxyOperator || k == constants.VarsProxyTime {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // resolveDelegatedApproval 处理被委派人(approve/reject)的归还：不完成 task、不流转，

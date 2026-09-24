@@ -125,7 +125,7 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 		return fmt.Errorf("%w: 超过可收回窗口（%d 天），无法收回", ErrValidation, recallWindowDays(ap))
 	}
 
-	lastNode, voters, err := latestCompletedNodeInHistory(ctx, s.taskDAO.Query, instanceID)
+	lastNode, lastNodeName, voters, err := latestCompletedNodeInHistory(ctx, s.taskDAO.Query, instanceID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve last node: %w", err)
 	}
@@ -172,6 +172,7 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 	if listener := s.workflowEngine.GetTaskEventListener(); listener != nil {
 		DispatchTaskEvent(listener, TaskEvent{
 			Type:       TaskEventRecalled,
+			TaskName:   lastNodeName,
 			InstanceID: instanceID,
 			ProcessID:  hi.ProcessID,
 			TenantID:   hi.TenantID,
@@ -259,8 +260,9 @@ func (s *TaskServiceImpl) rearchiveCompletedInstance(ctx context.Context, q *que
 }
 
 // latestCompletedNodeInHistory 在历史任务里找最近完成的 userTask 节点（末节点）
-// 及该节点全部投票人（去重，供作废通知）。
-func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceID string) (string, []string, error) {
+// 及该节点全部投票人（去重，供作废通知）。节点名随任务行返回，作废通知的
+// 「节点待办已随收回作废」文案需要它。
+func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceID string) (string, string, []string, error) {
 	wt := q.WfHiTask
 	var last model.WfHiTask
 	err := wt.WithContext(ctx).
@@ -271,10 +273,10 @@ func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceI
 		Limit(1).
 		Scan(&last)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to query last completed node: %w", err)
+		return "", "", nil, fmt.Errorf("failed to query last completed node: %w", err)
 	}
 	if last.ID == "" || last.TaskDefKey == nil || *last.TaskDefKey == "" {
-		return "", nil, nil
+		return "", "", nil, nil
 	}
 	var rows []model.WfHiTask
 	err = wt.WithContext(ctx).
@@ -285,7 +287,7 @@ func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceI
 		Where(wt.Assignee.Neq("")).
 		Scan(&rows)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to query last node voters: %w", err)
+		return "", "", nil, fmt.Errorf("failed to query last node voters: %w", err)
 	}
 	seen := map[string]bool{}
 	voters := make([]string, 0, len(rows))
@@ -296,7 +298,7 @@ func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceI
 		seen[*r.Assignee] = true
 		voters = append(voters, *r.Assignee)
 	}
-	return *last.TaskDefKey, voters, nil
+	return *last.TaskDefKey, last.Name, voters, nil
 }
 
 // recallInternal 在已持有实例行锁的事务内执行 Recall 实际逻辑。
@@ -504,8 +506,13 @@ func findRecallableCompletedTask(tasks []*model.WfTask, userID string) *model.Wf
 }
 
 // evaluateRecallGuard 收回守卫（写路径与详情权限位共用，只读不改数据）：
-// 更晚办理记录 → 停泊 → 自动化路径，任一不过即拒绝。
+// 代审票 → 更晚办理记录 → 停泊 → 自动化路径，任一不过即拒绝。
 func evaluateRecallGuard(tasks []*model.WfTask, t *model.WfTask, chain *types.RuleChain) error {
+	// 代审出的票不可收回：票已由管理员行使且带 proxy 标记，异议走管理员
+	// （终态收回/终止）；写路径与详情按钮共用此守卫，一处拦截两处生效
+	if hasProxyMark(t) {
+		return fmt.Errorf("%w: 该审批由管理员代审，无法收回", ErrValidation)
+	}
 	for _, x := range tasks {
 		if x == nil || x.ID == t.ID {
 			continue
@@ -672,4 +679,20 @@ func stripApprovalResultKeys(vars *string) *string {
 	}
 	s := string(out)
 	return &s
+}
+
+// hasProxyMark 任务变量是否带管理员代审标记（ProxyAudit 写入 proxy_operator）。
+// 解析失败按无标记处理：其余守卫照常兜底，不让损坏数据卡死正常收回。
+func hasProxyMark(t *model.WfTask) bool {
+	if t == nil || t.Variables == nil || *t.Variables == "" {
+		return false
+	}
+	m, err := ParseVariablesJSON(t.Variables)
+	if err != nil {
+		return false
+	}
+	if v, ok := m[constants.VarsProxyOperator].(string); ok {
+		return v != ""
+	}
+	return false
 }

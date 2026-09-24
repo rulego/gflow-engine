@@ -67,6 +67,13 @@ const (
 	VarsApproved = "approved"
 	// VarsComment 审批意见约定键：与 VarsApproved 一样在完成后被移除并落入审批记录
 	VarsComment = "comment"
+	// VarsProxyOperator 管理员代审出票时写入的任务变量，值为代审管理员 userId。
+	// recall 守卫据此拦截被代审票的收回，时间线据此显示「由 X 代审」。
+	// 任务级审计数据：只随任务行归档存续，不得作为流程变量下传——下游任务
+	// 沾上会被误标代审、误拦收回（complete 通道出口有 stripProxyKeys 剥离）。
+	VarsProxyOperator = "proxy_operator"
+	// VarsProxyTime 代审时间（TimeFormatLayout 文本），与 VarsProxyOperator 同次写入
+	VarsProxyTime = "proxy_time"
 )
 const (
 	// EndReasonPrefixRejected 拒绝终止写入 end_reason 的前缀
