@@ -104,6 +104,8 @@ const (
 	EndReasonClaimedByOther EndReason = "claimed_by_other"
 	// EndReasonWithdrawn 发起人撤回
 	EndReasonWithdrawn EndReason = "withdrawn"
+	// EndReasonRecalled 审批人收回（撤销自己已通过的审批，重新待审）
+	EndReasonRecalled EndReason = "recalled"
 )
 
 // ActionType 操作类型枚举

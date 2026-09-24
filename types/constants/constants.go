@@ -73,6 +73,8 @@ const (
 	EndReasonPrefixRejected = "审批拒绝"
 	// EndReasonPrefixWithdrawn 发起人撤回写入 end_reason 的前缀
 	EndReasonPrefixWithdrawn = "申请人撤回"
+	// EndReasonPrefixRecall 收回终止前沿任务写入 end_reason 的前缀
+	EndReasonPrefixRecall = "审批人收回"
 )
 const (
 	TaskTypeUserTask = "userTask"

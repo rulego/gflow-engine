@@ -16,6 +16,7 @@ import (
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
+	"github.com/rulego/rulego/api/types"
 )
 
 // resolveNodeActionPermissions 返回某节点 additionalInfo.actionPermissions。
@@ -63,6 +64,40 @@ func resolveNodeActionPermissions(ctx context.Context, engine WorkflowEngine, in
 		return map[string]interface{}{}
 	}
 	return v
+}
+
+// resolveProcessActionPermissions 读取流程级 actionPermissions
+// （ruleChain.additionalInfo，即设计器「高级设置」面板写入的发起人/审批人开关）。
+// 附带返回解析后的链定义，供收回路径守卫复用，避免二次解析。
+func resolveProcessActionPermissions(ctx context.Context, engine WorkflowEngine, processID string) (map[string]interface{}, *types.RuleChain, error) {
+	if engine == nil || processID == "" {
+		return nil, nil, fmt.Errorf("resolve process action permissions: invalid engine/process")
+	}
+	processService := engine.GetProcessService()
+	if processService == nil {
+		return nil, nil, fmt.Errorf("resolve process action permissions: process service not injected")
+	}
+	procDef, err := processService.Get(ctx, processID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve process action permissions: get process: %w", err)
+	}
+	if procDef == nil {
+		return nil, nil, fmt.Errorf("resolve process action permissions: process not found")
+	}
+	rc, err := procDef.ToRuleChain()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve process action permissions: parse rule chain: %w", err)
+	}
+	if rc == nil {
+		return nil, nil, fmt.Errorf("resolve process action permissions: rule chain is nil")
+	}
+	if ap, ok := rc.RuleChain.GetAdditionalInfo("actionPermissions"); ok {
+		if v, ok := ap.(map[string]interface{}); ok {
+			return v, rc, nil
+		}
+		return nil, nil, fmt.Errorf("resolve process action permissions: invalid actionPermissions type")
+	}
+	return map[string]interface{}{}, rc, nil
 }
 
 // resolveNodeActionPermissionsStrict 与上方的 lenient 版同源，但解析失败返回 error

@@ -324,6 +324,20 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		}
 	}
 
+	// 审批人收回:运行中实例=本人存在可收回记录且守卫通过;已完成实例=发起人在
+	// 窗口期内可整单重开(末节点重审)。守卫与 Recall 写路径同口径。
+	if instance.Status == string(enums.InstanceStatusActive) && !designerDisabled(starterActionPermissions, "recall") {
+		if t := findRecallableCompletedTask(tasks, currentUserId); t != nil {
+			if evaluateRecallGuard(tasks, t, ruleChain) == nil {
+				resp.ActionPermissions["recall"] = true
+			}
+		}
+	}
+	if instance.Status == string(enums.InstanceStatusCompleted) && !designerDisabled(starterActionPermissions, "recall") &&
+		(instance.StartUserID == currentUserId || isWorkflowAdmin(&actor)) && withinRecallWindow(starterActionPermissions, instance.EndedAt) {
+		resp.ActionPermissions["recall"] = true
+	}
+
 	if currentUserTask != nil {
 		switch currentUserTaskStatus {
 		case string(enums.TaskStatusActive):

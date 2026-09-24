@@ -21,6 +21,7 @@ const (
 	TaskEventSuspended        TaskEventType = "suspended"        // 实例挂起
 	TaskEventActivated        TaskEventType = "activated"        // 实例恢复（含草稿激活）
 	TaskEventWithdrawn        TaskEventType = "withdrawn"        // 发起人撤回实例
+	TaskEventRecalled         TaskEventType = "recalled"         // 审批人收回（ToUsers 为被终止前沿任务的办理人）
 	TaskEventStarted          TaskEventType = "started"          // 流程实例发起
 	TaskEventReturned         TaskEventType = "returned"         // 任务退回到指定节点
 	TaskEventAddSign          TaskEventType = "addSign"          // 加签（Reason 携带原因）

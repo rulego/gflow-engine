@@ -207,6 +207,11 @@ type TaskService interface {
 	// Return 退回（将任务退回到指定节点）
 	Return(ctx context.Context, actor Actor, taskID, targetActivityID, reason string) error
 
+	// Recall 收回（审批人撤销自己最近一条已通过的审批，重建自己的待审任务）。
+	// 收回守卫见 task_service_recall.go：实例运行中、本人办理、无更晚办理记录、
+	// 推进路径无自动化节点、流程停泊在人工任务上、流程级开关 recall 已开启。
+	Recall(ctx context.Context, actor Actor, instanceID, reason string) error
+
 	// ========== 节点审批人管理 ==========
 
 	// GetNodeApprovalStatus 获取节点审批状态信息（actor 含租户时做任务归属校验，跨租户拒绝）
