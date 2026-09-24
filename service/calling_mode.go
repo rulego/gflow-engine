@@ -80,3 +80,13 @@ func forceAPICallingModeForRealUser(ctx context.Context) context.Context {
 	}
 	return ctx
 }
+
+// systemInitiatedReassign 是否系统级自动改投：内部调用模式且无真实用户身份，
+// 满足时 Reassign 豁免设计器改派开关；真实用户即使 ctx 带内部标记也不豁免。
+func systemInitiatedReassign(ctx context.Context) bool {
+	if GetCallingMode(ctx) != CallingModeInternal {
+		return false
+	}
+	u := GetUserFromCtx(ctx)
+	return u == nil || u.UserID == "" || IsSystemActor(u)
+}

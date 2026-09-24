@@ -24,7 +24,7 @@ import (
 // recallTransparentNodeTypes 收回路径检查中可穿越的节点类型：路由网关与
 // fork/join 走向取决于运行期条件但本身无业务副作用（fork/join 见
 // user_task_reject.go 的类型判定，链定义中真实存在）；ccTask 是信息类
-// （抄送已发不构成业务动作）。
+// （抄送已发不构成业务动作）。穿越按全量出边。
 var recallTransparentNodeTypes = map[string]bool{
 	constants.NodeTypeSwitch:        true,
 	constants.NodeTypeJsSwitch:      true,
@@ -153,7 +153,7 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 			BusinessKey:     hi.BusinessKey,
 			Name:            hi.Name,
 			Status:          string(enums.InstanceStatusActive),
-			Variables:       bumpRecallCount(hi.Variables),
+			Variables:       stripReservedMarks(bumpRecallCount(hi.Variables)),
 			CurrentActivity: hi.CurrentActivity,
 			Priority:        hi.Priority,
 			ParentID:        hi.ParentID,
@@ -643,9 +643,9 @@ func endedAtAfter(a, b *model.WfTask) bool {
 	return a.EndedAt.After(*b.EndedAt)
 }
 
-// checkRecallPath 从 T 的节点沿 Success 边向前遍历链定义，T 完成后链路已推进，
-// 停泊点之前若途经自动化节点说明机器动作已发生，收回会造成副作用重放。
-// userTask/end 截断；路由与抄送穿越；未知类型 fail-closed 拒绝。
+// checkRecallPath 从 T 的节点向前遍历链定义：T 完成后链路已推进，停泊点
+// 之前若途经自动化节点，收回会重放机器动作。userTask/end 截断；路由与
+// 抄送按全量出边穿越（switch 的分支出边类型不是 Success）；未知类型拒绝。
 func checkRecallPath(chain *types.RuleChain, fromDefKey string) error {
 	if chain == nil || len(chain.Metadata.Nodes) == 0 {
 		return fmt.Errorf("%w: 流程定义不可用，无法收回", ErrValidation)
@@ -657,8 +657,12 @@ func checkRecallPath(chain *types.RuleChain, fromDefKey string) error {
 	if _, ok := nodeByID[fromDefKey]; !ok {
 		return fmt.Errorf("%w: 流程定义不可用，无法收回", ErrValidation)
 	}
+	// 种子只沿 Success 边；透明节点穿越用全量出边，分支后的自动化节点
+	// 才不会被漏看。
 	successors := make(map[string][]string)
+	allSuccessors := make(map[string][]string)
 	for _, conn := range chain.Metadata.Connections {
+		allSuccessors[conn.FromId] = append(allSuccessors[conn.FromId], conn.ToId)
 		if conn.Type == types.Success || conn.Type == "" {
 			successors[conn.FromId] = append(successors[conn.FromId], conn.ToId)
 		}
@@ -684,7 +688,7 @@ func checkRecallPath(chain *types.RuleChain, fromDefKey string) error {
 		case node.Type == constants.NodeTypeUserTask || node.Type == constants.NodeTypeEnd:
 			// 停泊点或终点：流程停在人工任务上，该路径安全
 		case recallTransparentNodeTypes[node.Type]:
-			for _, next := range successors[id] {
+			for _, next := range allSuccessors[id] {
 				if !visited[next] {
 					visited[next] = true
 					queue = append(queue, next)
@@ -718,7 +722,7 @@ func buildRecalledTask(gen IDGenerator, t *model.WfTask, userID, username string
 		Owner:             t.Owner,
 		Priority:          t.Priority,
 		DueDate:           t.DueDate,
-		Variables:         stripApprovalResultKeys(t.Variables),
+		Variables:         stripReservedMarks(stripApprovalResultKeys(t.Variables)),
 		SequenceOrder:     t.SequenceOrder,
 		ApprovalType:      t.ApprovalType,
 		ApprovalRule:      t.ApprovalRule,
@@ -751,6 +755,32 @@ func stripApprovalResultKeys(vars *string) *string {
 	out, err := json.Marshal(m)
 	if err != nil {
 		return nil
+	}
+	s := string(out)
+	return &s
+}
+
+// stripReservedMarks 剥离重建变量里的引擎保留标记键：上一轮的代审/兜底
+// 留痕带进新一轮，会被兜底钩子按陈旧缘由自动通过、误标时间线并误拦再次
+// 收回。解析失败原样返回。
+func stripReservedMarks(vars *string) *string {
+	m, err := ParseVariablesJSON(vars)
+	if err != nil || len(m) == 0 {
+		return vars
+	}
+	changed := false
+	for _, key := range engineReservedVarKeys {
+		if _, ok := m[key]; ok {
+			delete(m, key)
+			changed = true
+		}
+	}
+	if !changed {
+		return vars
+	}
+	out, merr := json.Marshal(m)
+	if merr != nil {
+		return vars
 	}
 	s := string(out)
 	return &s

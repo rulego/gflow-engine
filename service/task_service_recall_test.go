@@ -250,6 +250,39 @@ func TestRecall_SingleApproval_RecreatesTask(t *testing.T) {
 	}
 }
 
+// 收回重建任务剥离上一轮的引擎保留标记，顺序缓存等业务变量保留。
+func TestRecall_RebuildStripsReservedMarks(t *testing.T) {
+	q := secFixDB(t)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1"})
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedInstance(t, q, "inst-marks", string(enums.InstanceStatusActive))
+
+	base := time.Now().Add(-time.Hour)
+	recallSeedTask(t, q, "tm-a", "inst-marks", "a", constants.TaskTypeUserTask, string(enums.TaskStatusCompleted),
+		"jia", base, base.Add(time.Minute),
+		`{"_sequentialAssignees":["jia","yi"],"approved":true,"comment":"ok","fallback_policy":"tenant_admin","fallback_from":"role:r1","fallback_reason":"审批人为空，已转交租户管理员","fallback_time":"2026-09-24 10:00:00"}`)
+	recallSeedTask(t, q, "tm-b", "inst-marks", "b", constants.TaskTypeUserTask, string(enums.TaskStatusActive),
+		"yi", base.Add(2*time.Minute), time.Time{}, "")
+
+	svc, _ := newRecallSvc(q, def, nil)
+	require.NoError(t, svc.Recall(ctx, Actor{UserID: "jia", TenantID: "t1"}, "inst-marks", "填错了"))
+
+	rows, err := q.WfTask.WithContext(ctx).Where(q.WfTask.ProcessInstanceID.Eq("inst-marks")).Find()
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "只应剩重建任务")
+	require.NotNil(t, rows[0].Variables)
+	var vars map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*rows[0].Variables), &vars))
+	require.NotContains(t, vars, constants.VarsFallbackPolicy)
+	require.NotContains(t, vars, constants.VarsFallbackFrom)
+	require.NotContains(t, vars, constants.VarsFallbackReason)
+	require.NotContains(t, vars, constants.VarsFallbackTime)
+	require.Contains(t, vars, constants.KeySequentialAssignees, "顺序缓存保留")
+	require.NotContains(t, vars, constants.VarsApproved)
+}
+
 func countHi(t *testing.T, q *query.Query, id string) int64 {
 	t.Helper()
 	n, err := q.WfHiTask.WithContext(context.Background()).Where(q.WfHiTask.ID.Eq(id)).Count()
@@ -726,6 +759,48 @@ func TestRecallCompleted_ByStarterReopensInstance(t *testing.T) {
 	require.Equal(t, "b", eng.internal.execNextNode, "应重入末节点 b")
 }
 
+// 终态收回复活实例剥离上一轮的引擎保留标记，收回次数照常累加。
+func TestRecallCompleted_InstanceVarsStripReservedMarks(t *testing.T) {
+	q := secFixDB(t)
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	endedAt := time.Now().Add(-24 * time.Hour)
+	require.NoError(t, q.WfHiInstance.Create(&model.WfHiInstance{
+		ID:          "inst-term-marks",
+		ProcessID:   "proc-1",
+		Name:        "recall-term-marks",
+		Status:      string(enums.InstanceStatusCompleted),
+		TenantID:    "t1",
+		CreatedBy:   "system",
+		StartUserID: "starter",
+		CreatedAt:   endedAt.Add(-time.Hour),
+		EndedAt:     &endedAt,
+		Variables:   secFixStrPtr(`{"amount":100,"proxy_operator":"admin","fallback_policy":"auto_approve","fallback_from":"role:r1","fallback_reason":"审批人为空，自动通过","fallback_time":"2026-09-24 10:00:00"}`),
+	}))
+	recallSeedHiTask(t, q, "htm-a", "inst-term-marks", "a", "jia", time.Now().Add(-23*time.Hour))
+	recallSeedHiTask(t, q, "htm-b", "inst-term-marks", "b", "yi", time.Now().Add(-22*time.Hour))
+	svc, _ := newRecallSvc(q, def, nil)
+
+	require.NoError(t, svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}),
+		Actor{UserID: "starter", TenantID: "t1"}, "inst-term-marks", "批错了，整单重开"))
+
+	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term-marks")).First()
+	require.NoError(t, err, "实例应回插运行表")
+	require.NotNil(t, revived.Variables)
+	var vars map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*revived.Variables), &vars))
+	require.NotContains(t, vars, constants.VarsProxyOperator)
+	require.NotContains(t, vars, constants.VarsProxyTime)
+	require.NotContains(t, vars, constants.VarsFallbackPolicy)
+	require.NotContains(t, vars, constants.VarsFallbackFrom)
+	require.NotContains(t, vars, constants.VarsFallbackReason)
+	require.NotContains(t, vars, constants.VarsFallbackTime)
+	require.Equal(t, float64(100), vars["amount"], "业务变量保留")
+	require.Equal(t, float64(1), vars[constants.VarsRecallCount], "收回次数照常累加")
+}
+
 func TestRecallCompleted_Guards(t *testing.T) {
 	def := recallDefinition(true,
 		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
@@ -1000,3 +1075,44 @@ func TestRecallVarHelpers(t *testing.T) {
 }
 
 func secFixTimePtr(t time.Time) *time.Time { return &t }
+
+// 收回守卫穿越 switch 分支出边的回归。
+func branchChain(nodes [][2]string, conns [][3]string) *types.RuleChain {
+	chain := &types.RuleChain{Metadata: types.RuleMetadata{}}
+	for _, n := range nodes {
+		chain.Metadata.Nodes = append(chain.Metadata.Nodes, &types.RuleNode{Id: n[0], Type: n[1]})
+	}
+	for _, c := range conns {
+		chain.Metadata.Connections = append(chain.Metadata.Connections, types.NodeConnection{FromId: c[0], ToId: c[2], Type: c[1]})
+	}
+	return chain
+}
+
+// T → switch → serviceTask → userTask：分支后藏自动化节点，拒绝。
+func TestCheckRecallPath_AutomationBehindSwitchRejected(t *testing.T) {
+	chain := branchChain(
+		[][2]string{{"t", constants.NodeTypeUserTask}, {"sw", constants.NodeTypeSwitch}, {"svc", "httpCall"}, {"b", constants.NodeTypeUserTask}},
+		[][3]string{{"t", types.Success, "sw"}, {"sw", "node_svc", "svc"}, {"svc", types.Success, "b"}},
+	)
+	err := checkRecallPath(chain, "t")
+	require.Error(t, err, "分支后的自动化节点必须被看见并拒绝收回")
+}
+
+// 两条分支都是人工节点，放行。
+func TestCheckRecallPath_UserTasksBehindSwitchAllowed(t *testing.T) {
+	chain := branchChain(
+		[][2]string{{"t", constants.NodeTypeUserTask}, {"sw", constants.NodeTypeSwitch}, {"b", constants.NodeTypeUserTask}, {"c", constants.NodeTypeUserTask}},
+		[][3]string{{"t", types.Success, "sw"}, {"sw", "node_b", "b"}, {"sw", "Default", "c"}},
+	)
+	require.NoError(t, checkRecallPath(chain, "t"))
+}
+
+// 任一分支上有自动化节点即拒绝。
+func TestCheckRecallPath_AutomationOnAnyBranchRejected(t *testing.T) {
+	chain := branchChain(
+		[][2]string{{"t", constants.NodeTypeUserTask}, {"sw", constants.NodeTypeSwitch}, {"b", constants.NodeTypeUserTask}, {"svc", "serviceTask"}},
+		[][3]string{{"t", types.Success, "sw"}, {"sw", "node_b", "b"}, {"sw", "Default", "svc"}},
+	)
+	err := checkRecallPath(chain, "t")
+	require.Error(t, err, "任一分支走向上有自动化节点都应拒绝")
+}

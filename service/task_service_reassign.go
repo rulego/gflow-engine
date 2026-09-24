@@ -53,9 +53,13 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 		return "", err
 	}
 	// 设计器动作开关校验放在锁外：actionPermissions 是定义版本上的静态配置，
-	// 无 TOCTOU 问题；而解析要查实例/定义，放事务内会拉长行锁持有时间
-	if err := s.requireActionEnabled(ctx, task, "reassign"); err != nil {
-		return "", err
+	// 无 TOCTOU 问题；而解析要查实例/定义，放事务内会拉长行锁持有时间。
+	// 系统级自动改投（离岗代理/停用兜底）不受节点开关约束，否则任务滞留在
+	// 离岗用户名下；真实用户不豁免。
+	if !systemInitiatedReassign(ctx) {
+		if err := s.requireActionEnabled(ctx, task, "reassign"); err != nil {
+			return "", err
+		}
 	}
 
 	instanceID := ""

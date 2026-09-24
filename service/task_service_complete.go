@@ -263,7 +263,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 
 	// 代审留痕：proxy_operator/proxy_time 写入任务变量（callingMode 必须 API——
 	// 代审后的 ExecuteNext 沿用本 ctx，下游 autoApprove 等 internal 路径不得被打标记）。
-	// 标记只留在任务行上，随 hi_task 归档存续；流转出口由 stripProxyKeys 剥离
+	// 标记只留在任务行上，随 hi_task 归档存续；流转出口由 stripReservedTaskVars 剥离
 	if callingMode == CallingModeAPI && proxyAuditFromCtx(ctx) {
 		operatorID := ""
 		if u := GetUserFromCtx(ctx); u != nil {
@@ -413,7 +413,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 					if err != nil {
 						return fmt.Errorf("failed to re-parse parent task variables after merge on early veto: %w", err)
 					}
-					vars = stripProxyKeys(vars)
+					vars = stripReservedTaskVars(vars)
 					parentInst := parentTask.ProcessInstanceID
 					parentKey := parentTask.TaskDefKey
 					// 父任务已定局，剩余未决子任务一并终止，否则留下幽灵待办且 fork 分支凑不齐
@@ -479,7 +479,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 						return fmt.Errorf("failed to parse parent task variables on countersign completion: %w", err)
 					}
 					// 子任务（可能被代审）的标记键不随父任务变量下传
-					vars = stripProxyKeys(vars)
+					vars = stripReservedTaskVars(vars)
 					parentInst := parentTask.ProcessInstanceID
 					parentKey := parentTask.TaskDefKey
 					scope.AfterCommit(func() error {
@@ -537,7 +537,7 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 			return err
 		}
 		// 代审标记不下传：下一节点任务的变量快照来自这里
-		vars = stripProxyKeys(vars)
+		vars = stripReservedTaskVars(vars)
 		inst := task.ProcessInstanceID
 		key := task.TaskDefKey
 		scope.AfterCommit(func() error {
@@ -604,38 +604,47 @@ func proxyMarkVariables(vars *string, operator string, now time.Time) (*string, 
 	return &out, nil
 }
 
-// stripEngineReservedVars 就地剥除审批提交变量里的引擎保留键。proxy_*/fallback_*
-// 是引擎写入的审计/兜底标记：API 提交同名变量会伪造代审留痕（时间线误标、
-// 收回守卫被自锁），或给"审批人恰为发起人"的下游任务预埋 fallback_reason
-// 骗进兜底自动通过钩子。
+// engineReservedVarKeys 引擎保留标记键全集：代审与兜底留痕，任务级审计数据。
+var engineReservedVarKeys = []string{
+	constants.VarsProxyOperator, constants.VarsProxyTime,
+	constants.VarsFallbackPolicy, constants.VarsFallbackFrom,
+	constants.VarsFallbackReason, constants.VarsFallbackTime,
+}
+
+// stripEngineReservedVars 就地剥除审批提交变量里的引擎保留键，防伪造代审
+// 留痕或预埋兜底标记骗过自动通过钩子。
 func stripEngineReservedVars(vars map[string]interface{}) {
 	if vars == nil {
 		return
 	}
-	for _, k := range []string{
-		constants.VarsProxyOperator, constants.VarsProxyTime,
-		constants.VarsFallbackPolicy, constants.VarsFallbackFrom,
-		constants.VarsFallbackReason, constants.VarsFallbackTime,
-	} {
+	for _, k := range engineReservedVarKeys {
 		delete(vars, k)
 	}
 }
 
-// stripProxyKeys 剥离代审标记键：proxy_operator/proxy_time 是任务级审计数据，
-// 不得作为流程变量流转——下游任务沾上会被时间线误标「由 X 代审」、被 recall
-// 守卫误拦。无标记时原样返回。
-func stripProxyKeys(m map[string]interface{}) map[string]interface{} {
-	if _, ok := m[constants.VarsProxyOperator]; !ok {
-		if _, ok2 := m[constants.VarsProxyTime]; !ok2 {
-			return m
+// stripReservedTaskVars 流转出口剥离引擎保留标记键：标记只随任务行归档，
+// 下传会误标时间线、误拦收回，还会把下游"审批人恰为发起人"的常规任务
+// 骗进兜底自动通过。无标记时原样返回。
+func stripReservedTaskVars(m map[string]interface{}) map[string]interface{} {
+	reserved := make(map[string]bool, len(engineReservedVarKeys))
+	for _, k := range engineReservedVarKeys {
+		reserved[k] = true
+	}
+	found := false
+	for k := range m {
+		if reserved[k] {
+			found = true
+			break
 		}
+	}
+	if !found {
+		return m
 	}
 	out := make(map[string]interface{}, len(m))
 	for k, v := range m {
-		if k == constants.VarsProxyOperator || k == constants.VarsProxyTime {
-			continue
+		if !reserved[k] {
+			out[k] = v
 		}
-		out[k] = v
 	}
 	return out
 }
