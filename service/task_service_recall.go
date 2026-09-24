@@ -466,7 +466,8 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 				Reason:       reason,
 				Timestamp:    time.Now(),
 			}, ctx)
-			// 重建任务沿用 assigned 事件，通知口径与新建任务一致
+			// 重建任务沿用 assigned 事件；Reason 标注收回缘由，通知与收回前的
+			// 首张待办区分开
 			DispatchTaskEvent(listener, TaskEvent{
 				Type:         TaskEventAssigned,
 				TaskID:       evtTaskID,
@@ -478,6 +479,7 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 				TaskName:     evtName,
 				ToUsers:      []string{evtFrom},
 				FromUser:     evtFrom,
+				Reason:       constants.EndReasonPrefixRecall + "，重新待审",
 				Timestamp:    time.Now(),
 			}, ctx)
 			return nil
