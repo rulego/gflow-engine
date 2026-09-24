@@ -77,6 +77,10 @@ func (c *UserTaskNodeConfiguration) Normalize() {
 	if c.Reject.Strategy == "" {
 		c.Reject.Strategy = RejectStrategyTerminate
 	}
+	c.EmptyApproverPolicy = strings.TrimSpace(c.EmptyApproverPolicy)
+	if c.EmptyApproverPolicy == "" {
+		c.EmptyApproverPolicy = EmptyApproverPolicyTenantAdmin
+	}
 	// vote 未配阈值时按过半处理
 	if enums.ApprovalType(c.ApproveMode) == enums.ApprovalTypeVote && c.VoteRule == nil {
 		c.VoteRule = &VoteRule{Type: string(enums.CountersignTypeMajority)}
@@ -180,6 +184,10 @@ func (c *UserTaskNodeConfiguration) Validate() []string {
 	}
 	if c.Reject.Strategy == RejectStrategyToNode && strings.TrimSpace(c.Reject.Target) == "" {
 		add("reject.target is required for reject.strategy=toNode")
+	}
+
+	if !isValidEmptyApproverPolicy(c.EmptyApproverPolicy) {
+		add("emptyApproverPolicy %q is not supported", c.EmptyApproverPolicy)
 	}
 	return issues
 }

@@ -58,10 +58,12 @@ func (n *UserTaskNode) createUserTasks(ctx types.RuleContext, processInstanceID 
 		return fmt.Errorf("failed to resolve assignees: %w", err)
 	}
 
-	if len(assignees) == 0 {
-		return fmt.Errorf("no assignees found for task")
-	}
 	processID := n.getProcessID(msg)
+	// 审批人解析为空：按节点 emptyApproverPolicy 兜底（转租户管理员/自动通过/挂起），
+	// 不再失败终止实例；仅成员集合为空走此分支，解析报错仍按失败处理
+	if len(assignees) == 0 {
+		return n.handleEmptyApprovers(ctx, processInstanceID, processID, tenantID, owner, variables, dueDate)
+	}
 	// 根据审批类型创建任务
 	switch enums.ApprovalType(n.Config.ApproveMode) {
 	case enums.ApprovalTypeSingle:
@@ -70,7 +72,7 @@ func (n *UserTaskNode) createUserTasks(ctx types.RuleContext, processInstanceID 
 		if ct := enums.CandidateType(n.Config.Approver.Type); ct == enums.CandidateTypeRole || ct == enums.CandidateTypeDept {
 			return n.createClaimTask(ctx, processInstanceID, processID, tenantID, variables, dueDate)
 		}
-		return n.createSingleTask(ctx, processInstanceID, processID, tenantID, assignees[0], variables, dueDate)
+		return n.createSingleTask(ctx, processInstanceID, processID, tenantID, assignees[0], variables, dueDate, "")
 	case enums.ApprovalTypeAny:
 		// 或签：创建多个任务，每个审批人一个
 		// 如果是角色类型，创建代认领任务
@@ -82,20 +84,21 @@ func (n *UserTaskNode) createUserTasks(ctx types.RuleContext, processInstanceID 
 		// 顺序审批：先创建第一个审批任务，审批人列表写入变量缓存，
 		// 后续 OnMsg 按同一顺序创建下一个任务
 		variables[constants.KeySequentialAssignees] = assignees
-		return n.createSingleTask(ctx, processInstanceID, processID, tenantID, assignees[0], variables, dueDate)
+		return n.createSingleTask(ctx, processInstanceID, processID, tenantID, assignees[0], variables, dueDate, "")
 	case enums.ApprovalTypeCountersign:
 		// 会签：创建多个任务，需要所有人都审批
-		return n.createCountersignTasks(ctx, processInstanceID, processID, tenantID, assignees, variables, dueDate)
+		return n.createCountersignTasks(ctx, processInstanceID, processID, tenantID, assignees, variables, dueDate, n.approvalRule)
 	case enums.ApprovalTypeVote:
 		// 票签：复用会签父+子结构，按 approvalRule 阈值(majority/percent/count)判定，达到阈值即结束剩余子任务
-		return n.createCountersignTasks(ctx, processInstanceID, processID, tenantID, assignees, variables, dueDate)
+		return n.createCountersignTasks(ctx, processInstanceID, processID, tenantID, assignees, variables, dueDate, n.approvalRule)
 	default:
 		return fmt.Errorf("unsupported approval type: %s", n.Config.ApproveMode)
 	}
 }
 
-// createSingleTask 创建单个任务
-func (n *UserTaskNode) createSingleTask(ctx types.RuleContext, processInstanceID, processID, tenantID, assignee string, variables map[string]interface{}, dueDate *time.Time) error {
+// createSingleTask 创建单个任务。reason 非空时随 TaskEventAssigned 透传
+// （兜底路径注明转交缘由；常规创建传空）。
+func (n *UserTaskNode) createSingleTask(ctx types.RuleContext, processInstanceID, processID, tenantID, assignee string, variables map[string]interface{}, dueDate *time.Time, reason string) error {
 	desc := n.TaskDescription
 	vars := serializeVariables(variables)
 	task := &model.WfTask{
@@ -132,6 +135,7 @@ func (n *UserTaskNode) createSingleTask(ctx types.RuleContext, processInstanceID
 		TaskName:   n.GetSelfName(),
 		ToUsers:    []string{assignee},
 		FromUser:   operatorFromCtx(ctx.GetContext()),
+		Reason:     reason,
 		Timestamp:  time.Now(),
 	})
 	return nil
@@ -242,7 +246,7 @@ func (n *UserTaskNode) createClaimTask(ctx types.RuleContext, processInstanceID,
 				_ = n.TaskService.DeleteTask(ctx.GetContext(), service.SystemActor(), taskID, "candidate write failed")
 				return fmt.Errorf("failed to add role candidates for task %s: %w", taskID, cErr)
 			}
-			n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, filtered, resolveRoleMembers)
+			n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, filtered, resolveRoleMembers, "")
 		}
 	}
 	// dept 候选组：落库 department 候选，claim 时由 GetTaskCandidates 展开部门成员。
@@ -258,7 +262,7 @@ func (n *UserTaskNode) createClaimTask(ctx types.RuleContext, processInstanceID,
 				_ = n.TaskService.DeleteTask(ctx.GetContext(), service.SystemActor(), taskID, "candidate write failed")
 				return fmt.Errorf("failed to add dept candidates for task %s: %w", taskID, cErr)
 			}
-			n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, filtered, resolveDeptMembers)
+			n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, filtered, resolveDeptMembers, "")
 		}
 	}
 	return nil
@@ -267,7 +271,8 @@ func (n *UserTaskNode) createClaimTask(ctx types.RuleContext, processInstanceID,
 // notifyCandidateCreated 展开候选成员快照，fire CandidateCreated 通知候选成员有新待认领任务。
 // resolveMembers 决定按候选 ID（角色或部门）展开成员的方式；IdentityService 未注入时为 nil，跳过通知。
 // 创建时刻成员快照；创建后新加入的成员靠待办列表自然发现。
-func (n *UserTaskNode) notifyCandidateCreated(ctx types.RuleContext, taskID, processInstanceID, processID, tenantID string, candidateIDs []string, resolveMembers memberResolverFunc) {
+// reason 非空时随事件透传（兜底路径注明转交缘由）。
+func (n *UserTaskNode) notifyCandidateCreated(ctx types.RuleContext, taskID, processInstanceID, processID, tenantID string, candidateIDs []string, resolveMembers memberResolverFunc, reason string) {
 	if resolveMembers == nil || len(candidateIDs) == 0 {
 		return
 	}
@@ -305,14 +310,21 @@ func (n *UserTaskNode) notifyCandidateCreated(ctx types.RuleContext, taskID, pro
 		TaskName:   n.GetSelfName(),
 		ToUsers:    toUsers,
 		FromUser:   operatorFromCtx(ctx.GetContext()),
+		Reason:     reason,
 		Timestamp:  time.Now(),
 	})
 }
 
-// createCountersignTasks 创建会签任务（会签规则解析在 service 层完成）
-func (n *UserTaskNode) createCountersignTasks(ctx types.RuleContext, processInstanceID, processID, tenantID string, assignees []string, variables map[string]interface{}, dueDate *time.Time) error {
+// createCountersignTasks 创建会签任务（会签规则解析在 service 层完成）。
+// approvalRuleOverride 非空时覆盖节点配置的阈值规则落库（兜底自动通过的合成
+// 单票结构用它固定 1 票即过，见 createAutoApproveTask）。
+func (n *UserTaskNode) createCountersignTasks(ctx types.RuleContext, processInstanceID, processID, tenantID string, assignees []string, variables map[string]interface{}, dueDate *time.Time, approvalRuleOverride string) error {
 	desc := n.TaskDescription
 	vars := serializeVariables(variables)
+	rule := n.approvalRule
+	if approvalRuleOverride != "" {
+		rule = approvalRuleOverride
+	}
 
 	// 创建主任务
 	mainTask := &model.WfTask{
@@ -325,7 +337,7 @@ func (n *UserTaskNode) createCountersignTasks(ctx types.RuleContext, processInst
 		Status:            string(enums.TaskStatusActive),
 		Variables:         &vars,
 		ApprovalType:      n.Config.ApproveMode,
-		ApprovalRule:      &n.approvalRule,
+		ApprovalRule:      &rule,
 		TenantID:          tenantID,
 		FormKey:           formKeyPtr(n.Config.FormKey),
 		CreatedBy:         constants.UserSystem,
@@ -339,7 +351,7 @@ func (n *UserTaskNode) createCountersignTasks(ctx types.RuleContext, processInst
 	}
 
 	// 子任务创建失败时删除主任务，避免残留无子任务的主任务使流程卡死
-	if err := n.TaskService.CreateCountersignSubTasks(ctx.GetContext(), taskID, assignees, n.approvalRule); err != nil {
+	if err := n.TaskService.CreateCountersignSubTasks(ctx.GetContext(), taskID, assignees, rule); err != nil {
 		_ = n.TaskService.DeleteTask(ctx.GetContext(), service.SystemActor(), taskID, "rollback countersign main task")
 		return fmt.Errorf("failed to create countersign sub tasks: %w", err)
 	}

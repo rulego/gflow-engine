@@ -52,6 +52,11 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 	if err := s.ensureTargetUserInTenant(ctx, task, newAssignee, "reassign"); err != nil {
 		return "", err
 	}
+	// 设计器动作开关校验放在锁外：actionPermissions 是定义版本上的静态配置，
+	// 无 TOCTOU 问题；而解析要查实例/定义，放事务内会拉长行锁持有时间
+	if err := s.requireActionEnabled(ctx, task, "reassign"); err != nil {
+		return "", err
+	}
 
 	instanceID := ""
 	if task.ProcessInstanceID != nil {
@@ -110,9 +115,7 @@ func (s *TaskServiceImpl) reassignInternal(ctx context.Context, scope *InstanceS
 		return nil, "", fmt.Errorf("%w: task", ErrNotFound)
 	}
 
-	if err := s.requireActionEnabled(ctx, task, "reassign"); err != nil {
-		return nil, "", err
-	}
+	// 设计器动作开关已在锁外校验（requireActionEnabled），这里只重校状态
 	if task.Status != string(enums.TaskStatusActive) {
 		return nil, "", fmt.Errorf("only active tasks can be reassigned, current status: %s: %w", task.Status, ErrValidation)
 	}
@@ -132,7 +135,25 @@ func (s *TaskServiceImpl) reassignInternal(ctx context.Context, scope *InstanceS
 	if err := taskDAO.Update(ctx, task); err != nil {
 		return nil, "", fmt.Errorf("failed to persist reassign: %w", err)
 	}
+	// 强制改派以系统评论留痕，随审批记录天然可见（操作人=改派管理员）。与改派同
+	// 事务原子落库。不写 hi_task：任务此刻仍 active，插历史行会在实例归档时产生
+	// 重复行/主键冲突。
+	comment := fmt.Sprintf("强制改派：原办理人 %s → 新办理人 %s", displayAssignee(oldAssignee), newAssignee)
+	if reason != "" {
+		comment += "；原因：" + reason
+	}
+	if cErr := s.recordApprovalComment(ctx, scope, task, operatorID, comment); cErr != nil {
+		return nil, "", fmt.Errorf("failed to record reassign comment: %w", cErr)
+	}
 	return task, oldAssignee, nil
+}
+
+// displayAssignee 改派评论里的原办理人展示（未签收任务无办理人，占位说明）。
+func displayAssignee(assignee string) string {
+	if assignee == "" {
+		return "（未签收）"
+	}
+	return assignee
 }
 
 // applyReassign 把 reassign 元数据写入 task.Variables 并更新内存中的 assignee/审计字段。

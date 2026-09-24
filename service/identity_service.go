@@ -151,6 +151,15 @@ type TenantMembershipBatchChecker interface {
 	AreUsersInTenant(ctx context.Context, tenantID string, userIDs []string) (map[string]bool, error)
 }
 
+// TenantAdminResolver IdentityService 的可选扩展接口：宿主实现后，审批节点配置
+// emptyApproverPolicy=tenant_admin（缺省）且审批人解析为空时，引擎经此取该租户的
+// 管理员用户作为兜底审批人。引擎不含用户目录、不认识"租户管理员"概念，未实现或
+// 返回空时按 park（挂起待指派）降级，不失败。
+type TenantAdminResolver interface {
+	// GetTenantAdminUserIDs 获取指定租户的管理员用户 ID 列表（仅启用状态）
+	GetTenantAdminUserIDs(ctx context.Context, tenantID string) ([]string, error)
+}
+
 // GetUserFromCtx 从 ctx 取出 bindActor 绑定的操作人（*Actor）；未绑定返回 nil。
 func GetUserFromCtx(ctx context.Context) *Actor {
 	userV := ctx.Value(constants.KeyCurrentUser)

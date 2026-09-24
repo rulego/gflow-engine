@@ -65,6 +65,11 @@ type UserTaskNodeConfiguration struct {
 	// delegateToManager（转交直接上级）/delegateToDeptManager（转交部门负责人）
 	SelfApproval string `json:"selfApproval"`
 
+	// EmptyApproverPolicy 审批人解析为空时的兜底策略（与驳回策略同级，节点级生效）：
+	// tenant_admin（缺省，转交租户管理员）/auto_approve（自动通过，以系统身份记录并推进）/
+	// park（挂起待指派，任务照建等待管理员直接指派或补候选池）
+	EmptyApproverPolicy string `json:"emptyApproverPolicy"`
+
 	// Timeout 超时处理策略：到期时间相对每个任务创建时刻的时长，到期后由宿主
 	// 逾期巡检（overdue sweeper）按 Action 处理。
 	Timeout *TimeoutPolicy `json:"timeout,omitempty"`
@@ -165,6 +170,10 @@ func (n *UserTaskNode) Init(ruleConfig types.Config, configuration types.Configu
 		logrus.Warnf("userTask node %s has unknown reject.strategy %q; will terminate as fallback at runtime", n.GetSelfId(), n.Config.Reject.Strategy)
 		n.Config.Reject.Strategy = RejectStrategyTerminate
 	}
+	if !isValidEmptyApproverPolicy(n.Config.EmptyApproverPolicy) {
+		logrus.Warnf("userTask node %s has unknown emptyApproverPolicy %q; fallback to tenant_admin", n.GetSelfId(), n.Config.EmptyApproverPolicy)
+		n.Config.EmptyApproverPolicy = EmptyApproverPolicyTenantAdmin
+	}
 	// 会签阈值规则串：落库到 wf_task.approval_rule 供 service 层阈值判定复用
 	n.approvalRule = n.Config.approvalRuleJSON()
 	// 预编译表达式模板，提高运行时性能
@@ -219,6 +228,8 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 		// 调用——完成动作经 AfterCommit→ExecuteNext 重入本节点重新拿锁，
 		// taskOpMutex 非重入，锁内调用会死锁。
 		n.autoApproveOwnerTasks(ctx, msg, processInstanceID)
+		// 审批人为空自动通过（emptyApproverPolicy=auto_approve）：同样锁外执行
+		n.autoApproveEmptyApproverTasks(ctx, msg, processInstanceID)
 		// 任务创建后，流程暂停等待用户操作，调用DoOnEnd结束当前节点执行
 		logrus.Debugf("User tasks created for node %s, waiting for completion", n.GetSelfId())
 		ctx.DoOnEnd(msg, nil, "")
@@ -297,7 +308,7 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 						taskVars[constants.KeySequentialAssignees] = assignees
 						// 每个后续子任务独立求到期时间：timeout 相对各自创建时刻，
 						// 与首个任务（createUserTasks）口径一致
-						createErr = n.createSingleTask(ctx, processInstanceID, processID, tenantID, assignees[c], taskVars, n.resolveDueDate())
+						createErr = n.createSingleTask(ctx, processInstanceID, processID, tenantID, assignees[c], taskVars, n.resolveDueDate(), "")
 						advanced = createErr == nil
 					}
 				}()
@@ -310,6 +321,7 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 					// 发起人自动通过：顺序推进创建的后续任务同样命中发起人时立即完成
 					//（锁段已退出，完成后经 AfterCommit→ExecuteNext 重入推进下一环）
 					n.autoApproveOwnerTasks(ctx, msg, processInstanceID)
+					n.autoApproveEmptyApproverTasks(ctx, msg, processInstanceID)
 					ctx.DoOnEnd(msg, nil, "")
 					return
 				}

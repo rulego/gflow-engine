@@ -147,7 +147,18 @@ func reassignTestDB(t *testing.T) *dao.TaskDAO {
 		updated_by TEXT,
 		updated_at DATETIME
 	)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS wf_task_comment (
+		id TEXT PRIMARY KEY,
+		task_id TEXT,
+		process_instance_id TEXT,
+		tenant_id TEXT,
+		user_id TEXT,
+		user_name TEXT,
+		content TEXT,
+		created_at DATETIME
+	)`).Error)
 	require.NoError(t, db.Exec("DELETE FROM wf_task").Error)
+	require.NoError(t, db.Exec("DELETE FROM wf_task_comment").Error)
 	return dao.NewTaskDAOWithQuery(query.Use(db))
 }
 
@@ -207,7 +218,7 @@ func TestReassignTask_EndToEnd(t *testing.T) {
 		got = append(got, evt)
 		mu.Unlock()
 	}
-	svc := &TaskServiceImpl{taskDAO: d, workflowEngine: &reassignListenerEngine{listener: listener}}
+	svc := &TaskServiceImpl{taskDAO: d, idGenerator: NewIDGenerator(), workflowEngine: &reassignListenerEngine{listener: listener}}
 
 	old, err := svc.Reassign(ctx, Actor{UserID: "admin1", TenantID: "t1", WorkflowAdmin: true}, "task-e2e", "userB", "负载调整")
 	require.NoError(t, err)
@@ -227,6 +238,21 @@ func TestReassignTask_EndToEnd(t *testing.T) {
 	require.Equal(t, "负载调整", vars["reassign_reason"])
 	_, hasTime := vars["reassign_time"]
 	require.True(t, hasTime, "reassign_time key present")
+
+	// 强制改派同步落系统评论（审批记录可见）：含原/新办理人与原因、操作人=改派管理员
+	var comment struct {
+		Content string
+		UserID  string
+	}
+	scanErr := d.Query.WfTaskComment.WithContext(ctx).
+		Where(d.Query.WfTaskComment.TaskID.Eq("task-e2e")).
+		Scan(&comment)
+	require.NoError(t, scanErr)
+	require.Contains(t, comment.Content, "强制改派")
+	require.Contains(t, comment.Content, "userA")
+	require.Contains(t, comment.Content, "userB")
+	require.Contains(t, comment.Content, "负载调整")
+	require.Equal(t, "admin1", comment.UserID)
 
 	// 校验监听器收到 TaskEventForwarded。事件在独立 goroutine 中异步派发，必须轮询等待。
 	deadline := time.Now().Add(2 * time.Second)

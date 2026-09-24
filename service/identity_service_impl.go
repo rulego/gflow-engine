@@ -26,6 +26,9 @@ type IdentityServiceImpl struct {
 	userDept    map[string]string   // userID -> departmentID
 	deptManager map[string]string   // departmentID -> managerID
 	roleUsers   map[string][]string // roleID -> userIDs
+	// tenantAdminIDs 空审批人兜底（emptyApproverPolicy=tenant_admin）的管理员名单
+	// （仅测试/本地调试配置；生产由宿主实现 TenantAdminResolver）
+	tenantAdminIDs []string
 }
 
 // NewIdentityService 创建 IdentityService 的 Mock 实现（仅测试用）
@@ -360,6 +363,16 @@ func (s *IdentityServiceImpl) AddMockUserManager(userID, managerUserID string) {
 		s.userManager = make(map[string]string)
 	}
 	s.userManager[userID] = managerUserID
+}
+
+// SetMockTenantAdminIDs 配置 GetTenantAdminUserIDs 的返回名单（仅测试/本地调试用）
+func (s *IdentityServiceImpl) SetMockTenantAdminIDs(ids []string) {
+	s.tenantAdminIDs = ids
+}
+
+// GetTenantAdminUserIDs 实现 TenantAdminResolver：返回 SetMockTenantAdminIDs 配置的名单
+func (s *IdentityServiceImpl) GetTenantAdminUserIDs(_ context.Context, _ string) ([]string, error) {
+	return s.tenantAdminIDs, nil
 }
 
 // IsMockIdentity is a sentinel method that marks this implementation as the
