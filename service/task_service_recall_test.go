@@ -1064,7 +1064,7 @@ func TestRecallVarHelpers(t *testing.T) {
 	}
 	require.True(t, recallCountExhausted(bumped))
 	require.False(t, recallCountExhausted(secFixStrPtr(vars)))
-	require.False(t, recallCountExhausted(secFixStrPtr("not-json")), "损坏变量按未达上限处理")
+	require.True(t, recallCountExhausted(secFixStrPtr("not-json")), "损坏变量按已达上限处理")
 
 	stripped := stripCountersignMergedKeys(secFixStrPtr(`{"approved":false,"k":"v"}`))
 	require.Contains(t, *stripped, `"k":"v"`)
@@ -1115,4 +1115,23 @@ func TestCheckRecallPath_AutomationOnAnyBranchRejected(t *testing.T) {
 	)
 	err := checkRecallPath(chain, "t")
 	require.Error(t, err, "任一分支走向上有自动化节点都应拒绝")
+}
+
+// ---- 保留键解析 fail-closed ----
+// 变量损坏时无法证明「未代审/未达上限」，按带标记/已达上限处理；空变量不受影响。
+func TestRecallReservedVarGuardsFailClosed(t *testing.T) {
+	corrupt := "{not-json"
+	marked := `{"proxy_operator":"admin"}`
+	unmarked := `{"amount":100}`
+	counted := `{"_recallCount":1}`
+	require.True(t, hasProxyMark(&model.WfTask{Variables: &corrupt}), "损坏变量按带代审标记处理，收回被拦")
+	require.True(t, hasProxyMark(&model.WfTask{Variables: &marked}))
+	require.False(t, hasProxyMark(&model.WfTask{Variables: &unmarked}))
+	require.False(t, hasProxyMark(&model.WfTask{}))
+	require.False(t, hasProxyMark(nil))
+
+	require.True(t, recallCountExhausted(&corrupt), "损坏变量按已达上限处理，收回被拦")
+	require.False(t, recallCountExhausted(&counted))
+	require.False(t, recallCountExhausted(nil))
+	require.False(t, recallCountExhausted(secFixStrPtr("{}")))
 }

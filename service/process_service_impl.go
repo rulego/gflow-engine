@@ -95,6 +95,12 @@ func (s *ProcessServiceImpl) Update(ctx context.Context, actor Actor, process *m
 		if issues := ValidateChainConfigurations(chain); len(issues) > 0 {
 			return fmt.Errorf("invalid node configuration: %w: %s", ErrValidation, FormatConfigIssues(issues))
 		}
+		// 直派审批人存在/启用校验：与 create 同口径（租户以存量定义为准）
+		if s.engine != nil {
+			if err := ValidateDirectAssignees(ctx, s.engine.GetIdentityService(), existingProcess.TenantID, chain); err != nil {
+				return err
+			}
+		}
 	}
 	// 保持原 processKey（忽略传入值，防破坏版本族）
 	process.ProcessKey = existingProcess.ProcessKey
@@ -205,6 +211,13 @@ func (s *ProcessServiceImpl) create(ctx context.Context, process *model.WfProces
 	// 运行期才炸，部署期拦截并定位到具体节点。
 	if issues := ValidateChainConfigurations(chain); len(issues) > 0 {
 		return nil, fmt.Errorf("invalid node configuration: %w: %s", ErrValidation, FormatConfigIssues(issues))
+	}
+	// 直派审批人存在/启用校验（宿主实现 ActiveUserChecker 时生效）：幽灵/停用
+	// 直派不经候选池展开也不命中停用兜底链，落库即成死任务，部署期拦下。
+	if s.engine != nil {
+		if err := ValidateDirectAssignees(ctx, s.engine.GetIdentityService(), process.TenantID, chain); err != nil {
+			return nil, err
+		}
 	}
 
 	// 兜底归一化（一次性，部署/创建时）：

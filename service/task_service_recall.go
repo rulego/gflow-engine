@@ -702,7 +702,7 @@ func checkRecallPath(chain *types.RuleChain, fromDefKey string) error {
 }
 
 // buildRecalledTask 从 T 的快照重建收回人的待审任务。到期时间沿用 T（与加签
-// 继承同口径）；variables 剔除 approved/comment 约定键——Complete 会消费它们，
+// 继承一致）；variables 剔除 approved/comment 约定键——Complete 会消费它们，
 // 残留会让重建任务带着旧投票结果被静默自动通过；_sequentialAssignees 缓存
 // 保留，顺序会签推进依赖。
 func buildRecalledTask(gen IDGenerator, t *model.WfTask, userID, username string, now time.Time) *model.WfTask {
@@ -787,14 +787,15 @@ func stripReservedMarks(vars *string) *string {
 }
 
 // hasProxyMark 任务变量是否带管理员代审标记（ProxyAudit 写入 proxy_operator）。
-// 解析失败按无标记处理：其余守卫照常兜底，不让损坏数据卡死正常收回。
+// 解析失败按带标记处理：变量损坏时无法证明未被代审，放行收回会覆盖代审事实。
+// 变量为空即未代审（ProxyAudit 必写标记），不受影响。
 func hasProxyMark(t *model.WfTask) bool {
 	if t == nil || t.Variables == nil || *t.Variables == "" {
 		return false
 	}
 	m, err := ParseVariablesJSON(t.Variables)
 	if err != nil {
-		return false
+		return true
 	}
 	if v, ok := m[constants.VarsProxyOperator].(string); ok {
 		return v != ""
@@ -827,12 +828,15 @@ func listAllInstanceTasksTx(ctx context.Context, taskDAO *dao.TaskDAO, instanceI
 	}
 }
 
-// recallCountExhausted 实例累计收回次数是否已达上限。解析失败按未达上限处理：
-// 损坏变量不该把正常收回卡死。
+// recallCountExhausted 实例累计收回次数是否已达上限。解析失败按已达上限处理，
+// 防损坏变量绕过收回上限；变量为空即从未收回，放行。
 func recallCountExhausted(vars *string) bool {
+	if vars == nil || *vars == "" {
+		return false
+	}
 	m, err := ParseVariablesJSON(vars)
 	if err != nil {
-		return false
+		return true
 	}
 	if v, ok := m[constants.VarsRecallCount].(float64); ok {
 		return int(v) >= constants.MaxRecallCountPerInstance

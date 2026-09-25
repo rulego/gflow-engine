@@ -33,8 +33,8 @@ type Config struct {
 	Logging  *LoggingConfig  `json:"logging" yaml:"logging"`
 	// StrictTenantMembershipCheck 严格模式：宿主注入的 IdentityService 未实现
 	// TenantMembershipChecker 可选接口时，转派目标/startProcess 发起人/ccTask 抄送人的
-	// 跨租户归属校验整体跳过。默认 false 仅记启动告警；置 true 则引擎启动即失败
-	// （fail-fast）。多租户部署建议开启；单租户部署保持默认。
+	// 跨租户归属校验整体跳过。默认 false 仅记启动告警；置 true 则引擎启动即失败。
+	// 多租户部署建议开启；单租户部署保持默认。
 	StrictTenantMembershipCheck bool `json:"strict_tenant_membership_check" yaml:"strict_tenant_membership_check"`
 }
 
