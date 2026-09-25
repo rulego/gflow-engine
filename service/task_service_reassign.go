@@ -69,6 +69,7 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 
 	var oldAssignee string
 	var reassignedTask *model.WfTask
+	var evtProcessName, evtStartUser string
 	reassignFn := func(scope *InstanceScope) error {
 		t, old, err := s.reassignInternal(ctx, scope, taskID, operatorID, newAssignee, reason)
 		if err != nil {
@@ -76,6 +77,10 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 		}
 		oldAssignee = old
 		reassignedTask = t
+		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
+			evtProcessName = inst.Name
+			evtStartUser = inst.StartUserID
+		}
 		return nil
 	}
 
@@ -91,16 +96,19 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 	// 事务提交后发转办事件（沿用 TaskEventForwarded，避免新增事件类型）
 	if reassignedTask != nil && s.workflowEngine.GetTaskEventListener() != nil {
 		DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), TaskEvent{
-			Type:       TaskEventForwarded,
-			TaskID:     reassignedTask.ID,
-			InstanceID: instanceID,
-			ProcessID:  reassignedTask.ProcessID,
-			TenantID:   reassignedTask.TenantID,
-			TaskName:   reassignedTask.Name,
-			ToUsers:    []string{newAssignee},
-			FromUser:   operatorID,
-			Reason:     reason,
-			Timestamp:  time.Now(),
+			Type:                TaskEventForwarded,
+			TaskID:              reassignedTask.ID,
+			InstanceID:          instanceID,
+			ProcessID:           reassignedTask.ProcessID,
+			TenantID:            reassignedTask.TenantID,
+			ProcessName:         evtProcessName,
+			StartUserID:         evtStartUser,
+			InstanceStatusAfter: reassignedTask.Status,
+			TaskName:            reassignedTask.Name,
+			ToUsers:             []string{newAssignee},
+			FromUser:            operatorID,
+			Reason:              reason,
+			Timestamp:           time.Now(),
 		}, ctx)
 	}
 

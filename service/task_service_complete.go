@@ -355,18 +355,21 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 				evtInst := *task.ProcessInstanceID
 				scope.AfterCommit(func() error {
 					DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), TaskEvent{
-						Type:       TaskEventApproved,
-						TaskID:     task.ID,
-						TaskDefKey: task.TaskDefKey,
-						InstanceID: evtInst,
-						ProcessID:  task.ProcessID,
-						TenantID:   instance.TenantID,
-						TaskName:   task.Name,
-						ToUsers:    []string{instance.StartUserID},
-						FromUser:   approverID,
-						Source:     EventSourceFromCtx(ctx),
-						Reason:     request.Comment,
-						Timestamp:  time.Now(),
+						Type:                TaskEventApproved,
+						TaskID:              task.ID,
+						TaskDefKey:          task.TaskDefKey,
+						InstanceID:          evtInst,
+						ProcessID:           task.ProcessID,
+						TenantID:            instance.TenantID,
+						ProcessName:         instance.Name,
+						StartUserID:         instance.StartUserID,
+						InstanceStatusAfter: instance.Status,
+						TaskName:            task.Name,
+						ToUsers:             []string{instance.StartUserID},
+						FromUser:            approverID,
+						Source:              EventSourceFromCtx(ctx),
+						Reason:              request.Comment,
+						Timestamp:           time.Now(),
 					}, ctx)
 					return nil
 				})
@@ -502,19 +505,29 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 				evtComment := request.Comment
 				evtFrom := commentOperator
 				evtOnBehalf := OnBehalfOfFromCtx(ctx)
+				// 该事件仅在节点未定局时派发，实例必为运行中；流程名/发起人一并
+				// 携带，listener 免回查
+				evtProcessName, evtStartUser := "", ""
+				if inst, iErr := scope.Instances().Get(ctx, evtInstance); iErr == nil && inst != nil {
+					evtProcessName = inst.Name
+					evtStartUser = inst.StartUserID
+				}
 				scope.AfterCommit(func() error {
 					DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), TaskEvent{
-						Type:       TaskEventRejected,
-						TaskID:     evtTaskID,
-						TaskDefKey: evtDefKey,
-						InstanceID: evtInstance,
-						ProcessID:  evtProcessID,
-						TenantID:   evtTenantID,
-						TaskName:   evtTaskName,
-						FromUser:   evtFrom,
-						OnBehalfOf: evtOnBehalf,
-						Reason:     evtComment,
-						Timestamp:  time.Now(),
+						Type:                TaskEventRejected,
+						TaskID:              evtTaskID,
+						TaskDefKey:          evtDefKey,
+						InstanceID:          evtInstance,
+						ProcessID:           evtProcessID,
+						TenantID:            evtTenantID,
+						ProcessName:         evtProcessName,
+						StartUserID:         evtStartUser,
+						InstanceStatusAfter: string(enums.InstanceStatusActive),
+						TaskName:            evtTaskName,
+						FromUser:            evtFrom,
+						OnBehalfOf:          evtOnBehalf,
+						Reason:              evtComment,
+						Timestamp:           time.Now(),
 					}, ctx)
 					return nil
 				})
