@@ -1175,6 +1175,7 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 					TenantID:   updatedInstance.TenantID,
 					ToUsers:    toUsers,
 					FromUser:   fromUser,
+					Source:     EventSourceFromCtx(ctx),
 					Timestamp:  time.Now(),
 				}
 				scope.AfterCommit(func() error {
