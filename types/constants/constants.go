@@ -115,15 +115,12 @@ const (
 	NodeTypeJsSwitch      = "jsSwitch"
 	NodeTypeMsgTypeSwitch = "msgTypeSwitch"
 	NodeTypeInclusive     = "inclusive"
-	// NodeTypeRouteGateway 遗留路由网关：从未注册，装载期由
-	// WfProcess.MigrateRouteGateway 迁移为 switch
-	NodeTypeRouteGateway = "routeGateway"
-	NodeTypeStart        = "start"
-	NodeTypeServiceTask  = "serviceTask"
-	NodeTypeUserTask     = TaskTypeUserTask
-	NodeTypeAIAgent      = "aiAgent"
-	NodeTypeDelay        = TaskTypeDelay
-	NodeTypeSubProcess   = "subProcess"
+	NodeTypeStart         = "start"
+	NodeTypeServiceTask   = "serviceTask"
+	NodeTypeUserTask      = TaskTypeUserTask
+	NodeTypeAIAgent       = "aiAgent"
+	NodeTypeDelay         = TaskTypeDelay
+	NodeTypeSubProcess    = "subProcess"
 )
 
 const (

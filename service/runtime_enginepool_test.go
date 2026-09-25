@@ -301,28 +301,6 @@ func TestRuntimeService_TenantPool_SameTenantAliasOverwrite(t *testing.T) {
 	assert.True(t, ok, "旧版主键仍在池中（需显式驱逐）")
 }
 
-// initExecution 装载期迁移：遗留 routeGateway DSL（引擎未注册该类型，直接装载必失败）
-// 经 MigrateRouteGateway 转为 switch 后可正常装载，且 Default 出边保持指向原 Success 后继。
-func TestInitExecution_MigratesLegacyRouteGateway(t *testing.T) {
-	rs, _ := newPoolTestRS(t)
-	def := `{"ruleChain":{"id":"legacy_route","name":"t","root":true},"metadata":{
-	  "nodes":[
-	    {"id":"n1","type":"functions","name":"start marker","configuration":{"functionName":"pooltest_noop"}},
-	    {"id":"route1","type":"routeGateway","name":"路由","configuration":{"routeList":[{"title":"A","routeKey":"r1","conditionList":[]}]}},
-	    {"id":"n2","type":"functions","name":"end marker","configuration":{"functionName":"pooltest_noop"}}],
-	  "connections":[
-	    {"fromId":"n1","toId":"route1","type":"Success"},
-	    {"fromId":"route1","toId":"n2","type":"Success"}]}}`
-	engine, err := rs.initExecution("t1", "p_legacy_route", def)
-	if err != nil {
-		t.Fatalf("initExecution should load migrated routeGateway DSL, got: %v", err)
-	}
-	if engine == nil {
-		t.Fatal("engine should not be nil")
-	}
-}
-
-// TestEnginePool_InvalidateExecutionCache: Update/Delete 就地改 definition_json 后，
 // InvalidateExecutionCache 必须驱逐注册表内所有服务实例的池条目（默认池+各租户池）
 // 并触发跨副本广播钩子；ApplyRemoteExecutionInvalidate 只清本地、不再广播（防循环）；
 // 驱逐后 GetExecution 按需自愈重装载。

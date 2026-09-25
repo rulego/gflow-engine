@@ -207,12 +207,11 @@ func (s *RuntimeServiceImpl) initExecution(tenantID, processID, processDef strin
 		s.processTenants.Store(processID, tenantID)
 	}
 	// 引擎装载期兜底（内存态，不回写 DB）：部署链路（ProcessService.create）已做
-	// MigrateRouteGateway/EnsureEndNode/EnsureSwitchDefaultEdges 归一，但已部署的定义
-	// 不会重新走部署链——遗留 routeGateway / 缺 end 节点 / 缺 Default 兜底边的定义
-	// 在此处对副本做同样处理（先迁移再补 end 再补 Default，Default 边才能指向新
-	// end），保证在途流程实例也能正常装载/完结/不卡死。
+	// EnsureEndNode/EnsureSwitchDefaultEdges 归一，但已部署的定义不会重新走部署链
+	// ——缺 end 节点 / 缺 Default 兜底边的定义在此处对副本做同样处理（先补 end
+	// 再补 Default，Default 边才能指向新 end），保证在途流程实例也能正常装载/
+	// 完结/不卡死。
 	defCopy := &model.WfProcess{DefinitionJSON: processDef}
-	defCopy.MigrateRouteGateway()
 	defCopy.EnsureEndNode()
 	defCopy.EnsureSwitchDefaultEdges()
 	processDef = defCopy.DefinitionJSON

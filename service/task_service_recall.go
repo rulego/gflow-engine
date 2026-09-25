@@ -30,7 +30,6 @@ var recallTransparentNodeTypes = map[string]bool{
 	constants.NodeTypeJsSwitch:      true,
 	constants.NodeTypeMsgTypeSwitch: true,
 	constants.NodeTypeInclusive:     true,
-	constants.NodeTypeRouteGateway:  true,
 	"condition":                     true,
 	"fork":                          true,
 	"join":                          true,
