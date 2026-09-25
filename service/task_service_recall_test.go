@@ -660,7 +660,7 @@ func TestRecall_SweepSparesPeerAddSignChildren(t *testing.T) {
 // 显式归入穿越集并在此表补行。
 func TestRecall_NodeTypeClassification(t *testing.T) {
 	blocking := []string{"serviceTask", "httpCall", "automation", "aiAgent", "delay", "subProcess", "startProcess"}
-	transparent := []string{"switch", "jsSwitch", "msgTypeSwitch", "inclusive", "condition", "routeGateway", "fork", "join", "ccTask", "start", "startTask"}
+	transparent := []string{"switch", "jsSwitch", "msgTypeSwitch", "inclusive", "condition", "fork", "join", "ccTask", "start", "startTask"}
 
 	newFixture := func(t *testing.T, midType string) (*query.Query, context.Context, *TaskServiceImpl, string) {
 		t.Helper()

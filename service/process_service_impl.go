@@ -221,16 +221,11 @@ func (s *ProcessServiceImpl) create(ctx context.Context, process *model.WfProces
 	}
 
 	// 兜底归一化（一次性，部署/创建时）：
-	// 0. MigrateRouteGateway：遗留 routeGateway（引擎未注册，装载必失败）转 switch，
-	//    原 Success 后继改为 Default 出边保持行为等价。设计器加载侧也有同构迁移
-	//    （前端 migrateRouteGatewayToSwitch，生成完整分支）；此处兜底不经设计器
-	//    重新部署的存量 DSL（如 API 直接部署/导入）。
 	// 1. EnsureEndNode：设计器早期版本/外部导入的 DSL 可能没有 end 节点——引擎只在
 	//    end 节点触发 CompleteProcessInstance，缺 end 的流程所有任务完成后实例永远
 	//    active。无 end 时自动补一个并把所有"无出边"的尾节点连过去。
 	// 2. 为缺 Default 出边的 switch 补一条 Default→end 兜底边，防止非穷尽 switch
 	//    无 case 命中时实例卡死。先补 end 再补 Default，Default 边才能指向新 end。
-	process.MigrateRouteGateway()
 	process.EnsureEndNode()
 	process.EnsureSwitchDefaultEdges()
 
