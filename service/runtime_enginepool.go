@@ -90,7 +90,7 @@ func RecentlyUpdatedProcessIDs(ctx context.Context, since time.Time) ([]string, 
 		if !ok || s == nil {
 			return true
 		}
-		db := s.processDAO.Query.WfProcess.UnderlyingDB().WithContext(ctx)
+		db := s.processDAO.Underlying().WfProcess.UnderlyingDB().WithContext(ctx)
 		if err := db.Model(&model.WfProcess{}).Where("updated_at > ?", since).Pluck("id", &ids).Error; err != nil {
 			lastErr = err
 			return true
@@ -177,7 +177,7 @@ func (s *RuntimeServiceImpl) poolFor(tenantID string) types.RuleEnginePool {
 // 只能在事务外调用；事务内（如 TerminateInTx）须改用 evictStaleChain 并传入事务 q，
 // 走全局连接会与当前事务互等（SQLite 等单写锁数据库）且读不到未提交的删除结果。
 func (s *RuntimeServiceImpl) EvictStaleChain(ctx context.Context, tenantID, processID string) {
-	s.evictStaleChain(ctx, s.processDAO.Query, tenantID, processID)
+	s.evictStaleChain(ctx, s.processDAO.Underlying(), tenantID, processID)
 }
 
 // evictStaleChain 统一驱逐实现；q 事务外传全局 Query，事务内传事务 tx。

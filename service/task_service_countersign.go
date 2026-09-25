@@ -58,9 +58,9 @@ func (s *TaskServiceImpl) CreateCountersignSubTasks(ctx context.Context, parentT
 		instanceID = *parentTask.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.createCountersignSubTasksInternal(ctx, bareScope(s.taskDAO.Query), parentTaskID, assignees, approvalRule)
+		return s.createCountersignSubTasksInternal(ctx, bareScope(s.taskDAO.Underlying()), parentTaskID, assignees, approvalRule)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.createCountersignSubTasksInternal(ctx, scope, parentTaskID, assignees, approvalRule)
 	})
 }
@@ -144,7 +144,7 @@ func (s *TaskServiceImpl) CheckCountersignSubTaskCompletion(ctx context.Context,
 	if parentTaskID == "" {
 		return false, false, fmt.Errorf("parentTaskID cannot be empty")
 	}
-	return s.checkCountersignSubTaskCompletionInternal(ctx, bareScope(s.taskDAO.Query), parentTaskID, approvalRule)
+	return s.checkCountersignSubTaskCompletionInternal(ctx, bareScope(s.taskDAO.Underlying()), parentTaskID, approvalRule)
 }
 
 // checkCountersignSubTaskCompletionInternal 在指定 scope 上执行会签完成判定。

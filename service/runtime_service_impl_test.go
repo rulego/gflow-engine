@@ -538,7 +538,7 @@ func TestActivateDraftInternal_ReportsDraftStartOnlyOnce(t *testing.T) {
 	// activate 跑一次持锁激活，返回内部判定的「本次是否为草稿激活」
 	activate := func() (bool, error) {
 		var wasDraft bool
-		err := WithInstanceTx(ctx, rs.instanceDAO.Query, "d_twice", func(scope *InstanceScope) error {
+		err := WithInstanceTx(ctx, rs.instanceDAO.Underlying(), "d_twice", func(scope *InstanceScope) error {
 			_, started, err := rs.activateProcessInstanceInternal(ctx, scope, "d_twice")
 			wasDraft = started
 			return err

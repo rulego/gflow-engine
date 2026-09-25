@@ -43,9 +43,9 @@ func (s *TaskServiceImpl) SetAssignee(ctx context.Context, actor Actor, taskID, 
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.setAssigneeInternal(ctx, bareScope(s.taskDAO.Query), taskID, userID)
+		return s.setAssigneeInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, userID)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.setAssigneeInternal(ctx, scope, taskID, userID)
 	})
 }
@@ -114,9 +114,9 @@ func (s *TaskServiceImpl) SetOwner(ctx context.Context, actor Actor, taskID, use
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.setOwnerInternal(ctx, bareScope(s.taskDAO.Query), taskID, userID)
+		return s.setOwnerInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, userID)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.setOwnerInternal(ctx, scope, taskID, userID)
 	})
 }
@@ -186,9 +186,9 @@ func (s *TaskServiceImpl) Delegate(ctx context.Context, actor Actor, taskID, use
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.delegateInternal(ctx, bareScope(s.taskDAO.Query), taskID, userID, reason)
+		return s.delegateInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, userID, reason)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.delegateInternal(ctx, scope, taskID, userID, reason)
 	})
 }
@@ -317,9 +317,9 @@ func (s *TaskServiceImpl) Resolve(ctx context.Context, actor Actor, taskID strin
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.resolveInternal(ctx, bareScope(s.taskDAO.Query), taskID)
+		return s.resolveInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.resolveInternal(ctx, scope, taskID)
 	})
 }
@@ -443,9 +443,9 @@ func (s *TaskServiceImpl) Transfer(ctx context.Context, actor Actor, taskID, toU
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.transferInternal(ctx, bareScope(s.taskDAO.Query), taskID, fromUserID, toUserID, reason)
+		return s.transferInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, fromUserID, toUserID, reason)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.transferInternal(ctx, scope, taskID, fromUserID, toUserID, reason)
 	})
 }

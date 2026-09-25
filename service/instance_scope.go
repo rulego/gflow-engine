@@ -33,39 +33,39 @@ func bareScope(q *query.Query) *InstanceScope {
 	return &InstanceScope{tx: q, bare: true}
 }
 
-// Tasks 返回绑定了当前 tx 的 TaskDAO。
+// Tasks 返回绑定了当前 tx 的任务存储。
 // 每次调用都新建 wrapper（dao.NewTaskDAOWithQuery 只设置一个指针字段，廉价）。
-func (s *InstanceScope) Tasks() *dao.TaskDAO {
+func (s *InstanceScope) Tasks() TaskStore {
 	return dao.NewTaskDAOWithQuery(s.tx)
 }
 
-// Instances 返回绑定了当前 tx 的 InstanceDAO。
-func (s *InstanceScope) Instances() *dao.InstanceDAO {
+// Instances 返回绑定了当前 tx 的实例存储。
+func (s *InstanceScope) Instances() InstanceStore {
 	return dao.NewInstanceDAOWithQuery(s.tx)
 }
 
-// HiTasks 返回绑定了当前 tx 的 HiTaskDAO（历史任务归档）。
-func (s *InstanceScope) HiTasks() *dao.HiTaskDAO {
+// HiTasks 返回绑定了当前 tx 的历史任务存储（归档）。
+func (s *InstanceScope) HiTasks() HiTaskStore {
 	return dao.NewHiTaskDAOWithQuery(s.tx)
 }
 
-// HiInstances 返回绑定了当前 tx 的 HiInstanceDAO（历史实例归档）。
-func (s *InstanceScope) HiInstances() *dao.HiInstanceDAO {
+// HiInstances 返回绑定了当前 tx 的历史实例存储（归档）。
+func (s *InstanceScope) HiInstances() HiInstanceStore {
 	return dao.NewHiInstanceDAOWithQuery(s.tx)
 }
 
-// Processes 返回绑定了当前 tx 的 ProcessDAO（流程定义）。
-func (s *InstanceScope) Processes() *dao.ProcessDAO {
+// Processes 返回绑定了当前 tx 的流程定义存储。
+func (s *InstanceScope) Processes() ProcessStore {
 	return dao.NewProcessDAOWithQuery(s.tx)
 }
 
-// TaskAssignees 返回绑定了当前 tx 的 TaskAssigneeDAO（候选校验需在事务内读候选池）。
-func (s *InstanceScope) TaskAssignees() *dao.TaskAssigneeDAO {
+// TaskAssignees 返回绑定了当前 tx 的候选池存储（候选校验须在事务内读）。
+func (s *InstanceScope) TaskAssignees() TaskAssigneeStore {
 	return dao.NewTaskAssigneeDAOWithQuery(s.tx)
 }
 
-// TaskComments 返回绑定了当前 tx 的 TaskCommentDAO（审批意见随审批动作同事务落库）。
-func (s *InstanceScope) TaskComments() *dao.TaskCommentDAO {
+// TaskComments 返回绑定了当前 tx 的评论存储（审批意见随审批动作同事务落库）。
+func (s *InstanceScope) TaskComments() TaskCommentStore {
 	return dao.NewTaskCommentDAOWithQuery(s.tx)
 }
 

@@ -18,9 +18,9 @@ var _ HistoryService = (*HistoryServiceImpl)(nil)
 
 // HistoryServiceImpl HistoryService的实现
 type HistoryServiceImpl struct {
-	hiInstanceDAO *dao.HiInstanceDAO
-	hiTaskDAO     *dao.HiTaskDAO
-	processDAO    *dao.ProcessDAO
+	hiInstanceDAO HiInstanceStore
+	hiTaskDAO     HiTaskStore
+	processDAO    ProcessStore
 }
 
 // NewHistoryService 创建HistoryService实例

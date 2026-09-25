@@ -87,10 +87,10 @@ func (s *TaskServiceImpl) CompleteWithApproval(ctx context.Context, actor Actor,
 	if instanceID == "" {
 		// 没有 instance 关联（孤儿任务）：无行可锁，用 bare scope 跑同样的逻辑；
 		// 其 AfterCommit 回调在 bare scope 上立即内联执行（见 InstanceScope.AfterCommit）。
-		scope := bareScope(s.taskDAO.Query)
+		scope := bareScope(s.taskDAO.Underlying())
 		return s.completeWithApprovalInternal(ctx, scope, request)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.completeWithApprovalInternal(ctx, scope, request)
 	})
 }
