@@ -107,12 +107,11 @@ const autoApproveCountersignRule = `{"type":"any"}`
 // 不变式：落库任务的候选池必须非空——空池任务会被任意同租户用户认领（越权）。
 func (n *UserTaskNode) parkEmptyApproverTask(ctx types.RuleContext, processInstanceID, processID, tenantID string, variables map[string]interface{}, dueDate *time.Time) error {
 	applyFallbackVars(variables, EmptyApproverPolicyPark, approverSummary(&n.Config.Approver), "审批人为空，任务挂起待指派")
-	// 角色/部门节点：候选实体照写，成员展开为空即天然无人可认领。
-	// ID 列表为空的组类型（手写 DSL 可绕过部署期校验）按无组实体处理，
+	// 组池节点：候选实体照写，成员展开为空即天然无人可认领。
+	// 组 ID 全空（手写 DSL 可绕过部署期校验）按无组实体处理，
 	// 否则任务零候选落库、空池可被任意同租户用户认领。
-	if (enums.CandidateType(n.Config.Approver.Type) == enums.CandidateTypeRole && hasNonEmptyID(n.Config.Approver.RoleIds)) ||
-		(enums.CandidateType(n.Config.Approver.Type) == enums.CandidateTypeDept && hasNonEmptyID(n.Config.Approver.DeptIds)) {
-		return n.createClaimTask(ctx, processInstanceID, processID, tenantID, variables, dueDate)
+	if groups := approverPoolGroups(&n.Config.Approver); len(groups) > 0 {
+		return n.createClaimTask(ctx, processInstanceID, processID, tenantID, variables, dueDate, groups)
 	}
 	// 无组实体的节点（发起人自选解析为空等）：落管理员 person 候选，管理员可直接
 	// 认领处理；SPI 不可用时落占位候选封住空池

@@ -24,7 +24,6 @@ import (
 	"github.com/rulego/gflow-engine/service"
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
-	"github.com/rulego/rulego/utils/el"
 	"github.com/rulego/rulego/utils/maps"
 )
 
@@ -113,29 +112,12 @@ func (c *UserTaskNodeConfiguration) Validate() []string {
 		issues = append(issues, fmt.Sprintf(format, args...))
 	}
 
-	if !enums.IsValidCandidateType(enums.CandidateType(c.Approver.Type)) {
-		add("approver.type %q is not supported", c.Approver.Type)
+	// 审批人类型校验走解析策略注册表：内置类型与宿主注册的自定义类型同源，
+	// 未注册的类型在此拦截为不支持。
+	if r := LookupApproverResolver(enums.CandidateType(c.Approver.Type)); r != nil {
+		issues = append(issues, r.Validate(&c.Approver)...)
 	} else {
-		switch enums.CandidateType(c.Approver.Type) {
-		case enums.CandidateTypeUser:
-			if len(c.Approver.UserIds) == 0 {
-				add("approver.userIds is empty")
-			}
-		case enums.CandidateTypeRole:
-			if len(c.Approver.RoleIds) == 0 {
-				add("approver.roleIds is empty")
-			}
-		case enums.CandidateTypeDept:
-			if len(c.Approver.DeptIds) == 0 {
-				add("approver.deptIds is empty")
-			}
-		case enums.CandidateTypeInitiatorSelect:
-			if strings.TrimSpace(c.Approver.Expression) == "" {
-				add("approver.expression is empty")
-			} else if _, err := el.NewTemplate(strings.TrimSpace(c.Approver.Expression)); err != nil {
-				add("approver.expression compile: %v", err)
-			}
-		}
+		add("approver.type %q is not supported", c.Approver.Type)
 	}
 
 	if !enums.IsValidUserTaskApprovalType(enums.ApprovalType(c.ApproveMode)) {
