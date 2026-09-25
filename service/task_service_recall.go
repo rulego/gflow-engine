@@ -238,26 +238,7 @@ func (s *TaskServiceImpl) rearchiveCompletedInstance(ctx context.Context, q *que
 			return fmt.Errorf("failed to delete revived instance: %w", err)
 		}
 		// hi 参数是运行表模型，归档表按完结归档的字段映射重建
-		hiRow := &model.WfHiInstance{
-			ID:              hi.ID,
-			ProcessID:       hi.ProcessID,
-			BusinessKey:     hi.BusinessKey,
-			Name:            hi.Name,
-			Status:          hi.Status,
-			Variables:       hi.Variables,
-			CurrentActivity: hi.CurrentActivity,
-			Priority:        hi.Priority,
-			ParentID:        hi.ParentID,
-			TenantID:        hi.TenantID,
-			CreatedBy:       hi.CreatedBy,
-			CreatedAt:       hi.CreatedAt,
-			UpdatedBy:       hi.UpdatedBy,
-			UpdatedAt:       hi.UpdatedAt,
-			EndReason:       hi.EndReason,
-			Duration:        hi.Duration,
-			EndedAt:         hi.EndedAt,
-			StartUserID:     hi.StartUserID,
-		}
+		hiRow := instanceToHiInstance(hi)
 		if err := tx.WfHiInstance.WithContext(ctx).Create(hiRow); err != nil {
 			return fmt.Errorf("failed to restore archived instance: %w", err)
 		}
