@@ -171,3 +171,26 @@ func TestGetUserFromCtx_WrongType(t *testing.T) {
 		t.Error("wrong type should return nil")
 	}
 }
+
+// MySQL 内置方言强制 clientFoundRows：DAO 层以 RowsAffected==0 判定行不存在，
+// MySQL 默认只计值变化行会让幂等重试被误报 not found（PG 计 matched rows）。
+func TestMySQLDialect_ForcesClientFoundRows(t *testing.T) {
+	cfg, err := mysqlDSNWithFoundRows("user:pass@tcp(127.0.0.1:3306)/gflow?charset=utf8mb4&parseTime=True")
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	if !cfg.ClientFoundRows {
+		t.Fatal("clientFoundRows 必须强制开启")
+	}
+	// DSN 已带该参数时仍强制为 true，其余参数不受影响
+	cfg, err = mysqlDSNWithFoundRows("user:pass@tcp(127.0.0.1:3306)/gflow?clientFoundRows=false&charset=utf8mb4")
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	if !cfg.ClientFoundRows || cfg.Params["charset"] != "utf8mb4" {
+		t.Fatalf("clientFoundRows=%v charset=%v, want true/utf8mb4", cfg.ClientFoundRows, cfg.Params["charset"])
+	}
+	if _, err := mysqlDSNWithFoundRows("not a valid dsn"); err == nil {
+		t.Fatal("非法 DSN 应返回错误")
+	}
+}
