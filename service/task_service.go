@@ -34,6 +34,10 @@ type TaskService interface {
 	// GetTask 根据任务ID获取任务详情
 	GetTask(ctx context.Context, actor Actor, taskID string) (*model.WfTask, error)
 
+	// GetInstanceEventContext 取实例的事件上下文（流程名/发起人/当前状态），
+	// 供组件派发事件时补齐 TaskEvent 的实例字段；实例不存在返回空串不报错。
+	GetInstanceEventContext(ctx context.Context, instanceID string) (processName, startUserID, status string, err error)
+
 	// GetTaskList 获取任务列表
 	GetTaskList(ctx context.Context, actor Actor, query *dto.TaskQuery) ([]*model.WfTask, int64, error)
 
