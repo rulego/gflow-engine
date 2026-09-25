@@ -360,14 +360,11 @@ func (s *RuntimeServiceImpl) buildBranchResumeMsg(
 	exitNodeId string,
 	rows []*model.WfTask,
 ) types.RuleMsg {
-	var variablesStr string
-	if len(rows) > 0 && rows[0].Variables != nil && *rows[0].Variables != "" {
-		variablesStr = *rows[0].Variables
-	} else if inst.Variables != nil {
-		variablesStr = *inst.Variables
-	} else {
-		variablesStr = "{}"
+	var taskVars *string
+	if len(rows) > 0 {
+		taskVars = rows[0].Variables
 	}
+	variablesStr := resolveDriveVariables(taskVars, inst.Variables)
 
 	md := buildInstanceEnvelope(inst)
 	if len(rows) > 0 {
