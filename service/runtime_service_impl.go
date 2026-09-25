@@ -187,6 +187,21 @@ func (s *RuntimeServiceImpl) StartProcessInstanceByID(ctx context.Context, actor
 }
 
 // startInstanceCore 创建流程实例并装配引擎/消息，但【不驱动】（交调用方同步或异步 OnMsg）。
+// buildInstanceEnvelope 实例驱动消息的公共元数据（tenant/instance/businessKey/
+// owner/processID 五件套）。各驱动入口在此之上按路径增量补充 processKey、
+// operator、task_id、delay 偏移等键；businessKey 缺省（nil）时不写入。
+func buildInstanceEnvelope(inst *model.WfInstance) *types.Metadata {
+	md := types.NewMetadata()
+	md.PutValue(constants.KeyTenantID, inst.TenantID)
+	md.PutValue(constants.KeyInstanceID, inst.ID)
+	if inst.BusinessKey != nil {
+		md.PutValue(constants.KeyBusinessKey, *inst.BusinessKey)
+	}
+	md.PutValue(constants.KeyOwner, inst.CreatedBy)
+	md.PutValue(constants.KeyProcessID, inst.ProcessID)
+	return md
+}
+
 // 契约：父实例由调用方同步 OnMsg 驱动；subProcess 子实例必须异步驱动，
 // 否则子流程同步完成会重入父流程的 OnMsg。
 // parentInstanceID 非空时标记为 subProcess 子实例（child.ParentID，创建时写入，先于驱动）。
@@ -265,12 +280,7 @@ func (s *RuntimeServiceImpl) startInstanceCore(ctx context.Context, processDef *
 	if isDraft {
 		return instanceID, nil, types.RuleMsg{}, nil
 	}
-	md := types.NewMetadata()
-	md.PutValue(constants.KeyTenantID, processDef.TenantID)
-	md.PutValue(constants.KeyInstanceID, instanceID)
-	md.PutValue(constants.KeyBusinessKey, businessKey)
-	md.PutValue(constants.KeyOwner, instance.CreatedBy)
-	md.PutValue(constants.KeyProcessID, processDef.ID)
+	md := buildInstanceEnvelope(instance)
 	md.PutValue(constants.KeyProcessKey, processDef.ProcessKey)
 	var msg = types.NewMsg(0, "wf", types.JSON, md, cast.ToString(variables))
 
@@ -597,14 +607,7 @@ func (s *RuntimeServiceImpl) ActivateProcessInstance(ctx context.Context, actor 
 		if err != nil {
 			return err
 		}
-		md := types.NewMetadata()
-		md.PutValue(constants.KeyTenantID, processDef.TenantID)
-		md.PutValue(constants.KeyInstanceID, draftInstance.ID)
-		if draftInstance.BusinessKey != nil {
-			md.PutValue(constants.KeyBusinessKey, *draftInstance.BusinessKey)
-		}
-		md.PutValue(constants.KeyOwner, draftInstance.CreatedBy)
-		md.PutValue(constants.KeyProcessID, processDef.ID)
+		md := buildInstanceEnvelope(draftInstance)
 		md.PutValue(constants.KeyProcessKey, processDef.ProcessKey)
 
 		var variablesStr string
@@ -1253,15 +1256,7 @@ func (s *RuntimeServiceImpl) executeNextLocked(ctx context.Context, processInsta
 	if err != nil {
 		return err
 	}
-	var businessKey = processInstance.BusinessKey
-	md := types.NewMetadata()
-	md.PutValue(constants.KeyTenantID, processInstance.TenantID)
-	md.PutValue(constants.KeyInstanceID, processInstance.ID)
-	if businessKey != nil {
-		md.PutValue(constants.KeyBusinessKey, *businessKey)
-	}
-	md.PutValue(constants.KeyOwner, processInstance.CreatedBy)
-	md.PutValue(constants.KeyProcessID, processInstance.ProcessID)
+	md := buildInstanceEnvelope(processInstance)
 	// process_key 与启动路径的信封对齐（auditLog / aiAgent processInfo 上下文读它）。
 	// BPM 流程的 ruleChain.id 即 processKey，从已加载的引擎定义取，零额外查询。
 	if def := e.Definition(); def.RuleChain.ID != "" {
@@ -1456,11 +1451,7 @@ func (s *RuntimeServiceImpl) ForceResumeInstance(ctx context.Context, actor Acto
 		} else {
 			variablesStr = "{}"
 		}
-		md := types.NewMetadata()
-		md.PutValue(constants.KeyTenantID, inst.TenantID)
-		md.PutValue(constants.KeyInstanceID, inst.ID)
-		md.PutValue(constants.KeyOwner, inst.CreatedBy)
-		md.PutValue(constants.KeyProcessID, inst.ProcessID)
+		md := buildInstanceEnvelope(inst)
 		defaultMsg := types.NewMsg(0, "FORCE_RESUME", types.JSON, md, variablesStr)
 
 		logrus.WithField("instanceId", processInstanceID).
@@ -1531,14 +1522,7 @@ func (s *RuntimeServiceImpl) RestoreProcessInstance(ctx context.Context, actor A
 			}
 
 			// 构建元数据
-			md := types.NewMetadata()
-			md.PutValue(constants.KeyTenantID, instance.TenantID)
-			md.PutValue(constants.KeyInstanceID, instance.ID)
-			if instance.BusinessKey != nil {
-				md.PutValue(constants.KeyBusinessKey, *instance.BusinessKey)
-			}
-			md.PutValue(constants.KeyOwner, instance.CreatedBy)
-			md.PutValue(constants.KeyProcessID, instance.ProcessID)
+			md := buildInstanceEnvelope(instance)
 			// 注入已有 task_id：TaskCreator aspect 在 Before 阶段会检查此字段，
 			// 已存在则跳过 CreateTask，避免重启恢复时产生重复 wf_task 记录。
 			md.PutValue(constants.KeyTaskID, task.ID)
@@ -1762,14 +1746,7 @@ func (s *RuntimeServiceImpl) RescueExpiredDelayTask(ctx context.Context, actor A
 	} else {
 		variablesStr = "{}"
 	}
-	md := types.NewMetadata()
-	md.PutValue(constants.KeyTenantID, instance.TenantID)
-	md.PutValue(constants.KeyInstanceID, instance.ID)
-	if instance.BusinessKey != nil {
-		md.PutValue(constants.KeyBusinessKey, *instance.BusinessKey)
-	}
-	md.PutValue(constants.KeyOwner, instance.CreatedBy)
-	md.PutValue(constants.KeyProcessID, instance.ProcessID)
+	md := buildInstanceEnvelope(instance)
 	// 注入既有 task_id：重入节点时不重复建行，完成的是这条既有任务
 	md.PutValue(constants.KeyTaskID, task.ID)
 	// 已等待时长作为恢复偏移：超期则节点立即放行，未超期则重挂剩余计时
