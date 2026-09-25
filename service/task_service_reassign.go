@@ -81,10 +81,10 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 
 	if instanceID == "" {
 		// orphan/draft 任务：没有实例行可以锁定，直接走 Internal
-		if err := reassignFn(bareScope(s.taskDAO.Query)); err != nil {
+		if err := reassignFn(bareScope(s.taskDAO.Underlying())); err != nil {
 			return "", err
 		}
-	} else if err := WithInstanceTx(ctx, s.taskDAO.Query, instanceID, reassignFn); err != nil {
+	} else if err := WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, reassignFn); err != nil {
 		return "", err
 	}
 

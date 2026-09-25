@@ -12,7 +12,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 
-	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
@@ -30,7 +29,7 @@ func (s *TaskServiceImpl) authorizeSignOperator(ctx context.Context, task *model
 // authorizeSignOperatorWithDAO 用指定 TaskDAO 校验操作者身份。
 // 传 s.taskDAO 用于锁外廉价校验；传 scope.Tasks() 在实例锁内按最新快照复跑（收窄
 // TOCTOU 窗口：任务可能在锁外校验后被并发改派）。
-func (s *TaskServiceImpl) authorizeSignOperatorWithDAO(ctx context.Context, taskDAO *dao.TaskDAO, task *model.WfTask) error {
+func (s *TaskServiceImpl) authorizeSignOperatorWithDAO(ctx context.Context, taskDAO TaskStore, task *model.WfTask) error {
 	u := GetUserFromCtx(ctx)
 	if u == nil || u.UserID == "" {
 		return fmt.Errorf("authentication required: %w", ErrPermissionDenied)
@@ -95,9 +94,9 @@ func (s *TaskServiceImpl) AddSign(ctx context.Context, actor Actor, taskID strin
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.addSignInternal(ctx, bareScope(s.taskDAO.Query), taskID, userIDs, reason)
+		return s.addSignInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, userIDs, reason)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.addSignInternal(ctx, scope, taskID, userIDs, reason)
 	})
 }
@@ -229,9 +228,9 @@ func (s *TaskServiceImpl) ReduceSign(ctx context.Context, actor Actor, taskID st
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.reduceSignInternal(ctx, bareScope(s.taskDAO.Query), taskID, userIDs, reason)
+		return s.reduceSignInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, userIDs, reason)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.reduceSignInternal(ctx, scope, taskID, userIDs, reason)
 	})
 }

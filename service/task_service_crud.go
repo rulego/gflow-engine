@@ -158,9 +158,9 @@ func (s *TaskServiceImpl) DeleteTask(ctx context.Context, actor Actor, taskID, r
 	}
 	if instanceID == "" {
 		// orphan/draft 任务：没有实例行可以锁定，直接走 Internal
-		return s.deleteTaskInternal(ctx, bareScope(s.taskDAO.Query), taskID)
+		return s.deleteTaskInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.deleteTaskInternal(ctx, scope, taskID)
 	})
 }

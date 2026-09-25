@@ -23,7 +23,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
@@ -42,7 +41,7 @@ var (
 )
 
 type TaskCreator struct {
-	instanceDAO    *dao.InstanceDAO
+	instanceDAO    InstanceStore
 	workflowEngine WorkflowEngine
 }
 

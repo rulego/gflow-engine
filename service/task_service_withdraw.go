@@ -50,7 +50,7 @@ func (s *TaskServiceImpl) Withdraw(ctx context.Context, actor Actor, taskID, rea
 	}
 
 	instanceID := *task.ProcessInstanceID
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.withdrawInternal(ctx, scope, taskID, userID, reason, false)
 	})
 }
@@ -65,7 +65,7 @@ func (s *TaskServiceImpl) WithdrawByInstance(ctx context.Context, actor Actor, i
 		return fmt.Errorf("instance ID and user ID cannot be empty")
 	}
 
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		taskDAO := scope.Tasks()
 		q := &dto.TaskQuery{
 			InstanceID:     &instanceID,
@@ -287,7 +287,7 @@ func (s *TaskServiceImpl) Return(ctx context.Context, actor Actor, taskID, targe
 	if instanceID == "" {
 		return fmt.Errorf("task has no associated process instance")
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.returnInternal(ctx, scope, taskID, targetActivityID, userID, reason)
 	})
 }
@@ -434,7 +434,7 @@ func (s *TaskServiceImpl) SupersedeNodeTasks(ctx context.Context, instanceID, ta
 		return 0, fmt.Errorf("instanceID and taskDefKey cannot be empty")
 	}
 	archived := 0
-	if err := WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	if err := WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		n, err := s.supersedeNodeTasksInternal(ctx, scope, instanceID, taskDefKey, reason)
 		if err != nil {
 			return err

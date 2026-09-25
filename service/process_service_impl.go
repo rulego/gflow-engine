@@ -22,8 +22,8 @@ var _ ProcessService = (*ProcessServiceImpl)(nil)
 
 // ProcessServiceImpl ProcessService的实现
 type ProcessServiceImpl struct {
-	processDAO  *dao.ProcessDAO
-	instanceDAO *dao.InstanceDAO
+	processDAO  ProcessStore
+	instanceDAO InstanceStore
 	idGenerator IDGenerator
 	// engine 用于在 Deploy 时预加载流程链到共享 enginePool，使 subProcess 子链可被父流程寻址。
 	engine WorkflowEngine
@@ -265,7 +265,7 @@ func (s *ProcessServiceImpl) create(ctx context.Context, process *model.WfProces
 	}
 
 	// 保存流程定义 + 退役旧 active 原子（保证同 key 仅一个 active，防并发/抖动产生多 active）
-	if err := s.processDAO.Query.Transaction(func(tx *query.Query) error {
+	if err := s.processDAO.Underlying().Transaction(func(tx *query.Query) error {
 		txDAO := dao.NewProcessDAOWithQuery(tx)
 		if err := txDAO.Create(ctx, process); err != nil {
 			return fmt.Errorf("failed to deploy process: %w", err)

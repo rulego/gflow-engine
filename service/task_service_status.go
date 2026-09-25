@@ -36,9 +36,9 @@ func (s *TaskServiceImpl) SetPriority(ctx context.Context, actor Actor, taskID s
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.setPriorityInternal(ctx, bareScope(s.taskDAO.Query), taskID, priority)
+		return s.setPriorityInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, priority)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.setPriorityInternal(ctx, scope, taskID, priority)
 	})
 }
@@ -98,9 +98,9 @@ func (s *TaskServiceImpl) SetDueDate(ctx context.Context, actor Actor, taskID st
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.setDueDateInternal(ctx, bareScope(s.taskDAO.Query), taskID, dueDate)
+		return s.setDueDateInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, dueDate)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.setDueDateInternal(ctx, scope, taskID, dueDate)
 	})
 }
@@ -156,9 +156,9 @@ func (s *TaskServiceImpl) SuspendTask(ctx context.Context, actor Actor, taskID s
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.suspendTaskInternal(ctx, bareScope(s.taskDAO.Query), taskID)
+		return s.suspendTaskInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.suspendTaskInternal(ctx, scope, taskID)
 	})
 }
@@ -222,9 +222,9 @@ func (s *TaskServiceImpl) ActivateTask(ctx context.Context, actor Actor, taskID 
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.activateTaskInternal(ctx, bareScope(s.taskDAO.Query), taskID)
+		return s.activateTaskInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.activateTaskInternal(ctx, scope, taskID)
 	})
 }

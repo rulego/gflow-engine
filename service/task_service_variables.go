@@ -89,9 +89,9 @@ func (s *TaskServiceImpl) SetTaskVariables(ctx context.Context, actor Actor, tas
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.setTaskVariablesInternal(ctx, bareScope(s.taskDAO.Query), taskID, variables)
+		return s.setTaskVariablesInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, variables)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.setTaskVariablesInternal(ctx, scope, taskID, variables)
 	})
 }
@@ -155,9 +155,9 @@ func (s *TaskServiceImpl) SetTaskVariable(ctx context.Context, actor Actor, task
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.setTaskVariableInternal(ctx, bareScope(s.taskDAO.Query), taskID, variableName, value)
+		return s.setTaskVariableInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, variableName, value)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.setTaskVariableInternal(ctx, scope, taskID, variableName, value)
 	})
 }
@@ -203,9 +203,9 @@ func (s *TaskServiceImpl) RemoveTaskVariable(ctx context.Context, actor Actor, t
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.removeTaskVariableInternal(ctx, bareScope(s.taskDAO.Query), taskID, variableName)
+		return s.removeTaskVariableInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, variableName)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.removeTaskVariableInternal(ctx, scope, taskID, variableName)
 	})
 }

@@ -32,10 +32,10 @@ const archiveBatchSize = 100
 type RuntimeServiceImpl struct {
 	BaseService
 	workflowEngine WorkflowEngine
-	instanceDAO    *dao.InstanceDAO
-	hiInstanceDAO  *dao.HiInstanceDAO
-	processDAO     *dao.ProcessDAO
-	taskDAO        *dao.TaskDAO
+	instanceDAO    InstanceStore
+	hiInstanceDAO  HiInstanceStore
+	processDAO     ProcessStore
+	taskDAO        TaskStore
 	idGenerator    IDGenerator
 	enginePool     types.RuleEnginePool
 	// execGates ExecuteNext 的实例级可重入门闩表（instanceID -> *execGate）
@@ -342,7 +342,7 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 		return fmt.Errorf("process instance ID cannot be empty")
 	}
 
-	err := WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	err := WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
 		// 1. 在事务内读取实例（已持锁）
 		instance, err := tx.WfInstance.WithContext(ctx).Where(tx.WfInstance.ID.Eq(processInstanceID)).First()
@@ -439,7 +439,7 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 
 // markArchivedInstanceDeleted 把已归档实例的历史行标为 deleted。
 func (s *RuntimeServiceImpl) markArchivedInstanceDeleted(ctx context.Context, processInstanceID, reason string) error {
-	q := s.instanceDAO.Query
+	q := s.instanceDAO.Underlying()
 	hi, err := q.WfHiInstance.WithContext(ctx).Where(q.WfHiInstance.ID.Eq(processInstanceID)).First()
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -480,7 +480,7 @@ func (s *RuntimeServiceImpl) SuspendProcessInstance(ctx context.Context, actor A
 	if processInstanceID == "" {
 		return fmt.Errorf("process instance ID cannot be empty")
 	}
-	return WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		return s.suspendProcessInstanceInternal(ctx, scope, processInstanceID)
 	})
 }
@@ -593,7 +593,7 @@ func (s *RuntimeServiceImpl) ActivateProcessInstance(ctx context.Context, actor 
 	// 持锁执行实例状态变更 + 级联任务激活
 	var isDraft bool
 	var draftInstance *model.WfInstance
-	if err := WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	if err := WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		inst, startedDraft, err := s.activateProcessInstanceInternal(ctx, scope, processInstanceID)
 		if err != nil {
 			return err
@@ -864,7 +864,7 @@ func (s *RuntimeServiceImpl) SetProcessInstanceVariables(ctx context.Context, ac
 		return err
 	}
 
-	return WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
 		existingVars, err := s.getProcessInstanceVariablesInTx(ctx, tx, processInstanceID)
 		if err != nil {
@@ -886,7 +886,7 @@ func (s *RuntimeServiceImpl) SetProcessInstanceVariable(ctx context.Context, act
 	if variableName == "" {
 		return fmt.Errorf("variable name cannot be empty")
 	}
-	return WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
 		variables, err := s.getProcessInstanceVariablesInTx(ctx, tx, processInstanceID)
 		if err != nil {
@@ -906,7 +906,7 @@ func (s *RuntimeServiceImpl) RemoveProcessInstanceVariable(ctx context.Context, 
 	if variableName == "" {
 		return fmt.Errorf("variable name cannot be empty")
 	}
-	return WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
 		variables, err := s.getProcessInstanceVariablesInTx(ctx, tx, processInstanceID)
 		if err != nil {
@@ -1072,7 +1072,7 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 	now := time.Now()
 	duration := now.Sub(instance.CreatedAt).Milliseconds()
 
-	if err := WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	if err := WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
 		// 1. 更新实例状态为已完成
 		if _, err := tx.WfInstance.WithContext(ctx).Where(tx.WfInstance.ID.Eq(processInstanceID)).
@@ -1609,7 +1609,7 @@ func (s *RuntimeServiceImpl) GetStuckProcessInstances(ctx context.Context, actor
 	if err != nil {
 		return nil, err
 	}
-	db := s.instanceDAO.Query.WfInstance.UnderlyingDB().WithContext(ctx)
+	db := s.instanceDAO.Underlying().WfInstance.UnderlyingDB().WithContext(ctx)
 	q := db.Table("wf_instance as i").
 		Select("i.*").
 		Where("i.status = ?", string(enums.InstanceStatusActive)).
@@ -1642,7 +1642,7 @@ func (s *RuntimeServiceImpl) GetExpiredDelayTasks(ctx context.Context, actor Act
 	if err != nil {
 		return nil, err
 	}
-	db := s.taskDAO.Query.WfTask.UnderlyingDB().WithContext(ctx)
+	db := s.taskDAO.Underlying().WfTask.UnderlyingDB().WithContext(ctx)
 	q := db.Table("wf_task").
 		Where("task_type = ?", constants.TaskTypeDelay).
 		Where("status IN (?, ?)", string(enums.TaskStatusActive), string(enums.TaskStatusPending)).
@@ -2137,7 +2137,7 @@ func (s *RuntimeServiceImpl) TerminateProcessInstance(ctx context.Context, actor
 	if processInstanceID == "" {
 		return fmt.Errorf("process instance ID cannot be empty")
 	}
-	if err := WithInstanceTx(ctx, s.instanceDAO.Query, processInstanceID, func(scope *InstanceScope) error {
+	if err := WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		evt, err := s.TerminateInTx(ctx, scope.Tx(), processInstanceID, reason)
 		if err != nil {
 			return err

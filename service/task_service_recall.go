@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/query"
 	"github.com/rulego/gflow-engine/types/constants"
@@ -84,7 +83,7 @@ func (s *TaskServiceImpl) Recall(ctx context.Context, actor Actor, instanceID, r
 		return fmt.Errorf("%w: 该流程已关闭审批人收回", ErrPermissionDenied)
 	}
 
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.recallInternal(ctx, scope, chain, actor.UserID, instanceID, reason)
 	})
 }
@@ -130,7 +129,7 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 		return fmt.Errorf("%w: 超过可收回窗口（%d 天），无法收回", ErrValidation, recallWindowDays(ap))
 	}
 
-	lastNode, lastNodeName, voters, err := latestCompletedNodeInHistory(ctx, s.taskDAO.Query, instanceID)
+	lastNode, lastNodeName, voters, err := latestCompletedNodeInHistory(ctx, s.taskDAO.Underlying(), instanceID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve last node: %w", err)
 	}
@@ -145,7 +144,7 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 	}
 
 	// 复活实例：同 PK 回插运行表并移除归档行，并发双收回靠主键冲突天然互斥
-	err = s.taskDAO.Query.Transaction(func(tx *query.Query) error {
+	err = s.taskDAO.Underlying().Transaction(func(tx *query.Query) error {
 		revived := &model.WfInstance{
 			ID:              hi.ID,
 			ProcessID:       hi.ProcessID,
@@ -176,7 +175,7 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 	// 重入末节点重建任务。失败则整体退回归档态补偿——不补偿会留下
 	// active 但零任务的僵尸实例，且在途收回通道救不了它（无 completed 任务可寻）
 	if err := internal.ExecuteNext(ctx, instanceID, lastNode, nil); err != nil {
-		if cerr := s.rearchiveCompletedInstance(ctx, s.taskDAO.Query, hi, instanceID); cerr != nil {
+		if cerr := s.rearchiveCompletedInstance(ctx, s.taskDAO.Underlying(), hi, instanceID); cerr != nil {
 			return fmt.Errorf("末节点重入失败且补偿失败，实例 %s 可能停留为无任务运行态需人工处理: 重入错误=%v 补偿错误=%w", instanceID, err, cerr)
 		}
 		return fmt.Errorf("%w: 末节点重入失败，已回滚为已完成态: %v", ErrValidation, err)
@@ -787,7 +786,7 @@ func hasProxyMark(t *model.WfTask) bool {
 // 停泊判定）、前沿终止集、加签豁免共用这一份快照——默认 pageSize=10 会在
 // 会签/加签/驳回回跳重跑场景截断，截掉的恰是守卫要看的更晚记录与该终止的
 // 前沿任务，收回因此双向失真（误拒或误放行+幽灵待办）。
-func listAllInstanceTasksTx(ctx context.Context, taskDAO *dao.TaskDAO, instanceID string) ([]*model.WfTask, error) {
+func listAllInstanceTasksTx(ctx context.Context, taskDAO TaskStore, instanceID string) ([]*model.WfTask, error) {
 	return listAllTasks(ctx, taskDAO, &dto.TaskQuery{InstanceID: &instanceID})
 }
 

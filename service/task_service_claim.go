@@ -44,9 +44,9 @@ func (s *TaskServiceImpl) Claim(ctx context.Context, actor Actor, taskID string)
 	if instanceID == "" {
 		// orphan/draft 任务：没有实例行可以锁定，直接在 service 默认 query 上执行。
 		// 这种场景下不存在跨实例协调问题，但仍保留 Internal 函数的幂等性校验。
-		return s.claimInternal(ctx, bareScope(s.taskDAO.Query), taskID, userID)
+		return s.claimInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, userID)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.claimInternal(ctx, scope, taskID, userID)
 	})
 }
@@ -217,9 +217,9 @@ func (s *TaskServiceImpl) Unclaim(ctx context.Context, actor Actor, taskID strin
 		instanceID = *task.ProcessInstanceID
 	}
 	if instanceID == "" {
-		return s.unclaimInternal(ctx, bareScope(s.taskDAO.Query), taskID, userID)
+		return s.unclaimInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, userID)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.unclaimInternal(ctx, scope, taskID, userID)
 	})
 }
@@ -294,7 +294,7 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 	task.UpdatedBy = &username
 	task.UpdatedAt = &now
 
-	qa := taskDAO.Query.WfTask
+	qa := taskDAO.Underlying().WfTask
 	if _, err := qa.WithContext(ctx).Where(qa.ID.Eq(task.ID)).
 		Select(qa.Assignee, qa.Status, qa.ClaimedAt, qa.UpdatedBy, qa.UpdatedAt).
 		Updates(task); err != nil {

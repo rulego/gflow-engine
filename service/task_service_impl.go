@@ -15,10 +15,10 @@ var _ TaskServiceInternal = (*TaskServiceImpl)(nil)
 
 // TaskServiceImpl TaskService接口的实现
 type TaskServiceImpl struct {
-	taskDAO         *dao.TaskDAO
-	hiTaskDAO       *dao.HiTaskDAO
-	taskAssigneeDAO *dao.TaskAssigneeDAO
-	taskCommentDAO  *dao.TaskCommentDAO
+	taskDAO         TaskStore
+	hiTaskDAO       HiTaskStore
+	taskAssigneeDAO TaskAssigneeStore
+	taskCommentDAO  TaskCommentStore
 	idGenerator     IDGenerator
 	workflowEngine  WorkflowEngine
 }

@@ -71,9 +71,9 @@ func (s *TaskServiceImpl) ProxyAudit(ctx context.Context, actor Actor, taskID st
 	}
 	request := &ApprovalRequest{TaskID: taskID, ApprovalResult: result, Comment: comment}
 	if instanceID == "" {
-		return s.completeWithApprovalInternal(ctx, bareScope(s.taskDAO.Query), request)
+		return s.completeWithApprovalInternal(ctx, bareScope(s.taskDAO.Underlying()), request)
 	}
-	return WithInstanceTx(ctx, s.taskDAO.Query, instanceID, func(scope *InstanceScope) error {
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.completeWithApprovalInternal(ctx, scope, request)
 	})
 }
