@@ -117,18 +117,26 @@ func (s *TaskServiceImpl) createParallelSubTasks(ctx context.Context, scope *Ins
 
 		// 并行会签：每个子任务立即激活，触发 assigned 事件通知审批人
 		if listener != nil {
+			evtProcessName, evtStartUser := "", ""
+			if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
+				evtProcessName = inst.Name
+				evtStartUser = inst.StartUserID
+			}
 			evt := TaskEvent{
-				Type:         TaskEventAssigned,
-				TaskID:       subTask.ID,
-				TaskDefKey:   subTask.TaskDefKey,
-				ParentTaskID: parentTask.ID,
-				InstanceID:   instanceID,
-				ProcessID:    parentTask.ProcessID,
-				TenantID:     parentTask.TenantID,
-				TaskName:     subTask.Name,
-				ToUsers:      []string{assignee},
-				FromUser:     countersignOperator(ctx),
-				Timestamp:    time.Now(),
+				Type:                TaskEventAssigned,
+				TaskID:              subTask.ID,
+				TaskDefKey:          subTask.TaskDefKey,
+				ParentTaskID:        parentTask.ID,
+				InstanceID:          instanceID,
+				ProcessID:           parentTask.ProcessID,
+				TenantID:            parentTask.TenantID,
+				ProcessName:         evtProcessName,
+				StartUserID:         evtStartUser,
+				InstanceStatusAfter: parentTask.Status,
+				TaskName:            subTask.Name,
+				ToUsers:             []string{assignee},
+				FromUser:            countersignOperator(ctx),
+				Timestamp:           time.Now(),
 			}
 			scope.AfterCommit(func() error {
 				DispatchTaskEvent(listener, evt, ctx)

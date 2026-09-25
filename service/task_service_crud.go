@@ -47,6 +47,24 @@ func (s *TaskServiceImpl) CreateTask(ctx context.Context, actor Actor, task *mod
 	return task.ID, nil
 }
 
+// GetInstanceEventContext 取实例的事件上下文：流程名/发起人/当前状态。
+// 组件派发事件时补齐 TaskEvent 的实例字段用；实例不存在返回空串不报错
+// （事件派发不因上下文缺失而失败）。实例已归档时回退历史表，
+// GetProcessInstance 内部处理。
+func (s *TaskServiceImpl) GetInstanceEventContext(ctx context.Context, instanceID string) (string, string, string, error) {
+	if instanceID == "" || s.workflowEngine == nil {
+		return "", "", "", nil
+	}
+	inst, err := s.workflowEngine.GetRuntimeService().GetProcessInstance(ctx, SystemActor(), instanceID)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to get instance event context: %w", err)
+	}
+	if inst == nil {
+		return "", "", "", nil
+	}
+	return inst.Name, inst.StartUserID, inst.Status, nil
+}
+
 // GetTask 根据任务ID获取任务详情
 // 加载后强制租户校验，防止跨租户按 ID 枚举越权读取他人任务。
 func (s *TaskServiceImpl) GetTask(ctx context.Context, actor Actor, taskID string) (*model.WfTask, error) {

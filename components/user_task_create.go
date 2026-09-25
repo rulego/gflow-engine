@@ -17,6 +17,7 @@
 package components
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"time"
@@ -355,9 +356,17 @@ func (n *UserTaskNode) createCountersignTasks(ctx types.RuleContext, processInst
 
 // fireTaskEvent 安全地派发任务事件。
 // 监听器为空时不操作；panic 时 recover 不影响主流程。
+// 实例上下文（流程名/发起人/实例状态）缺省时查一次补齐，listener 免回查实例。
 func (n *UserTaskNode) fireTaskEvent(ctx context.Context, evt service.TaskEvent) {
 	if n.TaskEventListener == nil {
 		return
+	}
+	if evt.ProcessName == "" || evt.StartUserID == "" {
+		if name, starter, status, err := n.TaskService.GetInstanceEventContext(ctx, evt.InstanceID); err == nil {
+			evt.ProcessName = cmp.Or(evt.ProcessName, name)
+			evt.StartUserID = cmp.Or(evt.StartUserID, starter)
+			evt.InstanceStatusAfter = cmp.Or(evt.InstanceStatusAfter, status)
+		}
 	}
 	// 异步派发：监听器慢 IO 不阻塞链执行；任务行在派发前已落库
 	service.DispatchTaskEvent(n.TaskEventListener, evt, ctx)
