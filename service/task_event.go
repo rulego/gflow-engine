@@ -57,22 +57,24 @@ func EventSourceFromCtx(ctx context.Context) string {
 
 // TaskEvent 任务事件载荷
 type TaskEvent struct {
-	Type         TaskEventType
-	EventID      string    // 事件唯一ID（DispatchTaskEvent 统一填充，上层幂等/追踪用）
-	TaskID       string    // 任务ID
-	TaskDefKey   string    // 任务定义节点 key（设计期稳定标识；实例级事件为空）
-	ParentTaskID string    // 父任务ID（会签子任务 assigned 时携带；空表示无父任务）
-	InstanceID   string    // 流程实例ID
-	ProcessID    string    // 流程定义ID
-	TenantID     string    // 租户ID
-	TaskName     string    // 任务名称
-	ProcessName  string    // 流程名称（listener 层按需填充）
-	ToUsers      []string  // 接收通知的用户；assigned/candidateCreated 为被分配人/候选人群
-	FromUser     string    // 触发操作的用户ID；系统驱动为空
-	Reason       string    // 驳回/终止/撤回原因
-	Source       string    // 事件来源（EventSource*）
-	OnBehalfOf   string    // 被代审人 userId：管理员代审出票的事件携带，宿主据此通知原办理人
-	Timestamp    time.Time // 事件发生时间
+	Type                TaskEventType
+	EventID             string    // 事件唯一ID（DispatchTaskEvent 统一填充，上层幂等/追踪用）
+	TaskID              string    // 任务ID
+	TaskDefKey          string    // 任务定义节点 key（设计期稳定标识；实例级事件为空）
+	ParentTaskID        string    // 父任务ID（会签子任务 assigned 时携带；空表示无父任务）
+	InstanceID          string    // 流程实例ID
+	ProcessID           string    // 流程定义ID
+	TenantID            string    // 租户ID
+	TaskName            string    // 任务名称
+	ProcessName         string    // 流程名称（生命周期事件由引擎侧填充，取实例名）
+	StartUserID         string    // 实例发起人 userId（引擎侧填充，listener 免回查实例）
+	InstanceStatusAfter string    // 事件后的实例状态（生命周期事件填充；任务级事件不填）
+	ToUsers             []string  // 接收通知的用户；assigned/candidateCreated 为被分配人/候选人群
+	FromUser            string    // 触发操作的用户ID；系统驱动为空
+	Reason              string    // 驳回/终止/撤回原因
+	Source              string    // 事件来源（EventSource*）
+	OnBehalfOf          string    // 被代审人 userId：管理员代审出票的事件携带，宿主据此通知原办理人
+	Timestamp           time.Time // 事件发生时间
 }
 
 // TaskEventListener 任务事件监听器函数类型
