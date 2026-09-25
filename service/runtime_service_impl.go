@@ -202,6 +202,19 @@ func buildInstanceEnvelope(inst *model.WfInstance) *types.Metadata {
 	return md
 }
 
+// resolveDriveVariables 取实例驱动消息的变量载荷：任务变量（非空）优先，
+// 回退实例变量，两者皆缺用空 JSON。任务级覆盖发生在加签/会签等局部写回场景；
+// 无任务上下文的恢复路径传 nil。
+func resolveDriveVariables(taskVars, instVars *string) string {
+	if taskVars != nil && *taskVars != "" {
+		return *taskVars
+	}
+	if instVars != nil {
+		return *instVars
+	}
+	return "{}"
+}
+
 // 契约：父实例由调用方同步 OnMsg 驱动；subProcess 子实例必须异步驱动，
 // 否则子流程同步完成会重入父流程的 OnMsg。
 // parentInstanceID 非空时标记为 subProcess 子实例（child.ParentID，创建时写入，先于驱动）。
@@ -1445,12 +1458,7 @@ func (s *RuntimeServiceImpl) ForceResumeInstance(ctx context.Context, actor Acto
 				ErrForceResumeActiveBranches, forkID, activeExits)
 		}
 
-		var variablesStr string
-		if inst.Variables != nil {
-			variablesStr = *inst.Variables
-		} else {
-			variablesStr = "{}"
-		}
+		variablesStr := resolveDriveVariables(nil, inst.Variables)
 		md := buildInstanceEnvelope(inst)
 		defaultMsg := types.NewMsg(0, "FORCE_RESUME", types.JSON, md, variablesStr)
 
@@ -1512,14 +1520,7 @@ func (s *RuntimeServiceImpl) RestoreProcessInstance(ctx context.Context, actor A
 			// 准备消息
 			var msg types.RuleMsg
 			// 优先使用任务变量
-			var variablesStr string
-			if task.Variables != nil && *task.Variables != "" {
-				variablesStr = *task.Variables
-			} else if instance.Variables != nil {
-				variablesStr = *instance.Variables
-			} else {
-				variablesStr = "{}"
-			}
+			variablesStr := resolveDriveVariables(task.Variables, instance.Variables)
 
 			// 构建元数据
 			md := buildInstanceEnvelope(instance)
@@ -1556,12 +1557,7 @@ func (s *RuntimeServiceImpl) RestoreProcessInstance(ctx context.Context, actor A
 	}
 
 	// 4. 执行恢复
-	var variablesStr string
-	if instance.Variables != nil {
-		variablesStr = *instance.Variables
-	} else {
-		variablesStr = "{}"
-	}
+	variablesStr := resolveDriveVariables(nil, instance.Variables)
 	defaultMsg := types.NewMsg(0, "RESTORE_TRIGGER", types.JSON, nil, variablesStr)
 	engine.OnMsg(defaultMsg, types.WithRestoreNodes(nodeRequests...))
 
@@ -1738,14 +1734,7 @@ func (s *RuntimeServiceImpl) RescueExpiredDelayTask(ctx context.Context, actor A
 	}
 
 	// 变量优先取任务变量，回退实例变量（同 RestoreProcessInstance）
-	var variablesStr string
-	if task.Variables != nil && *task.Variables != "" {
-		variablesStr = *task.Variables
-	} else if instance.Variables != nil {
-		variablesStr = *instance.Variables
-	} else {
-		variablesStr = "{}"
-	}
+	variablesStr := resolveDriveVariables(task.Variables, instance.Variables)
 	md := buildInstanceEnvelope(instance)
 	// 注入既有 task_id：重入节点时不重复建行，完成的是这条既有任务
 	md.PutValue(constants.KeyTaskID, task.ID)
