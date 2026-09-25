@@ -183,7 +183,7 @@ func (s *RuntimeServiceImpl) SubProcessChildTerminated(ctx context.Context, pare
 // resumeParentAfterChildTerminated 子实例终止后恢复父流程(子→父失败传播)。
 // 子已归档到 hi_instance(ParentID/ProcessID 保留),据此推导父 subProcess 节点并 ExecuteNext 重入。
 func (s *RuntimeServiceImpl) resumeParentAfterChildTerminated(ctx context.Context, childInstanceID string) {
-	hi, err := s.hiInstanceDAO.Get(ctx, childInstanceID)
+	hi, err := s.hiInstanceDAO.GetIncludingDeleted(ctx, childInstanceID)
 	if err != nil || hi == nil || hi.ParentID == nil || *hi.ParentID == "" {
 		return
 	}
