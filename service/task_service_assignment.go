@@ -37,6 +37,10 @@ func (s *TaskServiceImpl) SetAssignee(ctx context.Context, actor Actor, taskID, 
 	if u := GetUserFromCtx(ctx); u != nil && task.TenantID != u.TenantID {
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
+	// 终态任务的 assignee/owner 是审计事实，改写会污染归属口径
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, cannot set assignee: %w", task.Status, ErrConflict)
+	}
 
 	instanceID := ""
 	if task.ProcessInstanceID != nil {
@@ -107,6 +111,10 @@ func (s *TaskServiceImpl) SetOwner(ctx context.Context, actor Actor, taskID, use
 	// 租户校验：防止跨租户直接改派他人任务
 	if u := GetUserFromCtx(ctx); u != nil && task.TenantID != u.TenantID {
 		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+	// 终态任务的 assignee/owner 是审计事实，改写会污染归属口径
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, cannot set owner: %w", task.Status, ErrConflict)
 	}
 
 	instanceID := ""

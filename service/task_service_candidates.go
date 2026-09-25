@@ -198,6 +198,10 @@ func (s *TaskServiceImpl) taskForAdminMutation(ctx context.Context, actor Actor,
 	if task == nil || task.TenantID != actor.TenantID {
 		return nil, fmt.Errorf("%w: task", ErrNotFound)
 	}
+	// 终态任务是既成事实的审批记录，候选池不可再改
+	if isTerminalTaskStatus(task.Status) {
+		return nil, fmt.Errorf("task is %s, cannot modify candidates: %w", task.Status, ErrConflict)
+	}
 	return task, nil
 }
 
