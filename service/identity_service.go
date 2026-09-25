@@ -160,6 +160,15 @@ type TenantAdminResolver interface {
 	GetTenantAdminUserIDs(ctx context.Context, tenantID string) ([]string, error)
 }
 
+// ActiveUserChecker IdentityService 的可选扩展接口：宿主实现后，部署期校验
+// 直派审批人（approver.type=user 的 userIds）存在且启用。未实现时跳过校验
+// （引擎不含用户目录）。
+type ActiveUserChecker interface {
+	// AreActiveUsers 批量判定用户存在且启用。返回 map 覆盖入参全部 userID，
+	// 不存在或已停用的值为 false。
+	AreActiveUsers(ctx context.Context, tenantID string, userIDs []string) (map[string]bool, error)
+}
+
 // GetUserFromCtx 从 ctx 取出 bindActor 绑定的操作人（*Actor）；未绑定返回 nil。
 func GetUserFromCtx(ctx context.Context) *Actor {
 	userV := ctx.Value(constants.KeyCurrentUser)

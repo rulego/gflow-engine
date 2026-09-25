@@ -282,9 +282,15 @@ func (e *WorkflowEngineImpl) Start(ctx context.Context) error {
 
 	// 装配期探测租户归属校验能力：宿主 IdentityService 未实现 TenantMembershipChecker
 	// 时，转派目标/startProcess 发起人/ccTask 抄送人的跨租户校验整体跳过。默认记一条
-	// 启动告警；strict_tenant_membership_check=true 时拒绝启动（fail-fast）。
+	// 启动告警；strict_tenant_membership_check=true 时拒绝启动。
 	// 详见 operator_authz.go 的 TenantMembershipGuard.Validate。
 	if err := NewTenantMembershipGuard(e.identityService).Validate(e.config.StrictTenantMembershipCheck); err != nil {
+		return fmt.Errorf("workflow engine '%s': %w", e.name, err)
+	}
+
+	// 装配期校验引擎时序依赖的时间列精度（wf_task/wf_hi_task）：秒级列上收回
+	// 守卫无法分序，探到即拒绝启动。见 schema_guard.go。
+	if err := NewSchemaPrecisionGuard(e.db).Validate(); err != nil {
 		return fmt.Errorf("workflow engine '%s': %w", e.name, err)
 	}
 
