@@ -374,26 +374,10 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 
 		// 4. 归档实例到历史表
 		now := time.Now()
-		hiInstance := &model.WfHiInstance{
-			ID:              instance.ID,
-			ProcessID:       instance.ProcessID,
-			BusinessKey:     instance.BusinessKey,
-			Name:            instance.Name,
-			Status:          string(enums.InstanceStatusDeleted),
-			Variables:       instance.Variables,
-			CurrentActivity: instance.CurrentActivity,
-			Priority:        instance.Priority,
-			ParentID:        instance.ParentID,
-			TenantID:        instance.TenantID,
-			CreatedBy:       instance.CreatedBy,
-			CreatedAt:       instance.CreatedAt,
-			UpdatedBy:       instance.UpdatedBy,
-			UpdatedAt:       &now,
-			EndReason:       &reason,
-			Duration:        instance.Duration,
-			EndedAt:         instance.EndedAt,
-			StartUserID:     instance.StartUserID,
-		}
+		hiInstance := instanceToHiInstance(instance)
+		hiInstance.Status = string(enums.InstanceStatusDeleted)
+		hiInstance.UpdatedAt = &now
+		hiInstance.EndReason = &reason
 		if err := tx.WfHiInstance.WithContext(ctx).Create(hiInstance); err != nil {
 			return fmt.Errorf("failed to archive instance to history: %w", err)
 		}
@@ -1093,26 +1077,8 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 		}
 
 		// 3. 创建历史实例记录
-		hiInstance := &model.WfHiInstance{
-			ID:              updatedInstance.ID,
-			ProcessID:       updatedInstance.ProcessID,
-			BusinessKey:     updatedInstance.BusinessKey,
-			Name:            updatedInstance.Name,
-			Status:          updatedInstance.Status,
-			Variables:       updatedInstance.Variables,
-			CurrentActivity: updatedInstance.CurrentActivity,
-			Priority:        updatedInstance.Priority,
-			ParentID:        updatedInstance.ParentID,
-			TenantID:        updatedInstance.TenantID,
-			CreatedBy:       updatedInstance.CreatedBy,
-			CreatedAt:       updatedInstance.CreatedAt,
-			UpdatedBy:       updatedInstance.UpdatedBy,
-			UpdatedAt:       updatedInstance.UpdatedAt,
-			EndReason:       &reason,
-			Duration:        updatedInstance.Duration,
-			EndedAt:         updatedInstance.EndedAt,
-			StartUserID:     updatedInstance.StartUserID,
-		}
+		hiInstance := instanceToHiInstance(updatedInstance)
+		hiInstance.EndReason = &reason
 
 		if err := tx.WfHiInstance.WithContext(ctx).Create(hiInstance); err != nil {
 			return fmt.Errorf("failed to create history instance: %w", err)
@@ -2317,26 +2283,13 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 	}
 
 	// 创建历史实例记录
-	hiInstance := &model.WfHiInstance{
-		ID:              instance.ID,
-		ProcessID:       instance.ProcessID,
-		BusinessKey:     instance.BusinessKey,
-		Name:            instance.Name,
-		Status:          string(enums.InstanceStatusTerminated),
-		Variables:       instance.Variables,
-		CurrentActivity: instance.CurrentActivity,
-		Priority:        instance.Priority,
-		ParentID:        instance.ParentID,
-		TenantID:        instance.TenantID,
-		CreatedBy:       instance.CreatedBy,
-		CreatedAt:       instance.CreatedAt,
-		UpdatedBy:       &username,
-		UpdatedAt:       &now,
-		EndReason:       &reason,
-		Duration:        &duration,
-		EndedAt:         &now,
-		StartUserID:     instance.StartUserID,
-	}
+	hiInstance := instanceToHiInstance(instance)
+	hiInstance.Status = string(enums.InstanceStatusTerminated)
+	hiInstance.UpdatedBy = &username
+	hiInstance.UpdatedAt = &now
+	hiInstance.EndReason = &reason
+	hiInstance.Duration = &duration
+	hiInstance.EndedAt = &now
 	if err := tx.WfHiInstance.WithContext(ctx).Create(hiInstance); err != nil {
 		return nil, fmt.Errorf("failed to archive instance to history: %w", err)
 	}

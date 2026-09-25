@@ -82,6 +82,32 @@ func taskToHiTask(task *model.WfTask) *model.WfHiTask {
 	}
 }
 
+// instanceToHiInstance converts a WfInstance to WfHiInstance for archiving to
+// history. 携带字段逐一对应拷贝；status/endReason/endedAt 等终结口径由调用方
+// 按各自路径覆写。
+func instanceToHiInstance(instance *model.WfInstance) *model.WfHiInstance {
+	return &model.WfHiInstance{
+		ID:              instance.ID,
+		ProcessID:       instance.ProcessID,
+		BusinessKey:     instance.BusinessKey,
+		Name:            instance.Name,
+		Status:          instance.Status,
+		Variables:       instance.Variables,
+		CurrentActivity: instance.CurrentActivity,
+		Priority:        instance.Priority,
+		ParentID:        instance.ParentID,
+		TenantID:        instance.TenantID,
+		CreatedBy:       instance.CreatedBy,
+		CreatedAt:       instance.CreatedAt,
+		UpdatedBy:       instance.UpdatedBy,
+		UpdatedAt:       instance.UpdatedAt,
+		EndReason:       instance.EndReason,
+		Duration:        instance.Duration,
+		EndedAt:         instance.EndedAt,
+		StartUserID:     instance.StartUserID,
+	}
+}
+
 // ensureTargetUserInTenant 转办/委派/改派/加签的目标用户租户归属校验。
 // 统一走租户归属鉴权守卫（未实现 TenantMembershipChecker 时跳过，缺口由装配期
 // TenantMembershipGuard.Validate 统一告警/严格模式拒绝），action 仅用于错误信息标注动作来源。
