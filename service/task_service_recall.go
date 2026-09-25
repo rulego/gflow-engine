@@ -185,15 +185,18 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 	// 放在重入成功之后：重入失败走补偿回归档态时，票没有作废，不该先发失真通知
 	if listener := s.workflowEngine.GetTaskEventListener(); listener != nil {
 		DispatchTaskEvent(listener, TaskEvent{
-			Type:       TaskEventRecalled,
-			TaskName:   lastNodeName,
-			InstanceID: instanceID,
-			ProcessID:  hi.ProcessID,
-			TenantID:   hi.TenantID,
-			ToUsers:    voters,
-			FromUser:   userID,
-			Reason:     reason,
-			Timestamp:  time.Now(),
+			Type:                TaskEventRecalled,
+			TaskName:            lastNodeName,
+			InstanceID:          instanceID,
+			ProcessID:           hi.ProcessID,
+			TenantID:            hi.TenantID,
+			ProcessName:         hi.Name,
+			StartUserID:         hi.StartUserID,
+			InstanceStatusAfter: string(enums.InstanceStatusActive),
+			ToUsers:             voters,
+			FromUser:            userID,
+			Reason:              reason,
+			Timestamp:           time.Now(),
 		}, ctx)
 	}
 	return nil
@@ -495,22 +498,27 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 		evtName := recreated.Name
 		evtProcessID := recreated.ProcessID
 		evtTenantID := instance.TenantID
+		evtProcessName := instance.Name
+		evtStartUser := instance.StartUserID
 		evtToUsers := uniqueStrings(notifyUsers)
 		evtFrom := userID
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(listener, TaskEvent{
-				Type:         TaskEventRecalled,
-				TaskID:       evtTaskID,
-				TaskDefKey:   evtDefKey,
-				ParentTaskID: evtParentID,
-				InstanceID:   instanceID,
-				ProcessID:    evtProcessID,
-				TenantID:     evtTenantID,
-				TaskName:     evtName,
-				ToUsers:      evtToUsers,
-				FromUser:     evtFrom,
-				Reason:       reason,
-				Timestamp:    time.Now(),
+				Type:                TaskEventRecalled,
+				TaskID:              evtTaskID,
+				TaskDefKey:          evtDefKey,
+				ParentTaskID:        evtParentID,
+				InstanceID:          instanceID,
+				ProcessID:           evtProcessID,
+				TenantID:            evtTenantID,
+				ProcessName:         evtProcessName,
+				StartUserID:         evtStartUser,
+				InstanceStatusAfter: instance.Status,
+				TaskName:            evtName,
+				ToUsers:             evtToUsers,
+				FromUser:            evtFrom,
+				Reason:              reason,
+				Timestamp:           time.Now(),
 			}, ctx)
 			// 重建任务沿用 assigned 事件；Reason 标注收回缘由，通知与收回前的
 			// 首张待办区分开

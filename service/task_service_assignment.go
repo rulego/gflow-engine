@@ -281,17 +281,25 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 		if u := GetUserFromCtx(ctx); u != nil {
 			fromUser = u.UserID
 		}
+		evtProcessName, evtStartUser := "", ""
+		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
+			evtProcessName = inst.Name
+			evtStartUser = inst.StartUserID
+		}
 		evt := TaskEvent{
-			Type:       TaskEventForwarded,
-			TaskID:     task.ID,
-			TaskDefKey: task.TaskDefKey,
-			InstanceID: instanceID,
-			ProcessID:  task.ProcessID,
-			TenantID:   task.TenantID,
-			TaskName:   task.Name,
-			ToUsers:    []string{userID},
-			FromUser:   fromUser,
-			Timestamp:  time.Now(),
+			Type:                TaskEventForwarded,
+			TaskID:              task.ID,
+			TaskDefKey:          task.TaskDefKey,
+			InstanceID:          instanceID,
+			ProcessID:           task.ProcessID,
+			TenantID:            task.TenantID,
+			ProcessName:         evtProcessName,
+			StartUserID:         evtStartUser,
+			InstanceStatusAfter: task.Status,
+			TaskName:            task.Name,
+			ToUsers:             []string{userID},
+			FromUser:            fromUser,
+			Timestamp:           time.Now(),
 		}
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, ctx)
@@ -522,17 +530,25 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 		if task.ProcessInstanceID != nil {
 			instanceID = *task.ProcessInstanceID
 		}
+		evtProcessName, evtStartUser := "", ""
+		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
+			evtProcessName = inst.Name
+			evtStartUser = inst.StartUserID
+		}
 		evt := TaskEvent{
-			Type:       TaskEventForwarded,
-			TaskID:     task.ID,
-			TaskDefKey: task.TaskDefKey,
-			InstanceID: instanceID,
-			ProcessID:  task.ProcessID,
-			TenantID:   task.TenantID,
-			TaskName:   task.Name,
-			ToUsers:    []string{toUserID},
-			FromUser:   fromUserID,
-			Timestamp:  time.Now(),
+			Type:                TaskEventForwarded,
+			TaskID:              task.ID,
+			TaskDefKey:          task.TaskDefKey,
+			InstanceID:          instanceID,
+			ProcessID:           task.ProcessID,
+			TenantID:            task.TenantID,
+			ProcessName:         evtProcessName,
+			StartUserID:         evtStartUser,
+			InstanceStatusAfter: task.Status,
+			TaskName:            task.Name,
+			ToUsers:             []string{toUserID},
+			FromUser:            fromUserID,
+			Timestamp:           time.Now(),
 		}
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, ctx)

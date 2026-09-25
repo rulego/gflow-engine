@@ -209,27 +209,33 @@ func (s *TaskServiceImpl) withdrawInternal(ctx context.Context, scope *InstanceS
 		})
 	}
 
-	// 撤回事件：AfterCommit 派发，回滚不产生幽灵事件
+	// 撤回事件：AfterCommit 派发，回滚不产生幽灵事件。
+	// 上面 terminateProcessInstanceInTx 已在同一事务终止实例，事件发出时必为终态
 	if s.workflowEngine.GetTaskEventListener() != nil {
 		evtTaskID := task.ID
 		evtTaskDefKey := task.TaskDefKey
 		evtInstanceID := *task.ProcessInstanceID
 		evtProcessID := task.ProcessID
 		evtTenantID := instance.TenantID
+		evtProcessName := instance.Name
+		evtStartUser := instance.StartUserID
 		evtReason := reason
 		evtFromUser := userID
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), TaskEvent{
-				Type:       TaskEventWithdrawn,
-				TaskID:     evtTaskID,
-				TaskDefKey: evtTaskDefKey,
-				InstanceID: evtInstanceID,
-				ProcessID:  evtProcessID,
-				TenantID:   evtTenantID,
-				FromUser:   evtFromUser,
-				Reason:     evtReason,
-				Source:     EventSourceWithdraw,
-				Timestamp:  time.Now(),
+				Type:                TaskEventWithdrawn,
+				TaskID:              evtTaskID,
+				TaskDefKey:          evtTaskDefKey,
+				InstanceID:          evtInstanceID,
+				ProcessID:           evtProcessID,
+				TenantID:            evtTenantID,
+				ProcessName:         evtProcessName,
+				StartUserID:         evtStartUser,
+				InstanceStatusAfter: string(enums.InstanceStatusTerminated),
+				FromUser:            evtFromUser,
+				Reason:              evtReason,
+				Source:              EventSourceWithdraw,
+				Timestamp:           time.Now(),
 			}, withdrawCtx)
 			return nil
 		})
@@ -395,17 +401,25 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 		if task.ProcessInstanceID != nil {
 			instID = *task.ProcessInstanceID
 		}
+		evtProcessName, evtStartUser := "", ""
+		if inst, iErr := scope.Instances().Get(ctx, instID); iErr == nil && inst != nil {
+			evtProcessName = inst.Name
+			evtStartUser = inst.StartUserID
+		}
 		evt := TaskEvent{
-			Type:       TaskEventReturned,
-			TaskID:     task.ID,
-			TaskDefKey: task.TaskDefKey,
-			InstanceID: instID,
-			ProcessID:  task.ProcessID,
-			TenantID:   task.TenantID,
-			TaskName:   task.Name,
-			FromUser:   userID,
-			Reason:     reason,
-			Timestamp:  time.Now(),
+			Type:                TaskEventReturned,
+			TaskID:              task.ID,
+			TaskDefKey:          task.TaskDefKey,
+			InstanceID:          instID,
+			ProcessID:           task.ProcessID,
+			TenantID:            task.TenantID,
+			ProcessName:         evtProcessName,
+			StartUserID:         evtStartUser,
+			InstanceStatusAfter: string(enums.InstanceStatusActive),
+			TaskName:            task.Name,
+			FromUser:            userID,
+			Reason:              reason,
+			Timestamp:           time.Now(),
 		}
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(listener, evt, ctx)
