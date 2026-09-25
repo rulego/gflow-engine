@@ -564,14 +564,17 @@ func (s *RuntimeServiceImpl) suspendProcessInstanceInternal(ctx context.Context,
 		suspendCtx := ctx
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), TaskEvent{
-				Type:       TaskEventSuspended,
-				InstanceID: processInstanceID,
-				ProcessID:  instance.ProcessID,
-				TenantID:   instance.TenantID,
-				ToUsers:    toUsers,
-				FromUser:   fromUser,
-				Source:     EventSourceFromCtx(suspendCtx),
-				Timestamp:  time.Now(),
+				Type:                TaskEventSuspended,
+				InstanceID:          processInstanceID,
+				ProcessID:           instance.ProcessID,
+				ProcessName:         instance.Name,
+				StartUserID:         instance.StartUserID,
+				InstanceStatusAfter: string(enums.InstanceStatusSuspended),
+				TenantID:            instance.TenantID,
+				ToUsers:             toUsers,
+				FromUser:            fromUser,
+				Source:              EventSourceFromCtx(suspendCtx),
+				Timestamp:           time.Now(),
 			}, suspendCtx)
 			return nil
 		})
@@ -728,14 +731,17 @@ func (s *RuntimeServiceImpl) activateProcessInstanceInternal(ctx context.Context
 		activateCtx := ctx
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), TaskEvent{
-				Type:       TaskEventActivated,
-				InstanceID: processInstanceID,
-				ProcessID:  instance.ProcessID,
-				TenantID:   instance.TenantID,
-				ToUsers:    toUsers,
-				FromUser:   fromUser,
-				Source:     EventSourceFromCtx(activateCtx),
-				Timestamp:  time.Now(),
+				Type:                TaskEventActivated,
+				InstanceID:          processInstanceID,
+				ProcessID:           instance.ProcessID,
+				ProcessName:         instance.Name,
+				StartUserID:         instance.StartUserID,
+				InstanceStatusAfter: string(enums.InstanceStatusActive),
+				TenantID:            instance.TenantID,
+				ToUsers:             toUsers,
+				FromUser:            fromUser,
+				Source:              EventSourceFromCtx(activateCtx),
+				Timestamp:           time.Now(),
 			}, activateCtx)
 			return nil
 		})
@@ -1151,14 +1157,17 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 					fromUser = u.UserID
 				}
 				evt := TaskEvent{
-					Type:       TaskEventCompleted,
-					InstanceID: processInstanceID,
-					ProcessID:  updatedInstance.ProcessID,
-					TenantID:   updatedInstance.TenantID,
-					ToUsers:    toUsers,
-					FromUser:   fromUser,
-					Source:     EventSourceFromCtx(ctx),
-					Timestamp:  time.Now(),
+					Type:                TaskEventCompleted,
+					InstanceID:          processInstanceID,
+					ProcessID:           updatedInstance.ProcessID,
+					ProcessName:         updatedInstance.Name,
+					StartUserID:         updatedInstance.StartUserID,
+					InstanceStatusAfter: string(enums.InstanceStatusCompleted),
+					TenantID:            updatedInstance.TenantID,
+					ToUsers:             toUsers,
+					FromUser:            fromUser,
+					Source:              EventSourceFromCtx(ctx),
+					Timestamp:           time.Now(),
 				}
 				scope.AfterCommit(func() error {
 					DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, ctx)
@@ -2300,15 +2309,18 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 				fromUser = u.UserID
 			}
 			return &TaskEvent{
-				Type:       TaskEventTerminated,
-				InstanceID: processInstanceID,
-				ProcessID:  instance.ProcessID,
-				TenantID:   instance.TenantID,
-				ToUsers:    toUsers,
-				FromUser:   fromUser,
-				Reason:     reason,
-				Source:     EventSourceFromCtx(ctx),
-				Timestamp:  time.Now(),
+				Type:                TaskEventTerminated,
+				InstanceID:          processInstanceID,
+				ProcessID:           instance.ProcessID,
+				ProcessName:         instance.Name,
+				StartUserID:         instance.StartUserID,
+				InstanceStatusAfter: string(enums.InstanceStatusTerminated),
+				TenantID:            instance.TenantID,
+				ToUsers:             toUsers,
+				FromUser:            fromUser,
+				Reason:              reason,
+				Source:              EventSourceFromCtx(ctx),
+				Timestamp:           time.Now(),
 			}, nil
 		}
 	}
