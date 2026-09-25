@@ -712,25 +712,15 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 // 用于或签节点完成后清理剩余候选任务，避免幽灵待办。
 func (s *TaskServiceImpl) cancelSiblingActiveTasks(ctx context.Context, scope *InstanceScope, completed *model.WfTask) error {
 	taskDAO := scope.Tasks()
-	// 翻页取全量：默认 pageSize=10 会留下第 11 个起的幽灵待办
-	var siblings []*model.WfTask
-	for page := 1; ; page++ {
-		pageTasks, total, err := taskDAO.List(ctx, &dto.TaskQuery{
-			InstanceID: completed.ProcessInstanceID,
-			TaskDefKey: completed.TaskDefKey,
-			PageRequest: dto.PageRequest{
-				Page:     page,
-				PageSize: recallTaskFetchPageSize,
-				Status:   []string{string(enums.TaskStatusActive)},
-			},
-		})
-		if err != nil {
-			return err
-		}
-		siblings = append(siblings, pageTasks...)
-		if int64(len(siblings)) >= total || len(pageTasks) == 0 {
-			break
-		}
+	siblings, err := listAllTasks(ctx, taskDAO, &dto.TaskQuery{
+		InstanceID: completed.ProcessInstanceID,
+		TaskDefKey: completed.TaskDefKey,
+		PageRequest: dto.PageRequest{
+			Status: []string{string(enums.TaskStatusActive)},
+		},
+	})
+	if err != nil {
+		return err
 	}
 	now := time.Now()
 	username := ""

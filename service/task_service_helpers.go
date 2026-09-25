@@ -8,8 +8,34 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/gflow-engine/types/dto"
 )
+
+// taskFetchAllPageSize 翻页取全量任务的单页大小：正常一轮取完，循环翻页
+// 只为防御极端形态下的慢分页。
+const taskFetchAllPageSize = 1000
+
+// listAllTasks 按 query 条件翻页取全量任务。task_dao.List 无条件分页，
+// pageSize 未设时回落默认 10，同节点清理/恢复、减签、节点置换这类全量语义
+// 的调用会被截断：留下幽灵待办，或漏恢复/漏减签该命中的行。
+func listAllTasks(ctx context.Context, taskDAO *dao.TaskDAO, query *dto.TaskQuery) ([]*model.WfTask, error) {
+	var all []*model.WfTask
+	for page := 1; ; page++ {
+		pageQuery := *query
+		pageQuery.Page = page
+		pageQuery.PageSize = taskFetchAllPageSize
+		pageTasks, total, err := taskDAO.List(ctx, &pageQuery)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, pageTasks...)
+		if int64(len(all)) >= total || len(pageTasks) == 0 {
+			return all, nil
+		}
+	}
+}
 
 // getApprovalRuleString 读取审批规则字符串（nil 安全，空串兜底）。
 func (s *TaskServiceImpl) getApprovalRuleString(rule *string) string {

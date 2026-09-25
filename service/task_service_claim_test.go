@@ -6,6 +6,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 )
 
@@ -163,4 +165,72 @@ func TestUnclaim_ClearsAssignee_AndReclaim(t *testing.T) {
 
 	// 再签收应成功（不被残留 assignee 挡住）
 	require.NoError(t, taskSvc.Claim(aCtx, aActor, "task-unclaim"))
+}
+
+// TestClaim_SiblingCleanupBeyondDefaultPage 验证：同节点待认领任务数超过默认
+// 分页大小（10）时，认领后的兄弟终止必须覆盖全部行。task_dao.List 无条件分页，
+// 清理路径直接单页查询会把第 11 个起的行截在页外，留下幽灵待办。
+func TestClaim_SiblingCleanupBeyondDefaultPage(t *testing.T) {
+	q := candGroupDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID:          "inst-claim-page",
+		ProcessID:   "proc-1",
+		Name:        "claim_page_test",
+		Status:      string(enums.InstanceStatusActive),
+		StartUserID: "userX",
+		TenantID:    "t1",
+		CreatedBy:   "userX",
+		CreatedAt:   now,
+	}))
+	const total = 12
+	for i := 0; i < total; i++ {
+		require.NoError(t, q.WfTask.Create(&model.WfTask{
+			ID:                fmt.Sprintf("task-claim-page-%02d", i),
+			ProcessInstanceID: secFixStrPtr("inst-claim-page"),
+			TaskDefKey:        "pool-node",
+			Name:              "池审批",
+			TaskType:          "user_task",
+			Status:            string(enums.TaskStatusPending),
+			ApprovalType:      string(enums.ApprovalTypeAny),
+			TenantID:          "t1",
+			CreatedBy:         "system",
+			CreatedAt:         now,
+		}))
+	}
+
+	taskSvc := &TaskServiceImpl{
+		taskDAO:         dao.NewTaskDAOWithQuery(q),
+		hiTaskDAO:       dao.NewHiTaskDAOWithQuery(q),
+		taskAssigneeDAO: dao.NewTaskAssigneeDAOWithQuery(q),
+		idGenerator:     DefaultIDGenerator,
+		workflowEngine:  candGroupEngine{identity: NewIdentityService()},
+	}
+	claimer := Actor{UserID: "userX", TenantID: "t1", UserName: "X"}
+	claimerCtx := SetUserToCtx(ctx, &claimer)
+	require.NoError(t, taskSvc.Claim(claimerCtx, claimer, "task-claim-page-00"))
+
+	pending, _, err := taskSvc.QueryTasks(ctx, &dto.TaskQuery{
+		InstanceID: secFixStrPtr("inst-claim-page"),
+		TaskDefKey: "pool-node",
+		PageRequest: dto.PageRequest{
+			PageSize: 100,
+			Status:   []string{string(enums.TaskStatusPending)},
+		},
+	})
+	require.NoError(t, err)
+	require.Empty(t, pending, "认领后同节点不允许残留 Pending 兄弟行（幽灵待办）")
+
+	terminated, _, err := taskSvc.QueryTasks(ctx, &dto.TaskQuery{
+		InstanceID: secFixStrPtr("inst-claim-page"),
+		TaskDefKey: "pool-node",
+		PageRequest: dto.PageRequest{
+			PageSize: 100,
+			Status:   []string{string(enums.TaskStatusTerminated)},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, terminated, total-1, "除被认领行外应全部终止")
 }

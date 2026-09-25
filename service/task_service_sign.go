@@ -259,7 +259,7 @@ func (s *TaskServiceImpl) reduceSignInternal(ctx context.Context, scope *Instanc
 				Status: []string{string(enums.TaskStatusActive)},
 			},
 		}
-		tasks, _, qerr := taskDAO.List(ctx, q)
+		tasks, qerr := listAllTasks(ctx, taskDAO, q)
 		if qerr != nil {
 			continue
 		}
