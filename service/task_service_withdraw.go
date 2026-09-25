@@ -162,10 +162,11 @@ func (s *TaskServiceImpl) withdrawInternal(ctx context.Context, scope *InstanceS
 		query := &dto.TaskQuery{
 			InstanceID: task.ProcessInstanceID,
 			TaskDefKey: task.TaskDefKey,
+			PageRequest: dto.PageRequest{
+				Status: []string{string(enums.TaskStatusActive), string(enums.TaskStatusPending)},
+			},
 		}
-		query.Status = []string{string(enums.TaskStatusActive), string(enums.TaskStatusPending)}
-		otherTasks, _, err := taskDAO.List(ctx, query)
-		if err == nil {
+		if otherTasks, err := listAllTasks(ctx, taskDAO, query); err == nil {
 			for _, t := range otherTasks {
 				if t.ID != task.ID {
 					t.Status = string(enums.TaskStatusTerminated)
@@ -345,10 +346,11 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 		activeQuery := &dto.TaskQuery{
 			InstanceID: task.ProcessInstanceID,
 			TaskDefKey: task.TaskDefKey,
+			PageRequest: dto.PageRequest{
+				Status: []string{string(enums.TaskStatusActive), string(enums.TaskStatusPending)},
+			},
 		}
-		activeQuery.Status = []string{string(enums.TaskStatusActive), string(enums.TaskStatusPending)}
-		activeTasks, _, aerr := taskDAO.List(ctx, activeQuery)
-		if aerr == nil {
+		if activeTasks, aerr := listAllTasks(ctx, taskDAO, activeQuery); aerr == nil {
 			for _, t := range activeTasks {
 				if t.ID != task.ID {
 					t.Status = string(enums.TaskStatusTerminated)
@@ -377,8 +379,7 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 			InstanceID: task.ProcessInstanceID,
 			TaskDefKey: targetActivityID,
 		}
-		targetTasks, _, terr := taskDAO.List(ctx, targetQuery)
-		if terr == nil {
+		if targetTasks, terr := listAllTasks(ctx, taskDAO, targetQuery); terr == nil {
 			for _, t := range targetTasks {
 				if herr := hiTaskDAO.Create(ctx, taskToHiTask(t)); herr != nil {
 					logrus.Warnf("failed to archive task %s before return: %v", t.ID, herr)
@@ -458,7 +459,7 @@ func (s *TaskServiceImpl) supersedeNodeTasksInternal(ctx context.Context, scope 
 		InstanceID: &instanceID,
 		TaskDefKey: taskDefKey,
 	}
-	tasks, _, err := taskDAO.List(ctx, query)
+	tasks, err := listAllTasks(ctx, taskDAO, query)
 	if err != nil {
 		return 0, fmt.Errorf("failed to list tasks for supersede: %w", err)
 	}

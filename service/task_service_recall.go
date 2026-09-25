@@ -802,29 +802,12 @@ func hasProxyMark(t *model.WfTask) bool {
 	return false
 }
 
-// recallTaskFetchPageSize 收回路径翻页取全量任务的单页大小（对齐实例详情的
-// fetch-all 口径，循环只为防御极端形态）
-const recallTaskFetchPageSize = 1000
-
 // listAllInstanceTasksTx 行锁事务内翻页取全单实例任务集。守卫（更晚办理记录、
 // 停泊判定）、前沿终止集、加签豁免共用这一份快照——默认 pageSize=10 会在
 // 会签/加签/驳回回跳重跑场景截断，截掉的恰是守卫要看的更晚记录与该终止的
 // 前沿任务，收回因此双向失真（误拒或误放行+幽灵待办）。
 func listAllInstanceTasksTx(ctx context.Context, taskDAO *dao.TaskDAO, instanceID string) ([]*model.WfTask, error) {
-	var all []*model.WfTask
-	for page := 1; ; page++ {
-		pageTasks, total, err := taskDAO.List(ctx, &dto.TaskQuery{
-			InstanceID:  &instanceID,
-			PageRequest: dto.PageRequest{Page: page, PageSize: recallTaskFetchPageSize},
-		})
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, pageTasks...)
-		if int64(len(all)) >= total || len(pageTasks) == 0 {
-			return all, nil
-		}
-	}
+	return listAllTasks(ctx, taskDAO, &dto.TaskQuery{InstanceID: &instanceID})
 }
 
 // recallCountExhausted 实例累计收回次数是否已达上限。解析失败按已达上限处理，

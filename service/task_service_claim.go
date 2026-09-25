@@ -144,10 +144,11 @@ func (s *TaskServiceImpl) claimInternal(ctx context.Context, scope *InstanceScop
 		query := &dto.TaskQuery{
 			InstanceID: task.ProcessInstanceID,
 			TaskDefKey: task.TaskDefKey,
+			PageRequest: dto.PageRequest{
+				Status: []string{string(enums.TaskStatusPending)},
+			},
 		}
-		query.Status = []string{string(enums.TaskStatusPending)}
-		otherTasks, _, err := taskDAO.List(ctx, query)
-		if err == nil {
+		if otherTasks, err := listAllTasks(ctx, taskDAO, query); err == nil {
 			userSystem := constants.UserSystem
 			endReason := string(enums.EndReasonClaimedByOther)
 			for _, t := range otherTasks {
@@ -305,10 +306,11 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 		query := &dto.TaskQuery{
 			InstanceID: task.ProcessInstanceID,
 			TaskDefKey: task.TaskDefKey,
+			PageRequest: dto.PageRequest{
+				Status: []string{string(enums.TaskStatusTerminated)},
+			},
 		}
-		query.Status = []string{string(enums.TaskStatusTerminated)}
-		otherTasks, _, err := taskDAO.List(ctx, query)
-		if err == nil {
+		if otherTasks, err := listAllTasks(ctx, taskDAO, query); err == nil {
 			userSystem := constants.UserSystem
 			for _, t := range otherTasks {
 				if t.EndReason == nil || *t.EndReason != string(enums.EndReasonClaimedByOther) {
