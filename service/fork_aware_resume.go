@@ -369,14 +369,7 @@ func (s *RuntimeServiceImpl) buildBranchResumeMsg(
 		variablesStr = "{}"
 	}
 
-	md := types.NewMetadata()
-	md.PutValue(constants.KeyTenantID, inst.TenantID)
-	md.PutValue(constants.KeyInstanceID, inst.ID)
-	if inst.BusinessKey != nil {
-		md.PutValue(constants.KeyBusinessKey, *inst.BusinessKey)
-	}
-	md.PutValue(constants.KeyOwner, inst.CreatedBy)
-	md.PutValue(constants.KeyProcessID, inst.ProcessID)
+	md := buildInstanceEnvelope(inst)
 	if len(rows) > 0 {
 		// delay 节点恢复时跳过已等待的时间。和 RestoreProcessInstance 的
 		// delay 偏移逻辑保持一致。
