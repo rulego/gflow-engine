@@ -59,9 +59,13 @@ func (d *HiInstanceDAO) List(ctx context.Context, request *dto.ProcessInstanceQu
 		query = query.Join(p, q.ProcessID.EqCol(p.ID), p.ProcessKey.Eq(request.ProcessKey))
 	}
 
-	// 按状态筛选（与 InstanceDAO.List 同口径；PageRequest.Status 复用）
+	// 按状态筛选（与 InstanceDAO.List 同口径；PageRequest.Status 复用）。
+	// 未显式指定状态时排除软删除行：deleted 对用户不可见，任何列表不应带出
+	// （同 buildInstanceUnionQuery）。
 	if len(request.Status) > 0 {
 		query = query.Where(q.Status.In(request.Status...))
+	} else {
+		query = query.Where(q.Status.Neq(string(enums.InstanceStatusDeleted)))
 	}
 
 	// 发起人与创建时间窗
@@ -138,8 +142,21 @@ func (d *HiInstanceDAO) CreateBatch(ctx context.Context, entities []*model.WfHiI
 	return q.WithContext(ctx).Create(entities...)
 }
 
-// Get 根据ID获取HiInstance
+// Get 根据ID获取HiInstance。软删除行（status=deleted）对用户不可见，按
+// 未命中返回；需要读到原始行的清理/传播路径用 GetIncludingDeleted。
 func (d *HiInstanceDAO) Get(ctx context.Context, id string) (*model.WfInstance, error) {
+	entity, err := d.GetIncludingDeleted(ctx, id)
+	if err != nil || entity == nil {
+		return nil, err
+	}
+	if entity.Status == string(enums.InstanceStatusDeleted) {
+		return nil, nil
+	}
+	return entity, nil
+}
+
+// GetIncludingDeleted 根据ID获取HiInstance原始行，不过滤软删除状态。
+func (d *HiInstanceDAO) GetIncludingDeleted(ctx context.Context, id string) (*model.WfInstance, error) {
 	if id == "" {
 		return nil, fmt.Errorf("id cannot be empty")
 	}

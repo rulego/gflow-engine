@@ -218,8 +218,9 @@ func (s *HistoryServiceImpl) DeleteHistoricProcessInstance(ctx context.Context, 
 		return fmt.Errorf("process instance ID cannot be empty")
 	}
 
-	// 归档记录归属校验后删除
-	record, err := s.hiInstanceDAO.Get(ctx, processInstanceID)
+	// 归档记录归属校验后删除。物理清除的对象包含被运行时标为 deleted 的行，
+	// 须读原始行。
+	record, err := s.hiInstanceDAO.GetIncludingDeleted(ctx, processInstanceID)
 	if err != nil {
 		return fmt.Errorf("failed to get historic process instance: %w", err)
 	}
