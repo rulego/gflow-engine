@@ -6,6 +6,7 @@ toolchain go1.24.3
 
 require (
 	github.com/glebarez/sqlite v1.11.0
+	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/rulego/rulego v0.37.2
@@ -42,7 +43,6 @@ require (
 	github.com/expr-lang/expr v1.17.8 // indirect
 	github.com/glebarez/go-sqlite v1.21.2 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
-	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/gofrs/uuid/v5 v5.0.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect

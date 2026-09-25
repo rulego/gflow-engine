@@ -17,6 +17,9 @@
 package service
 
 import (
+	"fmt"
+
+	gomysql "github.com/go-sql-driver/mysql"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -45,11 +48,28 @@ func (m *MySQLDialectProvider) GetName() string {
 }
 
 func (m *MySQLDialectProvider) CreateDialector(dsn string) (gorm.Dialector, error) {
-	return mysql.Open(dsn), nil
+	cfg, err := mysqlDSNWithFoundRows(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return mysql.Open(cfg.FormatDSN()), nil
 }
 
 func (m *MySQLDialectProvider) GetSupportedDrivers() []string {
 	return []string{"mysql"}
+}
+
+// mysqlDSNWithFoundRows 解析 DSN 并强制 clientFoundRows。MySQL 默认 affected
+// rows 只计值发生变化的行，而 DAO 层按 matched rows 语义用 RowsAffected==0
+// 判定行不存在——不开此参数，幂等重试/重复置同一状态会被误报 not found
+// （PG 天然计 matched rows，无此差异）。
+func mysqlDSNWithFoundRows(dsn string) (*gomysql.Config, error) {
+	cfg, err := gomysql.ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parse mysql dsn: %w", err)
+	}
+	cfg.ClientFoundRows = true
+	return cfg, nil
 }
 
 // SQLite 方言当前不提供；需要时按 DialectProvider 接口自行实现并注册。
