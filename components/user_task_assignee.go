@@ -29,135 +29,33 @@ import (
 	"github.com/rulego/rulego/api/types"
 )
 
-// resolveAssignees 解析审批人
-//
-// 支持指定审批人、候选用户、候选组的解析。
-// 当 CandidateType 为 role/direct_manager/multi_level_manager/department 等类型时，
-// 调用 IdentityService 查询真实的用户/角色/部门关系；IdentityService 未注入时
-// 这些类型返回错误，由上层在构建期暴露配置缺失。
+// resolveAssignees 解析审批人：按 approver.type 分发到解析策略（内置类型与
+// 宿主注册的自定义类型共用同一注册表，见 approver_resolver.go）。自审处理
+// 对全部类型正交，留在节点层。
 func (n *UserTaskNode) resolveAssignees(ctx context.Context, tenantID, owner string, variables map[string]interface{}) ([]string, error) {
 	var assignees []string
-	assigneeSet := make(map[string]bool)
-
-	ct := enums.CandidateType(n.Config.Approver.Type)
-	switch ct {
-	case enums.CandidateTypeUser:
-		for _, uid := range n.Config.Approver.UserIds {
-			assignees = addUnique(assignees, assigneeSet, uid)
+	if r := LookupApproverResolver(enums.CandidateType(n.Config.Approver.Type)); r != nil {
+		input := ApproverResolveInput{
+			Ctx:      ctx,
+			Identity: n.IdentityService,
+			TenantID: tenantID,
+			Owner:    owner,
+			NodeID:   n.GetSelfId(),
+			Cfg:      &n.Config.Approver,
+			Vars:     variables,
 		}
-	case enums.CandidateTypeRole:
-		// IdentityService 未注入时返回错误，构建期暴露配置缺失
-		if n.IdentityService == nil {
-			return nil, fmt.Errorf("identity service not configured for role-based candidate resolution")
-		}
-		for _, rid := range n.Config.Approver.RoleIds {
-			if rid == "" {
-				continue
-			}
-			members, err := n.IdentityService.GetUserIDsByRoleID(ctx, tenantID, rid)
-			if err != nil {
-				// 查询报错向上抛：身份服务故障不是"审批人为空"，吞掉会静默走
-				// 兜底策略（auto_approve 下等于无审批放行）
-				return nil, fmt.Errorf("failed to resolve role members of %s: %w", rid, err)
-			}
-			for _, m := range members {
-				assignees = addUnique(assignees, assigneeSet, m)
-			}
-		}
-	case enums.CandidateTypeDirectManager:
-		if owner == "" {
-			return nil, fmt.Errorf("direct_manager candidate requires process owner in metadata")
-		}
-		if n.IdentityService == nil {
-			return nil, fmt.Errorf("identity service not configured for direct_manager candidate resolution")
-		}
-		// levels>1 表示取第 N 级主管（设计器"发起人的第 N 级主管"），逐级向上只保留终点
-		levels := n.Config.Approver.Levels
-		if levels <= 0 {
-			levels = 1
-		}
-		current := owner
-		managerID := ""
-		for i := 0; i < levels; i++ {
-			mgr, err := n.IdentityService.GetUserManagerID(ctx, tenantID, current)
-			if err != nil {
-				return nil, fmt.Errorf("failed to resolve manager of %s: %w", current, err)
-			}
-			if mgr == "" {
-				// 组织顶端的发起人没有上级是数据常态而非故障：按空成员处理，
-				// 落 emptyApproverPolicy 兜底（与 multi_level_manager 到顶即停同口径）
-				logrus.WithFields(logrus.Fields{"node": n.GetSelfId(), "owner": owner, "level": i + 1}).
-					Info("no manager found; empty approvers fall back to node policy")
-				return nil, nil
-			}
-			managerID = mgr
-			current = mgr
-		}
-		assignees = addUnique(assignees, assigneeSet, managerID)
-	case enums.CandidateTypeInitiatorSelect:
-		// selected 模板按 msg.xxx 引用流程变量，执行时以 {msg: variables} 提供信封
+		// 发起人自选模板按 msg.xxx 引用流程变量，执行时以 {msg: variables} 提供信封
 		if n.initiatorSelectedTemplate != nil {
-			v, err := n.initiatorSelectedTemplate.Execute(map[string]interface{}{types.MsgKey: variables})
-			if err != nil {
-				// 模板求值报错（变量缺失/类型不符）向上抛，不落空静默走兜底
-				return nil, fmt.Errorf("failed to execute initiator selected template: %w", err)
-			}
-			for _, uid := range toStringSlice(v) {
-				assignees = addUnique(assignees, assigneeSet, uid)
-			}
-		} else {
-			logrus.Warn("initiatorSelectedTemplate is nil")
-		}
-	case enums.CandidateTypeInitiatorSelf:
-		assignees = addUnique(assignees, assigneeSet, owner)
-	case enums.CandidateTypeMultiLevelManager:
-		if owner == "" {
-			return nil, fmt.Errorf("multi_level_manager candidate requires process owner in metadata")
-		}
-		if n.IdentityService == nil {
-			return nil, fmt.Errorf("identity service not configured for multi_level_manager candidate resolution")
-		}
-		// levels>0：固定审批到第 N 级；levels<0：直到最上层（设计器 directorMode=0），
-		// 组织关系中没有更上级时自然停止。
-		// visited 防组织关系成环（A 的上级是 B、B 的上级是 A）导致死循环
-		levels := n.Config.Approver.Levels
-		current := owner
-		visited := map[string]bool{owner: true}
-		for i := 0; levels < 0 || i < levels; i++ {
-			mgr, err := n.IdentityService.GetUserManagerID(ctx, tenantID, current)
-			if err != nil || mgr == "" {
-				break
-			}
-			if visited[mgr] {
-				logrus.WithFields(logrus.Fields{
-					"node": n.GetSelfId(), "user": current, "cycleTo": mgr,
-				}).Warn("manager chain has a cycle; treating as top of organization")
-				break
-			}
-			visited[mgr] = true
-			assignees = addUnique(assignees, assigneeSet, mgr)
-			current = mgr
-		}
-	case enums.CandidateTypeDept:
-		if n.IdentityService == nil {
-			return nil, fmt.Errorf("identity service not configured for dept-based candidate resolution")
-		}
-		for _, did := range n.Config.Approver.DeptIds {
-			if did == "" {
-				continue
-			}
-			members, err := n.IdentityService.GetUserIDsByDepartmentID(ctx, tenantID, did)
-			if err != nil {
-				// 查询报错向上抛：身份服务故障不是"审批人为空"，吞掉会静默走
-				// 兜底策略（auto_approve 下等于无审批放行）
-				return nil, fmt.Errorf("failed to resolve dept members of %s: %w", did, err)
-			}
-			for _, m := range members {
-				assignees = addUnique(assignees, assigneeSet, m)
+			tpl := n.initiatorSelectedTemplate
+			input.Expression = func(vars map[string]interface{}) (interface{}, error) {
+				return tpl.Execute(map[string]interface{}{types.MsgKey: vars})
 			}
 		}
-	default:
-		// 未指定类型时，不分配审批人
+		var err error
+		assignees, err = r.Resolve(input)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if sa := enums.SelfApprovalType(n.Config.SelfApproval); sa != "" && sa != enums.SelfApprovalTypeNone {

@@ -64,20 +64,21 @@ func (n *UserTaskNode) createUserTasks(ctx types.RuleContext, processInstanceID 
 	if len(assignees) == 0 {
 		return n.handleEmptyApprovers(ctx, processInstanceID, processID, tenantID, owner, variables, dueDate)
 	}
+	// 组池类型（role/dept 等）在 single/any 模式下建认领任务而非每人一条，
+	// 组池语义由解析策略声明
+	poolGroups := approverPoolGroups(&n.Config.Approver)
 	// 根据审批类型创建任务
 	switch enums.ApprovalType(n.Config.ApproveMode) {
 	case enums.ApprovalTypeSingle:
 		// 单人审批：只创建一个任务，分配给第一个审批人
-		// 如果是角色类型，创建代认领任务
-		if ct := enums.CandidateType(n.Config.Approver.Type); ct == enums.CandidateTypeRole || ct == enums.CandidateTypeDept {
-			return n.createClaimTask(ctx, processInstanceID, processID, tenantID, variables, dueDate)
+		if len(poolGroups) > 0 {
+			return n.createClaimTask(ctx, processInstanceID, processID, tenantID, variables, dueDate, poolGroups)
 		}
 		return n.createSingleTask(ctx, processInstanceID, processID, tenantID, assignees[0], variables, dueDate, "")
 	case enums.ApprovalTypeAny:
 		// 或签：创建多个任务，每个审批人一个
-		// 如果是角色类型，创建代认领任务
-		if ct := enums.CandidateType(n.Config.Approver.Type); ct == enums.CandidateTypeRole || ct == enums.CandidateTypeDept {
-			return n.createClaimTask(ctx, processInstanceID, processID, tenantID, variables, dueDate)
+		if len(poolGroups) > 0 {
+			return n.createClaimTask(ctx, processInstanceID, processID, tenantID, variables, dueDate, poolGroups)
 		}
 		return n.createMultiTasks(ctx, processInstanceID, processID, tenantID, assignees, variables, dueDate)
 	case enums.ApprovalTypeSequential:
@@ -199,8 +200,8 @@ func (n *UserTaskNode) rollbackTasks(ctx context.Context, taskIDs []string, reas
 	}
 }
 
-// createClaimTask 创建“待认领”任务
-func (n *UserTaskNode) createClaimTask(ctx types.RuleContext, processInstanceID, processID, tenantID string, variables map[string]interface{}, dueDate *time.Time) error {
+// createClaimTask 创建“待认领”任务，按 groups 逐组落候选池
+func (n *UserTaskNode) createClaimTask(ctx types.RuleContext, processInstanceID, processID, tenantID string, variables map[string]interface{}, dueDate *time.Time, groups []PoolCandidateGroup) error {
 	desc := n.TaskDescription
 	vars := serializeVariables(variables)
 	task := &model.WfTask{
@@ -226,44 +227,37 @@ func (n *UserTaskNode) createClaimTask(ctx types.RuleContext, processInstanceID,
 		return err
 	}
 
-	// 候选成员解析器：IdentityService 未注入时为 nil，仅落库候选不发通知
-	var resolveRoleMembers, resolveDeptMembers memberResolverFunc
-	if n.IdentityService != nil {
-		resolveRoleMembers = n.IdentityService.GetUserIDsByRoleID
-		resolveDeptMembers = n.IdentityService.GetUserIDsByDepartmentID
+	// 落库候选组。AddCandidates 失败时回滚已创建的 task（空池任务可被任意
+	// 同租户用户认领越权）。claim 时由 GetTaskCandidates 展开组成员。
+	for _, g := range groups {
+		if cErr := n.TaskService.AddCandidates(ctx.GetContext(), systemActorForTenant(tenantID), taskID, g.EntityType, g.IDs); cErr != nil {
+			_ = n.TaskService.DeleteTask(ctx.GetContext(), service.SystemActor(), taskID, "candidate write failed")
+			return fmt.Errorf("failed to add %s candidates for task %s: %w", g.EntityType, taskID, cErr)
+		}
+		n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, g.IDs, poolMemberExpander(n.IdentityService, g.EntityType), "")
 	}
+	return nil
+}
 
-	// 落库 role 候选。AddCandidates 失败时回滚已创建的 task（避免空池任务被任意认领越权）。
-	if roleIDs := n.Config.Approver.RoleIds; len(roleIDs) > 0 {
-		filtered := make([]string, 0, len(roleIDs))
-		for _, rid := range roleIDs {
-			if rid != "" {
-				filtered = append(filtered, rid)
-			}
-		}
-		if len(filtered) > 0 {
-			if cErr := n.TaskService.AddCandidates(ctx.GetContext(), systemActorForTenant(tenantID), taskID, string(enums.EntityTypeRole), filtered); cErr != nil {
-				_ = n.TaskService.DeleteTask(ctx.GetContext(), service.SystemActor(), taskID, "candidate write failed")
-				return fmt.Errorf("failed to add role candidates for task %s: %w", taskID, cErr)
-			}
-			n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, filtered, resolveRoleMembers, "")
-		}
+// approverPoolGroups 取审批人类型的组池候选；非组池类型返回 nil。
+func approverPoolGroups(cfg *ApproverConfig) []PoolCandidateGroup {
+	if r := LookupApproverResolver(enums.CandidateType(cfg.Type)); r != nil {
+		return r.PoolCandidates(cfg)
 	}
-	// dept 候选组：落库 department 候选，claim 时由 GetTaskCandidates 展开部门成员。
-	if deptIDs := n.Config.Approver.DeptIds; len(deptIDs) > 0 {
-		filtered := make([]string, 0, len(deptIDs))
-		for _, did := range deptIDs {
-			if did != "" {
-				filtered = append(filtered, did)
-			}
-		}
-		if len(filtered) > 0 {
-			if cErr := n.TaskService.AddCandidates(ctx.GetContext(), systemActorForTenant(tenantID), taskID, string(enums.EntityTypeDepartment), filtered); cErr != nil {
-				_ = n.TaskService.DeleteTask(ctx.GetContext(), service.SystemActor(), taskID, "candidate write failed")
-				return fmt.Errorf("failed to add dept candidates for task %s: %w", taskID, cErr)
-			}
-			n.notifyCandidateCreated(ctx, taskID, processInstanceID, processID, tenantID, filtered, resolveDeptMembers, "")
-		}
+	return nil
+}
+
+// poolMemberExpander 候选组成员快照展开：内置 role/department 走身份服务；
+// person 及自定义实体类型返回 nil，notifyCandidateCreated 对 nil 展开器跳过通知。
+func poolMemberExpander(identity service.IdentityService, entityType string) memberResolverFunc {
+	if identity == nil {
+		return nil
+	}
+	switch entityType {
+	case string(enums.EntityTypeRole):
+		return identity.GetUserIDsByRoleID
+	case string(enums.EntityTypeDepartment):
+		return identity.GetUserIDsByDepartmentID
 	}
 	return nil
 }
