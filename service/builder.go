@@ -305,6 +305,11 @@ func (b *WorkflowEngineBuilderImpl) Build() (WorkflowEngine, error) {
 
 	if b.idGenerator != nil {
 		engine.setIDGenerator(b.idGenerator)
+	} else {
+		// 未显式设置时兜底独立实例：发起流程生成实例 ID 前就会用到，nil 在
+		// 首次 GenerateInstanceID 上 panic。不回写进程级 DefaultIDGenerator，
+		// 多引擎共存互不污染（与 SetIDGenerator 的契约一致）。
+		engine.setIDGenerator(NewIDGenerator())
 	}
 	if b.locker != nil {
 		engine.setLocker(b.locker)

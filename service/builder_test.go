@@ -419,3 +419,15 @@ func TestStart_LogsWarningWhenMockInUse(t *testing.T) {
 		t.Errorf("expected IDENTITY_SERVICE_MOCK_IN_USE WARN entry; got %d entries", len(hook.AllEntries()))
 	}
 }
+
+func TestBuilder_Build_IDGeneratorFallback(t *testing.T) {
+	b := NewWorkflowEngineBuilder()
+	b.SetName("test")
+	engine, err := b.Build()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if engine.GetIDGenerator() == nil {
+		t.Fatal("未显式 SetIDGenerator 时 Build 应兜底默认生成器，否则首次发起流程在 GenerateInstanceID 上 panic")
+	}
+}
