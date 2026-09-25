@@ -107,16 +107,28 @@ func instanceToHiInstance(instance *model.WfInstance) *model.WfHiInstance {
 	}
 }
 
-// ensureTargetUserInTenant 转办/委派/改派/加签的目标用户租户归属校验。
+// ensureTargetUserInTenant 转办/委派/改派/加签的目标用户租户归属与启用校验。
 // 统一走租户归属鉴权守卫（未实现 TenantMembershipChecker 时跳过，缺口由装配期
-// TenantMembershipGuard.Validate 统一告警/严格模式拒绝），action 仅用于错误信息标注动作来源。
+// TenantMembershipGuard.Validate 统一告警/严格模式拒绝）；身份服务实现
+// ActiveUserChecker 时校验目标启用，停用用户接手任务即无人可办，action 仅用于
+// 错误信息标注动作来源。
 func (s *TaskServiceImpl) ensureTargetUserInTenant(ctx context.Context, task *model.WfTask, userID, action string) error {
 	if s.workflowEngine == nil || task == nil {
 		return nil
 	}
-	guard := NewTenantMembershipGuard(s.workflowEngine.GetIdentityService())
+	identity := s.workflowEngine.GetIdentityService()
+	guard := NewTenantMembershipGuard(identity)
 	if err := guard.EnsureUserInTenant(ctx, task.TenantID, userID); err != nil {
 		return fmt.Errorf("%s: %w", action, err)
+	}
+	if checker, ok := identity.(ActiveUserChecker); ok && identity != nil {
+		active, err := checker.AreActiveUsers(ctx, task.TenantID, []string{userID})
+		if err != nil {
+			return fmt.Errorf("%s: failed to check target user status: %w", action, err)
+		}
+		if !active[userID] {
+			return fmt.Errorf("%s: target user %s is not active: %w", action, userID, ErrValidation)
+		}
 	}
 	return nil
 }
