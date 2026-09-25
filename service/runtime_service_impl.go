@@ -516,7 +516,9 @@ func (s *RuntimeServiceImpl) suspendProcessInstanceInternal(ctx context.Context,
 		instance.UpdatedBy = &username
 	}
 
-	// 级联挂起所有活跃任务（使用 tx-scoped 查询）
+	// 级联挂起所有活跃任务（使用 tx-scoped 查询）。
+	// 级联失败整体回滚：实例置 Suspended 而任务仍可审批，且无补偿路径，
+	// 不能按 assignee 清理那类可容忍的 best-effort 处理。
 	tx := scope.Tx()
 	q := tx.WfTask
 	activeTasks, err := q.WithContext(ctx).
@@ -524,15 +526,14 @@ func (s *RuntimeServiceImpl) suspendProcessInstanceInternal(ctx context.Context,
 		Where(q.Status.In(string(enums.TaskStatusActive), string(enums.TaskStatusPending))).
 		Find()
 	if err != nil {
-		logrus.Warnf("Failed to get tasks for suspend cascade: %v", err)
-	} else {
-		now := time.Now()
-		for _, task := range activeTasks {
-			task.Status = string(enums.TaskStatusSuspended)
-			task.UpdatedAt = &now
-			if err := taskDAO.Update(ctx, task); err != nil {
-				logrus.Warnf("Failed to suspend task %s: %v", task.ID, err)
-			}
+		return fmt.Errorf("failed to get tasks for suspend cascade (instance %s): %w", processInstanceID, err)
+	}
+	suspendAt := time.Now()
+	for _, task := range activeTasks {
+		task.Status = string(enums.TaskStatusSuspended)
+		task.UpdatedAt = &suspendAt
+		if err := taskDAO.Update(ctx, task); err != nil {
+			return fmt.Errorf("failed to suspend task %s (instance %s): %w", task.ID, processInstanceID, err)
 		}
 	}
 
@@ -741,6 +742,7 @@ func (s *RuntimeServiceImpl) activateProcessInstanceInternal(ctx context.Context
 	}
 
 	if !wasDraft {
+		// 级联恢复失败整体回滚，理由同挂起侧：无补偿路径。
 		tx := scope.Tx()
 		q := tx.WfTask
 		suspendedTasks, err := q.WithContext(ctx).
@@ -748,20 +750,19 @@ func (s *RuntimeServiceImpl) activateProcessInstanceInternal(ctx context.Context
 			Where(q.Status.Eq(string(enums.TaskStatusSuspended))).
 			Find()
 		if err != nil {
-			logrus.Warnf("Failed to get tasks for activate cascade: %v", err)
-		} else {
-			now := time.Now()
-			for _, task := range suspendedTasks {
-				// 按挂起前语义恢复：有 assignee → active，无 assignee(候选组待认领) → pending
-				if task.Assignee != nil && *task.Assignee != "" {
-					task.Status = string(enums.TaskStatusActive)
-				} else {
-					task.Status = string(enums.TaskStatusPending)
-				}
-				task.UpdatedAt = &now
-				if err := taskDAO.Update(ctx, task); err != nil {
-					logrus.Warnf("Failed to activate task %s: %v", task.ID, err)
-				}
+			return nil, false, fmt.Errorf("failed to get tasks for activate cascade (instance %s): %w", processInstanceID, err)
+		}
+		activateAt := time.Now()
+		for _, task := range suspendedTasks {
+			// 按挂起前语义恢复：有 assignee → active，无 assignee(候选组待认领) → pending
+			if task.Assignee != nil && *task.Assignee != "" {
+				task.Status = string(enums.TaskStatusActive)
+			} else {
+				task.Status = string(enums.TaskStatusPending)
+			}
+			task.UpdatedAt = &activateAt
+			if err := taskDAO.Update(ctx, task); err != nil {
+				return nil, false, fmt.Errorf("failed to activate task %s (instance %s): %w", task.ID, processInstanceID, err)
 			}
 		}
 	}
