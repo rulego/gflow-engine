@@ -322,11 +322,18 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 				if !sameClaimRound(t.UpdatedAt, claimRoundAt) {
 					continue
 				}
+				// claim 终止兄弟行时写了 end_reason/ended_at，恢复必须一并清空：
+				// 结构体 Update 跳过 nil 字段，残留会让恢复后的待认领行带终态
+				// 事实（统计按 end_reason 归类时被记成 claimed_by_other），
+				// 与主任务回池一样用 Select 强制写 NULL。
 				t.Status = string(enums.TaskStatusPending)
 				t.EndReason = nil
+				t.EndedAt = nil
 				t.UpdatedBy = &userSystem
 				t.UpdatedAt = &now
-				if err := taskDAO.Update(ctx, t); err != nil {
+				if _, err := qa.WithContext(ctx).Where(qa.ID.Eq(t.ID)).
+					Select(qa.Status, qa.EndReason, qa.EndedAt, qa.UpdatedBy, qa.UpdatedAt).
+					Updates(t); err != nil {
 					logrus.Warnf("failed to restore sibling task %s after unclaim: %v", t.ID, err)
 				}
 			}
