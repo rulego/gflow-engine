@@ -63,6 +63,11 @@ func (s *TaskServiceImpl) setAssigneeInternal(ctx context.Context, scope *Instan
 	if task == nil {
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
+	// 终态守卫在锁内复校：外层廉价读与拿锁之间存在窗口，并发的 Complete
+	// 落进窗口时这里重读到的已是终态行，改写会污染归属审计事实。
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, cannot set assignee: %w", task.Status, ErrConflict)
+	}
 
 	// 幂等
 	if task.Assignee != nil && *task.Assignee == userID {
@@ -137,6 +142,10 @@ func (s *TaskServiceImpl) setOwnerInternal(ctx context.Context, scope *InstanceS
 	}
 	if task == nil {
 		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+	// 终态守卫在锁内复校，理由同 setAssigneeInternal
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, cannot set owner: %w", task.Status, ErrConflict)
 	}
 
 	if task.Owner != nil && *task.Owner == userID {
