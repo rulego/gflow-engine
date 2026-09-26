@@ -51,6 +51,9 @@ func (s *TaskServiceImpl) CreateTask(ctx context.Context, actor Actor, task *mod
 // 组件派发事件时补齐 TaskEvent 的实例字段用；实例不存在返回空串不报错
 // （事件派发不因上下文缺失而失败）。实例已归档时回退历史表，
 // GetProcessInstance 内部处理。
+// 编译期锁定 TaskEventContextProvider 能力
+var _ TaskEventContextProvider = (*TaskServiceImpl)(nil)
+
 func (s *TaskServiceImpl) GetInstanceEventContext(ctx context.Context, instanceID string) (string, string, string, error) {
 	if instanceID == "" || s.workflowEngine == nil {
 		return "", "", "", nil

@@ -500,6 +500,7 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 		evtTenantID := instance.TenantID
 		evtProcessName := instance.Name
 		evtStartUser := instance.StartUserID
+		evtInstStatus := instance.Status
 		evtToUsers := uniqueStrings(notifyUsers)
 		evtFrom := userID
 		scope.AfterCommit(func() error {
@@ -513,7 +514,7 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 				TenantID:            evtTenantID,
 				ProcessName:         evtProcessName,
 				StartUserID:         evtStartUser,
-				InstanceStatusAfter: instance.Status,
+				InstanceStatusAfter: evtInstStatus,
 				TaskName:            evtName,
 				ToUsers:             evtToUsers,
 				FromUser:            evtFrom,
@@ -523,18 +524,21 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 			// 重建任务沿用 assigned 事件；Reason 标注收回缘由，通知与收回前的
 			// 首张待办区分开
 			DispatchTaskEvent(listener, TaskEvent{
-				Type:         TaskEventAssigned,
-				TaskID:       evtTaskID,
-				TaskDefKey:   evtDefKey,
-				ParentTaskID: evtParentID,
-				InstanceID:   instanceID,
-				ProcessID:    evtProcessID,
-				TenantID:     evtTenantID,
-				TaskName:     evtName,
-				ToUsers:      []string{evtFrom},
-				FromUser:     evtFrom,
-				Reason:       constants.EndReasonPrefixRecall + "，重新待审",
-				Timestamp:    time.Now(),
+				Type:                TaskEventAssigned,
+				TaskID:              evtTaskID,
+				TaskDefKey:          evtDefKey,
+				ParentTaskID:        evtParentID,
+				InstanceID:          instanceID,
+				ProcessID:           evtProcessID,
+				TenantID:            evtTenantID,
+				ProcessName:         evtProcessName,
+				StartUserID:         evtStartUser,
+				InstanceStatusAfter: evtInstStatus,
+				TaskName:            evtName,
+				ToUsers:             []string{evtFrom},
+				FromUser:            evtFrom,
+				Reason:              constants.EndReasonPrefixRecall + "，重新待审",
+				Timestamp:           time.Now(),
 			}, ctx)
 			return nil
 		})

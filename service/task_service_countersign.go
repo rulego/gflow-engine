@@ -88,6 +88,15 @@ func (s *TaskServiceImpl) createParallelSubTasks(ctx context.Context, scope *Ins
 		instanceID = *parentTask.ProcessInstanceID
 	}
 	listener := s.workflowEngine.GetTaskEventListener()
+	// 事件携带的实例上下文对全部子任务相同，循环外一次读取
+	var evtProcessName, evtStartUser, evtInstStatus string
+	if listener != nil && instanceID != "" {
+		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
+			evtProcessName = inst.Name
+			evtStartUser = inst.StartUserID
+			evtInstStatus = inst.Status
+		}
+	}
 	for i, assignee := range assignees {
 		subTask := &model.WfTask{
 			ID:                s.idGenerator.GenerateID(),
@@ -117,11 +126,6 @@ func (s *TaskServiceImpl) createParallelSubTasks(ctx context.Context, scope *Ins
 
 		// 并行会签：每个子任务立即激活，触发 assigned 事件通知审批人
 		if listener != nil {
-			evtProcessName, evtStartUser := "", ""
-			if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
-				evtProcessName = inst.Name
-				evtStartUser = inst.StartUserID
-			}
 			evt := TaskEvent{
 				Type:                TaskEventAssigned,
 				TaskID:              subTask.ID,
@@ -132,7 +136,7 @@ func (s *TaskServiceImpl) createParallelSubTasks(ctx context.Context, scope *Ins
 				TenantID:            parentTask.TenantID,
 				ProcessName:         evtProcessName,
 				StartUserID:         evtStartUser,
-				InstanceStatusAfter: parentTask.Status,
+				InstanceStatusAfter: evtInstStatus,
 				TaskName:            subTask.Name,
 				ToUsers:             []string{assignee},
 				FromUser:            countersignOperator(ctx),
