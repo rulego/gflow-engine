@@ -281,10 +281,11 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 		if u := GetUserFromCtx(ctx); u != nil {
 			fromUser = u.UserID
 		}
-		evtProcessName, evtStartUser := "", ""
+		evtProcessName, evtStartUser, evtInstStatus := "", "", ""
 		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
 			evtProcessName = inst.Name
 			evtStartUser = inst.StartUserID
+			evtInstStatus = inst.Status
 		}
 		evt := TaskEvent{
 			Type:                TaskEventForwarded,
@@ -295,7 +296,7 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 			TenantID:            task.TenantID,
 			ProcessName:         evtProcessName,
 			StartUserID:         evtStartUser,
-			InstanceStatusAfter: task.Status,
+			InstanceStatusAfter: evtInstStatus,
 			TaskName:            task.Name,
 			ToUsers:             []string{userID},
 			FromUser:            fromUser,
@@ -410,17 +411,26 @@ func (s *TaskServiceImpl) resolveInternal(ctx context.Context, scope *InstanceSc
 		if u := GetUserFromCtx(ctx); u != nil {
 			fromUser = u.UserID
 		}
+		evtProcessName, evtStartUser, evtInstStatus := "", "", ""
+		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
+			evtProcessName = inst.Name
+			evtStartUser = inst.StartUserID
+			evtInstStatus = inst.Status
+		}
 		evt := TaskEvent{
-			Type:       TaskEventResolved,
-			TaskID:     task.ID,
-			TaskDefKey: task.TaskDefKey,
-			InstanceID: instanceID,
-			ProcessID:  task.ProcessID,
-			TenantID:   task.TenantID,
-			TaskName:   task.Name,
-			ToUsers:    []string{*task.Assignee},
-			FromUser:   fromUser,
-			Timestamp:  time.Now(),
+			Type:                TaskEventResolved,
+			TaskID:              task.ID,
+			TaskDefKey:          task.TaskDefKey,
+			InstanceID:          instanceID,
+			ProcessID:           task.ProcessID,
+			TenantID:            task.TenantID,
+			ProcessName:         evtProcessName,
+			StartUserID:         evtStartUser,
+			InstanceStatusAfter: evtInstStatus,
+			TaskName:            task.Name,
+			ToUsers:             []string{*task.Assignee},
+			FromUser:            fromUser,
+			Timestamp:           time.Now(),
 		}
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(listener, evt, ctx)
@@ -530,10 +540,11 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 		if task.ProcessInstanceID != nil {
 			instanceID = *task.ProcessInstanceID
 		}
-		evtProcessName, evtStartUser := "", ""
+		evtProcessName, evtStartUser, evtInstStatus := "", "", ""
 		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
 			evtProcessName = inst.Name
 			evtStartUser = inst.StartUserID
+			evtInstStatus = inst.Status
 		}
 		evt := TaskEvent{
 			Type:                TaskEventForwarded,
@@ -544,7 +555,7 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 			TenantID:            task.TenantID,
 			ProcessName:         evtProcessName,
 			StartUserID:         evtStartUser,
-			InstanceStatusAfter: task.Status,
+			InstanceStatusAfter: evtInstStatus,
 			TaskName:            task.Name,
 			ToUsers:             []string{toUserID},
 			FromUser:            fromUserID,

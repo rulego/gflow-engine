@@ -66,9 +66,9 @@ type TaskEvent struct {
 	ProcessID           string    // 流程定义ID
 	TenantID            string    // 租户ID
 	TaskName            string    // 任务名称
-	ProcessName         string    // 流程名称（生命周期事件由引擎侧填充，取实例名）
+	ProcessName         string    // 流程名称（引擎侧填充，取实例名）
 	StartUserID         string    // 实例发起人 userId（引擎侧填充，listener 免回查实例）
-	InstanceStatusAfter string    // 事件后的实例状态（生命周期事件填充；任务级事件不填）
+	InstanceStatusAfter string    // 事件后的实例状态（引擎侧填充；个别历史路径可能为空）
 	ToUsers             []string  // 接收通知的用户；assigned/candidateCreated 为被分配人/候选人群
 	FromUser            string    // 触发操作的用户ID；系统驱动为空
 	Reason              string    // 驳回/终止/撤回原因

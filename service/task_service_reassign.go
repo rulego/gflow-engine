@@ -69,7 +69,7 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 
 	var oldAssignee string
 	var reassignedTask *model.WfTask
-	var evtProcessName, evtStartUser string
+	var evtProcessName, evtStartUser, evtInstStatus string
 	reassignFn := func(scope *InstanceScope) error {
 		t, old, err := s.reassignInternal(ctx, scope, taskID, operatorID, newAssignee, reason)
 		if err != nil {
@@ -80,6 +80,7 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
 			evtProcessName = inst.Name
 			evtStartUser = inst.StartUserID
+			evtInstStatus = inst.Status
 		}
 		return nil
 	}
@@ -103,7 +104,7 @@ func (s *TaskServiceImpl) Reassign(ctx context.Context, actor Actor, taskID, new
 			TenantID:            reassignedTask.TenantID,
 			ProcessName:         evtProcessName,
 			StartUserID:         evtStartUser,
-			InstanceStatusAfter: reassignedTask.Status,
+			InstanceStatusAfter: evtInstStatus,
 			TaskName:            reassignedTask.Name,
 			ToUsers:             []string{newAssignee},
 			FromUser:            operatorID,

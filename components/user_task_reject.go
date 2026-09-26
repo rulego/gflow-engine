@@ -98,11 +98,13 @@ func (n *UserTaskNode) fireRejectedEvent(ctx types.RuleContext, msg types.RuleMs
 	}
 	processID := n.getProcessID(msg)
 	tenantID := metaValue(msg, constants.KeyTenantID)
-	// 查发起人：通过 RuntimeService 获取实例的 StartUserID
-	var startUserID string
+	// 查实例：StartUserID 用于定向通知，流程名/事件后状态随事件携带供通知装配
+	var startUserID, processName, instStatus string
 	if n.RuntimeService != nil {
 		if inst, err := n.RuntimeService.GetProcessInstance(ctx.GetContext(), service.ActorFromCtx(ctx.GetContext()), instanceID); err == nil && inst != nil {
 			startUserID = inst.StartUserID
+			processName = inst.Name
+			instStatus = inst.Status
 		}
 	}
 	// 驳回人：API 驱动经链元数据透传（见 executeNextLocked），取不到再回退
@@ -124,17 +126,20 @@ func (n *UserTaskNode) fireRejectedEvent(ctx types.RuleContext, msg types.RuleMs
 	}
 	listener := n.TaskEventListener
 	evt := service.TaskEvent{
-		Type:       service.TaskEventRejected,
-		TaskID:     taskID,
-		TaskDefKey: taskDefKey,
-		InstanceID: instanceID,
-		ProcessID:  processID,
-		TenantID:   tenantID,
-		TaskName:   n.GetSelfName(),
-		FromUser:   fromUser,
-		OnBehalfOf: onBehalfOf,
-		Reason:     reason,
-		Timestamp:  time.Now(),
+		Type:                service.TaskEventRejected,
+		TaskID:              taskID,
+		TaskDefKey:          taskDefKey,
+		InstanceID:          instanceID,
+		ProcessID:           processID,
+		TenantID:            tenantID,
+		ProcessName:         processName,
+		StartUserID:         startUserID,
+		InstanceStatusAfter: instStatus,
+		TaskName:            n.GetSelfName(),
+		FromUser:            fromUser,
+		OnBehalfOf:          onBehalfOf,
+		Reason:              reason,
+		Timestamp:           time.Now(),
 	}
 	if startUserID != "" {
 		evt.ToUsers = []string{startUserID}

@@ -34,10 +34,6 @@ type TaskService interface {
 	// GetTask 根据任务ID获取任务详情
 	GetTask(ctx context.Context, actor Actor, taskID string) (*model.WfTask, error)
 
-	// GetInstanceEventContext 取实例的事件上下文（流程名/发起人/当前状态），
-	// 供组件派发事件时补齐 TaskEvent 的实例字段；实例不存在返回空串不报错。
-	GetInstanceEventContext(ctx context.Context, instanceID string) (processName, startUserID, status string, err error)
-
 	// GetTaskList 获取任务列表
 	GetTaskList(ctx context.Context, actor Actor, query *dto.TaskQuery) ([]*model.WfTask, int64, error)
 
@@ -268,4 +264,11 @@ type TaskServiceInternal interface {
 	// 节点会重新创建任务、重新走审批。仅作用于 (instanceID, taskDefKey)，不波及其它节点。
 	// 正常推进（含 sequential）不走 jump 路径，不受影响。
 	SupersedeNodeTasks(ctx context.Context, instanceID, taskDefKey, reason string) (int, error)
+}
+
+// TaskEventContextProvider 可选能力接口：为组件派发的事件补齐实例上下文
+// （流程名/发起人/实例状态）。以类型断言探测，不进 TaskService 主接口——
+// 实现走系统视角读实例，不该成为面向宿主调用方的公共读取面。
+type TaskEventContextProvider interface {
+	GetInstanceEventContext(ctx context.Context, instanceID string) (processName, startUserID, status string, err error)
 }
