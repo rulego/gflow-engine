@@ -149,6 +149,15 @@ func (n *UserTaskNode) createMultiTasks(ctx types.RuleContext, processInstanceID
 	desc := n.TaskDescription
 	vars := serializeVariables(variables)
 	createdIDs := make([]string, 0, len(assignees))
+	// 实例上下文对各被指派人相同，循环外取一次预填，免逐任务回查实例
+	evtProcessName, evtStartUser, evtInstStatus := "", "", ""
+	if p, ok := n.TaskService.(service.TaskEventContextProvider); ok {
+		if name, starter, status, err := p.GetInstanceEventContext(ctx.GetContext(), processInstanceID); err == nil {
+			evtProcessName, evtStartUser, evtInstStatus = name, starter, status
+		} else {
+			logrus.WithError(err).Debugf("node %s: instance context backfill failed for multi-task events", n.GetSelfId())
+		}
+	}
 	for i, assignee := range assignees {
 		task := &model.WfTask{
 			ProcessInstanceID: &processInstanceID,
@@ -177,16 +186,19 @@ func (n *UserTaskNode) createMultiTasks(ctx types.RuleContext, processInstanceID
 		createdIDs = append(createdIDs, taskID)
 		// 触发任务分配事件
 		n.fireTaskEvent(ctx.GetContext(), service.TaskEvent{
-			Type:       service.TaskEventAssigned,
-			TaskID:     task.ID,
-			TaskDefKey: task.TaskDefKey,
-			InstanceID: processInstanceID,
-			ProcessID:  processID,
-			TenantID:   tenantID,
-			TaskName:   task.Name,
-			ToUsers:    []string{assignee},
-			FromUser:   operatorFromCtx(ctx.GetContext()),
-			Timestamp:  time.Now(),
+			Type:                service.TaskEventAssigned,
+			TaskID:              task.ID,
+			TaskDefKey:          task.TaskDefKey,
+			InstanceID:          processInstanceID,
+			ProcessID:           processID,
+			TenantID:            tenantID,
+			ProcessName:         evtProcessName,
+			StartUserID:         evtStartUser,
+			InstanceStatusAfter: evtInstStatus,
+			TaskName:            task.Name,
+			ToUsers:             []string{assignee},
+			FromUser:            operatorFromCtx(ctx.GetContext()),
+			Timestamp:           time.Now(),
 		})
 	}
 	return nil
