@@ -165,10 +165,8 @@ func (s *RuntimeServiceImpl) StartProcessInstanceByID(ctx context.Context, actor
 		return "", err
 	}
 	if engine != nil {
-		// 与对端副本的恢复/AfterCommit 驱动共用同一把门闩，避免并发重入同一实例重复建首任务
-		if unlock := s.acquireDistExecGate(ctx, instanceID); unlock != nil {
-			defer unlock()
-		}
+		// 与对端副本的恢复/AfterCommit 驱动互斥，避免并发重入同一实例重复建首任务
+		defer s.acquireDriveGates(ctx, instanceID)()
 		engine.OnMsg(msg) // 父实例同步驱动
 	}
 	// 发起事件：非草稿实例启动后派发（草稿在激活时发 activated）
@@ -613,7 +611,7 @@ func (s *RuntimeServiceImpl) ActivateProcessInstance(ctx context.Context, actor 
 	}
 
 	// 草稿激活：在事务外启动引擎（engine.OnMsg 会通过 aspect 回调 TaskService，
-	// 那些调用各自进入 WithInstanceTx）
+	// 那些调用各自进入 WithInstanceTx）；驱动入口持双门闩（见 acquireDriveGates）
 	if isDraft && draftInstance != nil {
 		processDef, err := s.processDAO.Get(ctx, draftInstance.ProcessID)
 		if err != nil {
@@ -631,6 +629,7 @@ func (s *RuntimeServiceImpl) ActivateProcessInstance(ctx context.Context, actor 
 			variablesStr = *draftInstance.Variables
 		}
 		var msg = types.NewMsg(0, "wf", types.JSON, md, variablesStr)
+		defer s.acquireDriveGates(ctx, draftInstance.ID)()
 		engine.OnMsg(msg)
 	}
 	return nil
@@ -1370,10 +1369,8 @@ func (s *RuntimeServiceImpl) ForceResumeInstance(ctx context.Context, actor Acto
 		return fmt.Errorf("process instance is in terminal status: %s", inst.Status)
 	}
 
-	// 与 RestoreProcessInstance 同一读-判-驱窗口，同样须与对端副本的驱动互斥
-	if unlock := s.acquireDistExecGate(ctx, processInstanceID); unlock != nil {
-		defer unlock()
-	}
+	// 与 RestoreProcessInstance 同一读-判-驱窗口，须与对端副本的驱动互斥
+	defer s.acquireDriveGates(ctx, processInstanceID)()
 
 	e, err := s.GetExecution(ctx, inst.ProcessID)
 	if err != nil {
@@ -1508,9 +1505,7 @@ func (s *RuntimeServiceImpl) RestoreProcessInstance(ctx context.Context, actor A
 	}
 
 	// 恢复的读-判-驱窗口须与对端副本的驱动互斥，避免基于过期任务快照重复 restore
-	if unlock := s.acquireDistExecGate(ctx, processInstanceID); unlock != nil {
-		defer unlock()
-	}
+	defer s.acquireDriveGates(ctx, processInstanceID)()
 
 	// 2. 获取该实例的所有任务
 	tasks, err := s.taskDAO.GetByProcessInstanceID(ctx, processInstanceID)
@@ -1724,7 +1719,7 @@ func (s *RuntimeServiceImpl) RescueExpiredDelayTask(ctx context.Context, actor A
 
 	// 判定与重驱须与对端副本的驱动互斥（同 RestoreProcessInstance），救援路径
 	// 走严格模式：拿不到门闩说明计时器所属副本可能仍在驱动，让位等下一拍
-	unlock, err := s.tryAcquireDistExecGate(ctx, instanceID)
+	unlock, err := s.tryAcquireDriveGates(ctx, instanceID)
 	if err != nil {
 		return fmt.Errorf("rescue delay task %s: %w", taskID, err)
 	}

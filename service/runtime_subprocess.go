@@ -68,6 +68,8 @@ func (s *RuntimeServiceImpl) StartSubProcessInstance(ctx context.Context, parent
 					}
 				}
 			}()
+			// 持双门闩（见 acquireDriveGates）；独立 ctx：调用方取消不应中断取闩
+			defer s.acquireDriveGates(context.Background(), childID)()
 			engine.OnMsg(msg)
 		}()
 	}
