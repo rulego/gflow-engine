@@ -175,16 +175,27 @@ func (s *TaskServiceImpl) claimInternal(ctx context.Context, scope *InstanceScop
 			if task.ProcessInstanceID != nil {
 				instID = *task.ProcessInstanceID
 			}
+			// 实例上下文随事件携带：宿主通知标题取流程名，缺省会退化为节点名
+			evtProcessName, evtStartUser, evtInstStatus := "", "", ""
+			if inst, iErr := scope.Instances().Get(ctx, instID); iErr == nil && inst != nil {
+				evtProcessName = inst.Name
+				evtStartUser = inst.StartUserID
+				evtInstStatus = inst.Status
+			}
 			evt := TaskEvent{
-				Type:       TaskEventClaimed,
-				TaskID:     task.ID,
-				TaskDefKey: task.TaskDefKey,
-				InstanceID: instID,
-				ProcessID:  task.ProcessID,
-				TenantID:   task.TenantID,
-				TaskName:   task.Name,
-				ToUsers:    others,
-				FromUser:   userID,
+				Type:                TaskEventClaimed,
+				TaskID:              task.ID,
+				TaskDefKey:          task.TaskDefKey,
+				InstanceID:          instID,
+				ProcessID:           task.ProcessID,
+				TenantID:            task.TenantID,
+				ProcessName:         evtProcessName,
+				StartUserID:         evtStartUser,
+				InstanceStatusAfter: evtInstStatus,
+				TaskName:            task.Name,
+				ToUsers:             others,
+				FromUser:            userID,
+				Timestamp:           time.Now(),
 			}
 			scope.AfterCommit(func() error {
 				DispatchTaskEvent(listener, evt, ctx)

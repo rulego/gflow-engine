@@ -368,7 +368,13 @@ func (n *UserTaskNode) fireTaskEvent(ctx context.Context, evt service.TaskEvent)
 				evt.ProcessName = cmp.Or(evt.ProcessName, name)
 				evt.StartUserID = cmp.Or(evt.StartUserID, starter)
 				evt.InstanceStatusAfter = cmp.Or(evt.InstanceStatusAfter, status)
+			} else {
+				logrus.WithError(err).Debugf("task %s: instance context backfill failed, event carries partial fields", evt.TaskID)
 			}
+		} else {
+			// 生产装配的 TaskServiceImpl 已编译期锁定该能力；走到这里说明是
+			// 测试替身或宿主自实现，事件会缺流程名/发起人，留痕便于发现。
+			logrus.Debugf("task %s: TaskService lacks TaskEventContextProvider, event carries partial fields", evt.TaskID)
 		}
 	}
 	// 异步派发：监听器慢 IO 不阻塞链执行；任务行在派发前已落库
