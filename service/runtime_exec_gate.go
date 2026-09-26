@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"runtime"
 	"strconv"
 	"strings"
@@ -100,4 +101,37 @@ func (g *execGate) releaseFunc() func() {
 			g.mu.Unlock()
 		})
 	}
+}
+
+// acquireDriveGates 按 ExecuteNext 同序（execGate → distGate）拿齐双门闩，
+// 供直接 OnMsg 驱动链的入口使用（发起、草稿激活、恢复、强续、子流程）。
+// 只持 distGate 时，链内节点同步回调 ExecuteNext 会判非重入，对本驱动
+// 已持有的 distGate 二次 LockWithRetry，自锁到等待预算耗尽后无锁放行；
+// 两闩齐持后嵌套调用走同 goroutine 重入分支。释放顺序与获取相反。
+func (s *RuntimeServiceImpl) acquireDriveGates(ctx context.Context, instanceID string) func() {
+	release, _ := s.acquireExecGate(instanceID)
+	unlock := s.acquireDistExecGate(ctx, instanceID)
+	return func() {
+		if unlock != nil {
+			unlock()
+		}
+		release()
+	}
+}
+
+// tryAcquireDriveGates 严格版（救援类驱动）：distGate 单次 TryLock，拿不到
+// 即报 ErrExecGateBusy 让位。失败时释放已持有的 execGate，不留半持状态。
+func (s *RuntimeServiceImpl) tryAcquireDriveGates(ctx context.Context, instanceID string) (func(), error) {
+	release, _ := s.acquireExecGate(instanceID)
+	unlock, err := s.tryAcquireDistExecGate(ctx, instanceID)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return func() {
+		if unlock != nil {
+			unlock()
+		}
+		release()
+	}, nil
 }
