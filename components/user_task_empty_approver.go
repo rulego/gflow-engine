@@ -237,12 +237,13 @@ func (n *UserTaskNode) autoApproveEmptyApproverTasks(ctx types.RuleContext, msg 
 	if owner == "" {
 		return
 	}
-	// 含会签/票签子任务（无 ParentIDIsNull 过滤），与 autoApproveOwnerTasks 同口径
+	// 含会签/票签子任务（无 ParentIDIsNull 过滤），与 autoApproveOwnerTasks 同口径，
+	// 须翻页取全量防截断
 	query := &dto.TaskQuery{
 		InstanceID: &processInstanceID,
 		TaskDefKey: n.GetSelfId(),
 	}
-	tasks, _, err := n.TaskService.GetTaskList(ctx.GetContext(), service.ActorFromCtx(ctx.GetContext()), query)
+	tasks, err := fetchTasksPageAll(ctx.GetContext(), n.TaskService, service.ActorFromCtx(ctx.GetContext()), query)
 	if err != nil {
 		logrus.WithError(err).Warnf("empty-approver auto approve: query tasks of node %s failed, skip", n.GetSelfId())
 		return

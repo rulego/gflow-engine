@@ -21,8 +21,9 @@ func (s *TaskServiceImpl) GetHistoryTasksByProcessInstanceID(ctx context.Context
 	if u := GetUserFromCtx(ctx); u != nil {
 		query.TenantID = u.TenantID
 	}
-	tasks, _, err := s.hiTaskDAO.List(ctx, query)
-	return tasks, err
+	// 契约是"全部"已归档任务：审批时间线按此渲染，默认分页 10 条会把
+	// 多级审批+会签的实例从第 11 条起静默截断，必须翻页取全量。
+	return listAllTasks(ctx, s.hiTaskDAO, query)
 }
 
 // GetTaskByDefKey gets a task by its definition key and process instance ID.
