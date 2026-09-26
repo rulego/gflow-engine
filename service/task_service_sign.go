@@ -358,7 +358,8 @@ func (s *TaskServiceImpl) reevaluateCountersignAfterReduce(ctx context.Context, 
 		vars = map[string]interface{}{}
 	}
 	scope.AfterCommit(func() error {
-		return s.workflowEngine.GetRuntimeServiceInternal().ExecuteNext(ctx, *inst, key, vars)
+		s.driveAfterCommit(ctx, *inst, key, vars)
+		return nil
 	})
 	return nil
 }

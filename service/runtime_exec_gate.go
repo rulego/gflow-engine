@@ -109,6 +109,9 @@ func (g *execGate) releaseFunc() func() {
 // 已持有的 distGate 二次 LockWithRetry，自锁到等待预算耗尽后无锁放行；
 // 两闩齐持后嵌套调用走同 goroutine 重入分支。释放顺序与获取相反。
 func (s *RuntimeServiceImpl) acquireDriveGates(ctx context.Context, instanceID string) func() {
+	if instanceID == "" {
+		return func() {}
+	}
 	release, _ := s.acquireExecGate(instanceID)
 	unlock := s.acquireDistExecGate(ctx, instanceID)
 	return func() {
@@ -122,6 +125,9 @@ func (s *RuntimeServiceImpl) acquireDriveGates(ctx context.Context, instanceID s
 // tryAcquireDriveGates 严格版（救援类驱动）：distGate 单次 TryLock，拿不到
 // 即报 ErrExecGateBusy 让位。失败时释放已持有的 execGate，不留半持状态。
 func (s *RuntimeServiceImpl) tryAcquireDriveGates(ctx context.Context, instanceID string) (func(), error) {
+	if instanceID == "" {
+		return func() {}, nil
+	}
 	release, _ := s.acquireExecGate(instanceID)
 	unlock, err := s.tryAcquireDistExecGate(ctx, instanceID)
 	if err != nil {
