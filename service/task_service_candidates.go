@@ -206,6 +206,7 @@ func (s *TaskServiceImpl) taskForAdminMutation(ctx context.Context, actor Actor,
 }
 
 // AddCandidates 批量写入任务候选人（每条 entityID 一条 wf_task_assignee 记录）。
+// 写入进 WithInstanceTx 并锁内复校终态，防止候选行落进并发完成/归档的任务。
 func (s *TaskServiceImpl) AddCandidates(ctx context.Context, actor Actor, taskID, entityType string, entityIDs []string) error {
 	ctx = bindActor(ctx, actor)
 	if taskID == "" || entityType == "" {
@@ -215,44 +216,6 @@ func (s *TaskServiceImpl) AddCandidates(ctx context.Context, actor Actor, taskID
 	if err != nil {
 		return err
 	}
-	tenantID := task.TenantID
-	if len(entityIDs) == 0 {
-		return nil
-	}
-	entities := make([]*model.WfTaskAssignee, 0, len(entityIDs))
-	for _, eid := range entityIDs {
-		if eid == "" {
-			continue
-		}
-		entities = append(entities, &model.WfTaskAssignee{
-			ID:         s.idGenerator.GenerateID(),
-			TaskID:     taskID,
-			EntityType: entityType,
-			EntityID:   eid,
-			TenantID:   tenantID,
-			CreatedAt:  time.Now(),
-		})
-	}
-	if len(entities) == 0 {
-		return nil
-	}
-	if err := s.taskAssigneeDAO.CreateBatch(ctx, entities); err != nil {
-		return fmt.Errorf("failed to add candidates: %w", err)
-	}
-	return nil
-}
-
-// RemoveCandidates 移除任务候选人（按 entityType + entityIDs 批量删除，单 SQL 原子）。
-func (s *TaskServiceImpl) RemoveCandidates(ctx context.Context, actor Actor, taskID, entityType string, entityIDs []string) error {
-	ctx = bindActor(ctx, actor)
-	if taskID == "" || entityType == "" {
-		return fmt.Errorf("taskID and entityType cannot be empty")
-	}
-	task, err := s.taskForAdminMutation(ctx, actor, taskID)
-	if err != nil {
-		return err
-	}
-	tenantID := task.TenantID
 	filtered := make([]string, 0, len(entityIDs))
 	for _, eid := range entityIDs {
 		if eid != "" {
@@ -262,7 +225,93 @@ func (s *TaskServiceImpl) RemoveCandidates(ctx context.Context, actor Actor, tas
 	if len(filtered) == 0 {
 		return nil
 	}
-	if err := s.taskAssigneeDAO.DeleteByTaskAndEntities(ctx, tenantID, taskID, entityType, filtered); err != nil {
+	instanceID := ""
+	if task.ProcessInstanceID != nil {
+		instanceID = *task.ProcessInstanceID
+	}
+	if instanceID == "" {
+		return s.addCandidatesInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, entityType, filtered)
+	}
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
+		return s.addCandidatesInternal(ctx, scope, taskID, entityType, filtered)
+	})
+}
+
+// addCandidatesInternal 事务内写入候选行。锁内复校终态：廉价读与拿锁之间
+// 任务可能被完成/实例归档，候选行写进已归档任务会成为无人清理的孤儿行。
+func (s *TaskServiceImpl) addCandidatesInternal(ctx context.Context, scope *InstanceScope, taskID, entityType string, entityIDs []string) error {
+	task, err := scope.Tasks().Get(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+	if task == nil {
+		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, cannot add candidates: %w", task.Status, ErrConflict)
+	}
+	now := time.Now()
+	entities := make([]*model.WfTaskAssignee, 0, len(entityIDs))
+	for _, eid := range entityIDs {
+		entities = append(entities, &model.WfTaskAssignee{
+			ID:         s.idGenerator.GenerateID(),
+			TaskID:     taskID,
+			EntityType: entityType,
+			EntityID:   eid,
+			TenantID:   task.TenantID,
+			CreatedAt:  now,
+		})
+	}
+	if err := scope.TaskAssignees().CreateBatch(ctx, entities); err != nil {
+		return fmt.Errorf("failed to add candidates: %w", err)
+	}
+	return nil
+}
+
+// RemoveCandidates 移除任务候选人（按 entityType + entityIDs 批量删除，单 SQL 原子）。
+// 与 AddCandidates 同口径进 WithInstanceTx 锁内复校终态。
+func (s *TaskServiceImpl) RemoveCandidates(ctx context.Context, actor Actor, taskID, entityType string, entityIDs []string) error {
+	ctx = bindActor(ctx, actor)
+	if taskID == "" || entityType == "" {
+		return fmt.Errorf("taskID and entityType cannot be empty")
+	}
+	task, err := s.taskForAdminMutation(ctx, actor, taskID)
+	if err != nil {
+		return err
+	}
+	filtered := make([]string, 0, len(entityIDs))
+	for _, eid := range entityIDs {
+		if eid != "" {
+			filtered = append(filtered, eid)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	instanceID := ""
+	if task.ProcessInstanceID != nil {
+		instanceID = *task.ProcessInstanceID
+	}
+	if instanceID == "" {
+		return s.removeCandidatesInternal(ctx, bareScope(s.taskDAO.Underlying()), taskID, entityType, filtered)
+	}
+	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
+		return s.removeCandidatesInternal(ctx, scope, taskID, entityType, filtered)
+	})
+}
+
+func (s *TaskServiceImpl) removeCandidatesInternal(ctx context.Context, scope *InstanceScope, taskID, entityType string, entityIDs []string) error {
+	task, err := scope.Tasks().Get(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+	if task == nil {
+		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, cannot remove candidates: %w", task.Status, ErrConflict)
+	}
+	if err := scope.TaskAssignees().DeleteByTaskAndEntities(ctx, task.TenantID, taskID, entityType, entityIDs); err != nil {
 		return fmt.Errorf("failed to remove candidates: %w", err)
 	}
 	return nil
