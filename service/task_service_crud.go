@@ -115,7 +115,8 @@ func (s *TaskServiceImpl) GetActiveTasksByProcessInstanceID(ctx context.Context,
 	}
 	query.Status = []string{string(enums.TaskStatusActive), string(enums.TaskStatusPending)}
 
-	tasks, _, err := s.taskDAO.List(ctx, query)
+	// 注释契约是"所有"活动任务：默认分页 10 条会截断，翻页取全量。
+	tasks, err := listAllTasks(ctx, s.taskDAO, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query active tasks: %w", err)
 	}

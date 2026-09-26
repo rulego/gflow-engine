@@ -186,12 +186,13 @@ func (n *UserTaskNode) autoApproveOwnerTasks(ctx types.RuleContext, msg types.Ru
 		return
 	}
 	// 会签/票签的受理人挂在带 ParentID 的子任务上，不能复用 getExistingTasks
-	//（其 ParentIDIsNull 过滤只返回无办理人的主任务）
+	//（其 ParentIDIsNull 过滤只返回无办理人的主任务）；含子任务时行数超
+	// 默认分页 10 条会把发起人的任务截在第二页，自动通过静默失效，须取全量。
 	query := &dto.TaskQuery{
 		InstanceID: &processInstanceID,
 		TaskDefKey: n.GetSelfId(),
 	}
-	tasks, _, err := n.TaskService.GetTaskList(ctx.GetContext(), service.ActorFromCtx(ctx.GetContext()), query)
+	tasks, err := fetchTasksPageAll(ctx.GetContext(), n.TaskService, service.ActorFromCtx(ctx.GetContext()), query)
 	if err != nil {
 		logrus.WithError(err).Warnf("auto approve: query tasks of node %s failed, skip", n.GetSelfId())
 		return

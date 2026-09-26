@@ -730,7 +730,7 @@ func (n *AIAgentNode) routeByHumanDecision(ctx types.RuleContext, msg types.Rule
 		return false
 	}
 	iid := instanceID
-	tasks, _, err := n.TaskService.GetTaskList(ctx.GetContext(), service.ActorFromCtx(ctx.GetContext()), &dto.TaskQuery{
+	tasks, err := fetchTasksPageAll(ctx.GetContext(), n.TaskService, service.ActorFromCtx(ctx.GetContext()), &dto.TaskQuery{
 		InstanceID:     &iid,
 		TaskDefKey:     n.GetSelfId(),
 		ParentIDIsNull: true,

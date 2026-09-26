@@ -382,6 +382,8 @@ func (n *UserTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 // 顺序审批的推进逻辑依赖终态任务计算进度、读取 _sequentialAssignees 缓存，
 // 因此不能过滤 Completed 任务。驳回回跳场景的终态任务清理由 jumpToNode
 // 里的 SupersedeNodeTasks 完成。
+// 必须取全量：顺序审批每步留一行终态任务，默认分页 10 条会把推进计数
+// 永久钉在 10，>10 人即重复建任务死循环。
 func (n *UserTaskNode) getExistingTasks(ctx context.Context, processInstanceID string) ([]*model.WfTask, error) {
 	query := &dto.TaskQuery{
 		InstanceID:     &processInstanceID,
@@ -389,8 +391,7 @@ func (n *UserTaskNode) getExistingTasks(ctx context.Context, processInstanceID s
 		ParentIDIsNull: true,
 	}
 
-	tasks, _, err := n.TaskService.GetTaskList(ctx, service.ActorFromCtx(ctx), query)
-	return tasks, err
+	return fetchTasksPageAll(ctx, n.TaskService, service.ActorFromCtx(ctx), query)
 }
 
 // checkTasksCompletion 检查任务完成状态

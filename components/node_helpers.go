@@ -25,11 +25,34 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/service"
+	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/rulego/api/types"
 	"github.com/rulego/rulego/components/base"
 	"github.com/sirupsen/logrus"
 )
+
+// fetchTasksPageAll 经 TaskService 翻页取全量节点任务。GetTaskList 无条件分页，
+// pageSize 未设时回落默认 10：顺序推进计数、兜底自动通过、AI 人工裁决这类把
+// 结果当全集消费的调用，任务数超一页即漏行（推进死循环/自动通过失效）。
+// 与 service 层 listAllTasks 同口径，供组件侧消费。
+func fetchTasksPageAll(ctx context.Context, taskService service.TaskService, actor service.Actor, query *dto.TaskQuery) ([]*model.WfTask, error) {
+	var all []*model.WfTask
+	for page := 1; ; page++ {
+		pageQuery := *query
+		pageQuery.Page = page
+		pageQuery.PageSize = service.TaskFetchAllPageSize
+		tasks, total, err := taskService.GetTaskList(ctx, actor, &pageQuery)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, tasks...)
+		if int64(len(all)) >= total || len(tasks) == 0 {
+			return all, nil
+		}
+	}
+}
 
 // metaValue 从消息 metadata 读取 key；metadata 为 nil 时返回空串。
 // rulego 的 GetMetadata() 原样返回 m.Metadata（可能为 nil），直接链式

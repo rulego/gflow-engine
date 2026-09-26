@@ -12,19 +12,24 @@ import (
 	"github.com/rulego/gflow-engine/types/dto"
 )
 
-// taskFetchAllPageSize 翻页取全量任务的单页大小：正常一轮取完，循环翻页
-// 只为防御极端形态下的慢分页。
-const taskFetchAllPageSize = 1000
+// TaskFetchAllPageSize 翻页取全量任务的单页大小：正常一轮取完，循环翻页
+// 只为防御极端形态下的慢分页。组件层全量语义查询共用同一口径。
+const TaskFetchAllPageSize = 1000
+
+// taskPageLister 由运行表与历史表的任务 DAO 同时满足，listAllTasks 据此翻页取全量。
+type taskPageLister interface {
+	List(ctx context.Context, query *dto.TaskQuery) ([]*model.WfTask, int64, error)
+}
 
 // listAllTasks 按 query 条件翻页取全量任务。task_dao.List 无条件分页，
 // pageSize 未设时回落默认 10，同节点清理/恢复、减签、节点置换这类全量语义
 // 的调用会被截断：留下幽灵待办，或漏恢复/漏减签该命中的行。
-func listAllTasks(ctx context.Context, taskDAO TaskStore, query *dto.TaskQuery) ([]*model.WfTask, error) {
+func listAllTasks(ctx context.Context, taskDAO taskPageLister, query *dto.TaskQuery) ([]*model.WfTask, error) {
 	var all []*model.WfTask
 	for page := 1; ; page++ {
 		pageQuery := *query
 		pageQuery.Page = page
-		pageQuery.PageSize = taskFetchAllPageSize
+		pageQuery.PageSize = TaskFetchAllPageSize
 		pageTasks, total, err := taskDAO.List(ctx, &pageQuery)
 		if err != nil {
 			return nil, err
