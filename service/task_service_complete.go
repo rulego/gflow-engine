@@ -700,18 +700,27 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 		if task.ProcessInstanceID != nil {
 			instanceID = *task.ProcessInstanceID
 		}
+		evtProcessName, evtStartUser, evtInstStatus := "", "", ""
+		if inst, iErr := scope.Instances().Get(ctx, instanceID); iErr == nil && inst != nil {
+			evtProcessName = inst.Name
+			evtStartUser = inst.StartUserID
+			evtInstStatus = inst.Status
+		}
 		evt := TaskEvent{
-			Type:       TaskEventResolved,
-			TaskID:     task.ID,
-			TaskDefKey: task.TaskDefKey,
-			InstanceID: instanceID,
-			ProcessID:  task.ProcessID,
-			TenantID:   task.TenantID,
-			TaskName:   task.Name,
-			ToUsers:    []string{*task.Assignee},
-			FromUser:   operator,
-			Reason:     request.Comment,
-			Timestamp:  time.Now(),
+			Type:                TaskEventResolved,
+			TaskID:              task.ID,
+			TaskDefKey:          task.TaskDefKey,
+			InstanceID:          instanceID,
+			ProcessID:           task.ProcessID,
+			TenantID:            task.TenantID,
+			ProcessName:         evtProcessName,
+			StartUserID:         evtStartUser,
+			InstanceStatusAfter: evtInstStatus,
+			TaskName:            task.Name,
+			ToUsers:             []string{*task.Assignee},
+			FromUser:            operator,
+			Reason:              request.Comment,
+			Timestamp:           time.Now(),
 		}
 		scope.AfterCommit(func() error {
 			DispatchTaskEvent(listener, evt, ctx)
