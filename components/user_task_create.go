@@ -151,11 +151,13 @@ func (n *UserTaskNode) createMultiTasks(ctx types.RuleContext, processInstanceID
 	createdIDs := make([]string, 0, len(assignees))
 	// 实例上下文对各被指派人相同，循环外取一次预填，免逐任务回查实例
 	evtProcessName, evtStartUser, evtInstStatus := "", "", ""
-	if p, ok := n.TaskService.(service.TaskEventContextProvider); ok {
-		if name, starter, status, err := p.GetInstanceEventContext(ctx.GetContext(), processInstanceID); err == nil {
-			evtProcessName, evtStartUser, evtInstStatus = name, starter, status
-		} else {
-			logrus.WithError(err).Debugf("node %s: instance context backfill failed for multi-task events", n.GetSelfId())
+	if n.TaskEventListener != nil {
+		if p, ok := n.TaskService.(service.TaskEventContextProvider); ok {
+			if name, starter, status, err := p.GetInstanceEventContext(ctx.GetContext(), processInstanceID); err == nil {
+				evtProcessName, evtStartUser, evtInstStatus = name, starter, status
+			} else {
+				logrus.WithError(err).Debugf("node %s: instance context backfill failed for multi-task events", n.GetSelfId())
+			}
 		}
 	}
 	for i, assignee := range assignees {
