@@ -424,7 +424,8 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 						logrus.WithError(cerr).WithField("parentTaskID", parentTask.ID).Warn("failed to cancel remaining sub-tasks after early veto")
 					}
 					scope.AfterCommit(func() error {
-						return s.workflowEngine.GetRuntimeServiceInternal().ExecuteNext(ctx, *parentInst, parentKey, vars)
+						s.driveAfterCommit(ctx, *parentInst, parentKey, vars)
+						return nil
 					})
 				}
 				return nil
@@ -486,7 +487,8 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 					parentInst := parentTask.ProcessInstanceID
 					parentKey := parentTask.TaskDefKey
 					scope.AfterCommit(func() error {
-						return s.workflowEngine.GetRuntimeServiceInternal().ExecuteNext(ctx, *parentInst, parentKey, vars)
+						s.driveAfterCommit(ctx, *parentInst, parentKey, vars)
+						return nil
 					})
 				}
 				return nil
@@ -554,7 +556,8 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 		inst := task.ProcessInstanceID
 		key := task.TaskDefKey
 		scope.AfterCommit(func() error {
-			return s.workflowEngine.GetRuntimeServiceInternal().ExecuteNext(ctx, *inst, key, vars)
+			s.driveAfterCommit(ctx, *inst, key, vars)
+			return nil
 		})
 	}
 

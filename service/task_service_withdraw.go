@@ -431,7 +431,8 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 	// 重入 WithInstanceTx 抢同一行的 FOR UPDATE 锁。
 	inst := task.ProcessInstanceID
 	scope.AfterCommit(func() error {
-		return s.workflowEngine.GetRuntimeServiceInternal().ExecuteNext(ctx, *inst, targetActivityID, nil)
+		s.driveAfterCommit(ctx, *inst, targetActivityID, nil)
+		return nil
 	})
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/dto"
+	"github.com/sirupsen/logrus"
 )
 
 // TaskFetchAllPageSize 翻页取全量任务的单页大小：正常一轮取完，循环翻页
@@ -136,4 +137,16 @@ func (s *TaskServiceImpl) ensureTargetUserInTenant(ctx context.Context, task *mo
 		}
 	}
 	return nil
+}
+
+// driveAfterCommit 事务提交后的链驱动，失败只告警：状态已落库，向上报错
+// 是对用户报假失败（重试会撞幂等拒绝），还会中断 postCommit 链上后续钩子。
+// 推进失败的实例由卡死巡检/重驱补救。
+func (s *TaskServiceImpl) driveAfterCommit(ctx context.Context, instanceID, nodeID string, vars map[string]interface{}) {
+	if err := s.workflowEngine.GetRuntimeServiceInternal().ExecuteNext(ctx, instanceID, nodeID, vars); err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"instanceId": instanceID,
+			"node":       nodeID,
+		}).Error("post-commit drive failed; committed state stands, instance awaits stuck-instance rescue")
+	}
 }
