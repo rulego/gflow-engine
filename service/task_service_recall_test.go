@@ -192,6 +192,11 @@ func TestRecall_SingleApproval_RecreatesTask(t *testing.T) {
 		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
 		[]string{recallConn("a", "b")})
 	recallSeedInstance(t, q, "inst-1", string(enums.InstanceStatusActive))
+	// 推进到前沿节点 b 后发起收回：currentActivity 应随重建任务回拨到被收回节点 a
+	_, err := q.WfInstance.WithContext(ctx).
+		Where(q.WfInstance.ID.Eq("inst-1")).
+		UpdateSimple(q.WfInstance.CurrentActivity.Value("b"))
+	require.NoError(t, err)
 
 	base := time.Now().Add(-time.Hour)
 	recallSeedTask(t, q, "t-a", "inst-1", "a", constants.TaskTypeUserTask, string(enums.TaskStatusCompleted),
@@ -221,6 +226,11 @@ func TestRecall_SingleApproval_RecreatesTask(t *testing.T) {
 	require.Equal(t, "jia", *nt.Assignee)
 	require.Equal(t, string(enums.TaskStatusActive), nt.Status)
 	require.Nil(t, nt.EndedAt)
+	// 当前节点回拨：不再指向已作废的前沿节点 b
+	inst, err := q.WfInstance.WithContext(ctx).Where(q.WfInstance.ID.Eq("inst-1")).First()
+	require.NoError(t, err)
+	require.NotNil(t, inst.CurrentActivity)
+	require.Equal(t, "a", *inst.CurrentActivity)
 	// 变量：保留顺序缓存，剔除旧投票结果
 	require.NotNil(t, nt.Variables)
 	var vars map[string]interface{}

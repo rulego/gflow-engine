@@ -487,6 +487,13 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 		return fmt.Errorf("failed to recreate recalled task: %w", err)
 	}
 
+	// 当前节点回拨到被收回节点：重建绕过任务创建切面，currentActivity 仍指向
+	// 已作废的前沿节点，列表「当前节点」显示失真；重驱动/强制恢复从该节点
+	// 重入会凭空重建下游待办、破坏合流语义
+	if err := scope.Instances().SetCurrentActivity(ctx, instanceID, recreated.TaskDefKey); err != nil {
+		return fmt.Errorf("failed to rewind current activity: %w", err)
+	}
+
 	listener := s.workflowEngine.GetTaskEventListener()
 	if listener != nil {
 		evtTaskID := recreated.ID
