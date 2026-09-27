@@ -22,6 +22,7 @@ import (
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/rulego/api/types"
+	"github.com/rulego/rulego/utils/el"
 )
 
 // approverPreviewResolver 审批人预览解析器，由组件层经 SetApproverPreviewResolver
@@ -55,7 +56,15 @@ func approverPreviewResolverForRead() func(cfg map[string]interface{}, tenantID,
 	return approverPreviewResolver
 }
 
-// branchingNodeTypes 条件分支节点：出边走向取决于运行时条件求值，预测在此截断。
+// deterministicBranchTypes 能用实例变量确定性求值的分支节点（与 rulego SwitchNode
+// 同口径：cases 顺序求值、首真命中、未命中走 Default）。其余分支型节点求值依赖
+// JS 引擎或 metadata，预测继续截断。
+var deterministicBranchTypes = map[string]bool{
+	constants.NodeTypeSwitch: true,
+	"condition":              true,
+}
+
+// branchingNodeTypes 条件分支节点：出边走向取决于运行时条件求值。
 var branchingNodeTypes = map[string]bool{
 	constants.NodeTypeSwitch:        true,
 	constants.NodeTypeJsSwitch:      true,
@@ -78,9 +87,19 @@ func BuildUpcomingNodes(chain *types.RuleChain, activeNodeIDs []string, tenantID
 		nodeByID[n.Id] = n
 	}
 	successors := make(map[string][]string)
+	// from → 关系类型 → 首个后继：switch 分支按 case.then 命中连线
+	succByType := make(map[string]map[string]string)
 	for _, conn := range chain.Metadata.Connections {
-		if conn.Type == types.Success || conn.Type == "" {
-			successors[conn.FromId] = append(successors[conn.FromId], conn.ToId)
+		rt := conn.Type
+		if rt == "" {
+			rt = types.Success
+		}
+		successors[conn.FromId] = append(successors[conn.FromId], conn.ToId)
+		if succByType[conn.FromId] == nil {
+			succByType[conn.FromId] = make(map[string]string)
+		}
+		if _, dup := succByType[conn.FromId][rt]; !dup {
+			succByType[conn.FromId][rt] = conn.ToId
 		}
 	}
 
@@ -111,8 +130,12 @@ func BuildUpcomingNodes(chain *types.RuleChain, activeNodeIDs []string, tenantID
 		if node.Type == constants.NodeTypeEnd {
 			continue
 		}
-		// 条件分支节点：走向未知，预测截断
 		if branchingNodeTypes[node.Type] {
+			// switch/条件节点：能用当前变量确定性求值时沿命中分支继续预测，
+			// 求值不干净或其余分支型节点维持截断
+			if nextID := resolveSwitchSuccessor(node, variables, succByType); nextID != "" {
+				enqueue([]string{nextID})
+			}
 			continue
 		}
 		// 活跃节点是遍历起点（进行中），不计入预测输出
@@ -122,6 +145,52 @@ func BuildUpcomingNodes(chain *types.RuleChain, activeNodeIDs []string, tenantID
 		enqueue(successors[nodeID])
 	}
 	return upcoming
+}
+
+// resolveSwitchSuccessor 按运行时同口径（cases 顺序求值、首真命中、未命中走
+// Default）对分支节点做确定性求值，返回命中的后继节点 ID。求值不干净——表达式
+// 为空/编译失败/执行出错/命中关系无对应连线——返回空串，预测退回截断：预测环境
+// 只提供 msg（实例变量），引用 metadata/global 的表达式会出错从而截断，预测宁可
+// 缺席，不可给错。
+func resolveSwitchSuccessor(node *types.RuleNode, variables map[string]interface{}, succByType map[string]map[string]string) string {
+	if !deterministicBranchTypes[node.Type] {
+		return ""
+	}
+	cfg := map[string]interface{}(node.Configuration)
+	rawCases, _ := cfg["cases"].([]interface{})
+	env := map[string]interface{}{types.MsgKey: variables}
+	next := ""
+	decided := false
+	for _, raw := range rawCases {
+		c, _ := raw.(map[string]interface{})
+		if c == nil {
+			continue
+		}
+		expr, _ := c["case"].(string)
+		then, _ := c["then"].(string)
+		if expr == "" {
+			return ""
+		}
+		tpl, err := el.NewExprTemplate(expr)
+		if err != nil {
+			return ""
+		}
+		out, err := tpl.Execute(env)
+		if err != nil {
+			return ""
+		}
+		if b, ok := out.(bool); ok && b {
+			next, decided = then, true
+			break
+		}
+	}
+	if !decided {
+		next = types.DefaultRelationType
+	}
+	if next == "" {
+		return ""
+	}
+	return succByType[node.Id][next]
 }
 
 // previewUserTaskNode 解析单个 userTask 节点的审批人预览；解析失败不阻断遍历。

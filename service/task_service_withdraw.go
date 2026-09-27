@@ -76,15 +76,57 @@ func (s *TaskServiceImpl) WithdrawByInstance(ctx context.Context, actor Actor, i
 		if err != nil {
 			return fmt.Errorf("failed to list active tasks: %w", err)
 		}
-		if len(tasks) == 0 {
-			return fmt.Errorf("%w: no active task to withdraw for instance %s", ErrValidation, instanceID)
+		if len(tasks) > 0 {
+			// 设计器显式禁用 withdraw → 拒绝
+			if err := s.requireActionEnabled(ctx, tasks[0], "withdraw"); err != nil {
+				return err
+			}
+			return s.withdrawInternal(ctx, scope, tasks[0].ID, userID, reason, isAdmin)
 		}
-		// 设计器显式禁用 withdraw → 拒绝
-		if err := s.requireActionEnabled(ctx, tasks[0], "withdraw"); err != nil {
-			return err
-		}
-		return s.withdrawInternal(ctx, scope, tasks[0].ID, userID, reason, isAdmin)
+		return s.withdrawBeforeFirstTask(ctx, scope, instanceID, userID, reason, isAdmin)
 	})
+}
+
+// withdrawBeforeFirstTask 处理“发起后首个任务尚未落库”的撤回：start 提交后异步驱动
+// 首节点，提交成功到首任务创建之间存在窗口，此刻撤回不能按无任务拒绝。直接按实例
+// 维度终止（与正常撤回同落 terminated 终态、同撤回原因口径）。仅发起人/管理员、
+// 且实例仍为 Active 时允许；WithInstanceTx 的终态闸保证终止后链的后续驱动不会再
+// 落出任务。
+func (s *TaskServiceImpl) withdrawBeforeFirstTask(ctx context.Context, scope *InstanceScope, instanceID, userID, reason string, isAdmin bool) error {
+	instance, err := scope.Instances().Get(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("failed to get process instance: %w", err)
+	}
+	if instance == nil {
+		return fmt.Errorf("%w: process instance", ErrNotFound)
+	}
+	if u := GetUserFromCtx(ctx); u != nil && instance.TenantID != u.TenantID {
+		return fmt.Errorf("%w: process instance", ErrNotFound)
+	}
+	if !isInstanceStarterOrAdmin(instance, userID, isAdmin) {
+		return fmt.Errorf("%w: only the process initiator (or admin) can withdraw", ErrPermissionDenied)
+	}
+	if instance.Status != string(enums.InstanceStatusActive) {
+		return fmt.Errorf("%w: only active instances can be withdrawn, current status: %s", ErrValidation, instance.Status)
+	}
+
+	terminateReason := constants.EndReasonPrefixWithdrawn
+	if reason != "" {
+		terminateReason = fmt.Sprintf("%s：%s", constants.EndReasonPrefixWithdrawn, reason)
+	}
+	withdrawCtx := WithEventSource(ctx, EventSourceWithdraw)
+	terminatedEvt, err := terminateProcessInstanceInTx(withdrawCtx, s.workflowEngine.GetRuntimeService(), scope.Tx(), instanceID, terminateReason)
+	if err != nil {
+		return fmt.Errorf("failed to terminate process instance after withdraw: %w", err)
+	}
+	if terminatedEvt != nil && s.workflowEngine.GetTaskEventListener() != nil {
+		evt := *terminatedEvt
+		scope.AfterCommit(func() error {
+			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, withdrawCtx)
+			return nil
+		})
+	}
+	return nil
 }
 
 // withdrawInternal 在已持有实例行锁的事务内执行 Withdraw 实际逻辑。

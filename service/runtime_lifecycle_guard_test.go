@@ -8,6 +8,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -154,4 +155,77 @@ func TestActivateProcessInstance_WakeAuthorization(t *testing.T) {
 	// 管理员
 	newSuspended("inst-wake-admin")
 	require.NoError(t, rs.ActivateProcessInstance(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "inst-wake-admin"))
+}
+
+// 草稿实例终止被拒绝：与挂起同口径，草稿的生命周期动作是编辑、提交（激活）与删除，
+// 终止会把它挪进已结束列表，既不能提交也不能再走草稿删除。
+func TestTerminateInTx_DraftRejected(t *testing.T) {
+	q := secFixDB(t)
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: &testEngineDouble{listener: func(_ context.Context, _ TaskEvent) {}},
+	}
+	ctx := context.Background()
+
+	require.NoError(t, rs.instanceDAO.Create(ctx, &model.WfInstance{
+		ID: "inst-draft-term", ProcessID: "proc-1", Name: "草稿单",
+		Status: string(enums.InstanceStatusDraft), TenantID: "t1",
+		StartUserID: "userA", CreatedBy: "userA", CreatedAt: time.Now(),
+	}))
+
+	_, err := rs.TerminateInTx(WithInternalCallingMode(ctx), q, "inst-draft-term", "清理")
+	require.Error(t, err, "草稿实例不可终止")
+	require.True(t, errors.Is(err, ErrValidation), "期望 ErrValidation，got %v", err)
+
+	persisted, err := rs.instanceDAO.Get(ctx, "inst-draft-term")
+	require.NoError(t, err)
+	require.Equal(t, string(enums.InstanceStatusDraft), persisted.Status, "实例应保持草稿态")
+}
+
+// 发起后首个任务尚未落库的撤回：start 异步驱动首节点存在窗口，此刻撤回按实例维度
+// 终止并落 withdrawn 口径，不再按“无活跃任务”拒绝。
+func TestWithdrawByInstance_BeforeFirstTaskTerminates(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: &testEngineDouble{listener: func(_ context.Context, _ TaskEvent) {}},
+	}
+	taskSvc := &TaskServiceImpl{
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		hiTaskDAO:      dao.NewHiTaskDAOWithQuery(q),
+		workflowEngine: &testEngineDouble{runtime: rs},
+	}
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-wd-fresh", ProcessID: "proc-1", Name: "刚提交单",
+		Status: string(enums.InstanceStatusActive), TenantID: "t1",
+		StartUserID: "starter", CreatedBy: "starter", CreatedAt: now,
+	}))
+
+	// 实例 Active 但任务未落库：发起人撤回应直接终止实例
+	require.NoError(t, taskSvc.WithdrawByInstance(ctx, Actor{UserID: "starter", TenantID: "t1"}, "inst-wd-fresh", "提交错了"))
+
+	persisted, err := rs.instanceDAO.Get(ctx, "inst-wd-fresh")
+	require.NoError(t, err)
+	require.Nil(t, persisted, "已终止实例应归档出运行表")
+	hiInst, err := q.WfHiInstance.WithContext(ctx).Where(q.WfHiInstance.ID.Eq("inst-wd-fresh")).First()
+	require.NoError(t, err)
+	require.Equal(t, string(enums.InstanceStatusTerminated), hiInst.Status)
+
+	// 非发起人不可借该路径终止他人实例
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-wd-fresh2", ProcessID: "proc-1", Name: "他人刚提交单",
+		Status: string(enums.InstanceStatusActive), TenantID: "t1",
+		StartUserID: "starter", CreatedBy: "starter", CreatedAt: now,
+	}))
+	err = taskSvc.WithdrawByInstance(ctx, Actor{UserID: "imposter", TenantID: "t1"}, "inst-wd-fresh2", "想撤")
+	require.Error(t, err, "非发起人撤回必须拒绝")
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
 }

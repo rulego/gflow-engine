@@ -2202,6 +2202,12 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 	if instance.Status == string(enums.InstanceStatusCompleted) {
 		return nil, fmt.Errorf("cannot terminate completed process instance: %w", ErrInstanceTerminal)
 	}
+	// 草稿不可终止：与挂起同口径——草稿的生命周期动作是编辑、提交（激活）与删除，
+	// 终止会把它挪进已结束列表，既不能提交也不能再走草稿删除。
+	if instance.Status == string(enums.InstanceStatusDraft) {
+		return nil, fmt.Errorf("draft instance %s cannot be terminated; submit or delete it instead: %w",
+			processInstanceID, ErrValidation)
+	}
 
 	now := time.Now()
 	username := s.GetUsernameFromCtx(ctx)
