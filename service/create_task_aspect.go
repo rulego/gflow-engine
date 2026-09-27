@@ -235,6 +235,13 @@ func (aspect *TaskCreator) After(ctx types.RuleContext, msg types.RuleMsg, err e
 		internalCtx := WithInternalCallingMode(ctx.GetContext())
 		if err := aspect.workflowEngine.GetTaskService().Complete(internalCtx, internalActor, taskId, variables); err != nil {
 			logrus.WithError(err).Errorf("complete task error, instanceId: %s, nodeId: %s", instanceId, ctx.GetSelfId())
+		} else if len(variables) > 0 {
+			// 节点产出（服务函数生成的单号、接口回执、AI 结论等）同步合并进实例变量：
+			// 任务快照只挂在任务行上，业务侧与实例变量区读不到；合并是幂等的键覆盖，
+			// 失败只记日志，不影响节点已完成的事实。
+			if serr := aspect.workflowEngine.GetRuntimeService().SetProcessInstanceVariables(internalCtx, internalActor, instanceId, variables); serr != nil {
+				logrus.WithError(serr).Warnf("merge node output into instance variables error, instanceId: %s, nodeId: %s", instanceId, ctx.GetSelfId())
+			}
 		}
 	}
 

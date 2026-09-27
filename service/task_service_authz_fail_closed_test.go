@@ -106,3 +106,43 @@ func TestFailClosed_ActionPermissionsResolutionFailureRejected(t *testing.T) {
 	require.Error(t, err, "设计器配置解析失败时动作应被拒绝（fail-closed）")
 	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
 }
+
+// seedSignSubTask 写入一条会签子任务（ParentID 指向父聚合行）。
+func seedSignSubTask(t *testing.T, svc *TaskServiceImpl, id, parentID, tenant, assignee string) {
+	t.Helper()
+	task := &model.WfTask{
+		ID:         id,
+		TaskDefKey: "approve",
+		Name:       "会签子任务",
+		TaskType:   "user_task",
+		ParentID:   secFixStrPtr(parentID),
+		Assignee:   secFixStrPtr(assignee),
+		Status:     string(enums.TaskStatusActive),
+		TenantID:   tenant,
+		CreatedBy:  "system",
+		CreatedAt:  time.Now(),
+	}
+	require.NoError(t, svc.taskDAO.Create(context.Background(), task))
+}
+
+// TestFailClosed_AddSignOnSubTaskRejected 加签只作用于节点聚合行：对会签子任务加签
+// 会在其下挂出孙任务，必须显式拒绝并指回父任务，而不是静默产出无效结构。
+func TestFailClosed_AddSignOnSubTaskRejected(t *testing.T) {
+	svc := newFailClosedSvc(t)
+	seedSignSubTask(t, svc, "task-addsign-child", "task-addsign-parent", "t1", "userA")
+
+	err := svc.AddSign(context.Background(), Actor{UserID: "userA", UserName: "A", TenantID: "t1"}, "task-addsign-child", []string{"userB"}, "加签")
+	require.Error(t, err, "对子任务加签应被拒绝")
+	require.True(t, errors.Is(err, ErrValidation), "期望 ErrValidation，got %v", err)
+}
+
+// TestFailClosed_ReduceSignOnSubTaskRejected 减签只作用于节点聚合行：对子任务减签
+// 删不到任何会签人还报成功，必须显式拒绝。
+func TestFailClosed_ReduceSignOnSubTaskRejected(t *testing.T) {
+	svc := newFailClosedSvc(t)
+	seedSignSubTask(t, svc, "task-reduce-child", "task-reduce-parent", "t1", "userA")
+
+	err := svc.ReduceSign(context.Background(), Actor{UserID: "userA", UserName: "A", TenantID: "t1"}, "task-reduce-child", []string{"userA"}, "减签")
+	require.Error(t, err, "对子任务减签应被拒绝")
+	require.True(t, errors.Is(err, ErrValidation), "期望 ErrValidation，got %v", err)
+}

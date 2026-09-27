@@ -54,6 +54,16 @@ func (s *TaskServiceImpl) authorizeSignOperatorWithDAO(ctx context.Context, task
 	return fmt.Errorf("only task assignee/countersign participant can add/reduce sign: %w", ErrPermissionDenied)
 }
 
+// ensureAggregateTask 加签/减签只作用于节点聚合行：会签/投票父任务无直接 assignee，
+// 审批人挂在其子任务上。传入子任务 ID 会在子任务下挂孙任务（加签）或删不到任何人
+// （减签）还报成功，必须显式拒绝并指回父任务。
+func ensureAggregateTask(task *model.WfTask) error {
+	if task.ParentID != nil && *task.ParentID != "" {
+		return fmt.Errorf("task %s is a sign sub-task; add/reduce sign must target its parent task %s: %w", task.ID, *task.ParentID, ErrValidation)
+	}
+	return nil
+}
+
 // AddSign 加签（添加额外的审批人）
 func (s *TaskServiceImpl) AddSign(ctx context.Context, actor Actor, taskID string, userIDs []string, reason string) error {
 	ctx = bindActor(ctx, actor)
@@ -109,6 +119,9 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 	}
 	if task == nil {
 		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+	if err := ensureAggregateTask(task); err != nil {
+		return err
 	}
 
 	// 锁内复校：任务可能在锁外廉价校验后被并发改派，按最新快照复跑操作者鉴权。
@@ -243,6 +256,9 @@ func (s *TaskServiceImpl) reduceSignInternal(ctx context.Context, scope *Instanc
 	}
 	if task == nil {
 		return fmt.Errorf("%w: task", ErrNotFound)
+	}
+	if err := ensureAggregateTask(task); err != nil {
+		return err
 	}
 
 	// 锁内复校：任务可能在锁外廉价校验后被并发改派，按最新快照复跑操作者鉴权。
