@@ -40,6 +40,24 @@ func (s *TaskServiceImpl) CreateTask(ctx context.Context, actor Actor, task *mod
 	now := time.Now()
 	task.UpdatedAt = &now
 
+	// 终态实例不可再落任务：撤回/终止与异步链驱动存在竞态——驱动入口的状态守卫
+	// 只能挡住尚未起飞的推进，挡不住已在链上飞行的消息。这里落库前按实例状态终审，
+	// 避免“实例已 terminated，待办却稍后冒出”的幽灵任务。GetProcessInstance 运行表
+	// 未命中回退历史表，归档后同样可判。Completed 不拦（end 节点尾任务清理路径允许）。
+	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" && s.workflowEngine != nil {
+		if rs := s.workflowEngine.GetRuntimeService(); rs != nil {
+			if inst, err := rs.GetProcessInstance(ctx, actor, *task.ProcessInstanceID); err == nil && inst != nil {
+				switch inst.Status {
+				case string(enums.InstanceStatusTerminated),
+					string(enums.InstanceStatusCancelled),
+					string(enums.InstanceStatusFailed):
+					return "", fmt.Errorf("instance %s is %s, cannot create task: %w",
+						*task.ProcessInstanceID, inst.Status, ErrTaskTerminated)
+				}
+			}
+		}
+	}
+
 	if err := s.taskDAO.Create(ctx, task); err != nil {
 		return "", fmt.Errorf("failed to create task: %w", err)
 	}
