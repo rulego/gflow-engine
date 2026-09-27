@@ -12,13 +12,13 @@
 -- 说明：
 --   - 脚本幂等（CREATE TABLE/INDEX IF NOT EXISTS）：重复执行只建缺失的表，
 --     不会改动已有表和数据，也不会更新已有表结构。需要重置时请重建
---     数据库；已有实例的结构升级由宿主的迁移机制负责。
+--     数据库；已有实例的结构升级按 gflow 仓库 scripts/patch/ 的补丁手工执行。
 --   - 字段约定：主键 VARCHAR(36)；引用列（*_id/*_by，含 tenant_id）统一
 --     VARCHAR(64)；时间列 TIMESTAMPTZ（MySQL 版为 DATETIME(3)）。
 --   - definition_json / variables 等 JSON 内容以 TEXT 存储，校验由应用层
 --     负责（MySQL 版对应列为 JSON 类型）。
---   - 修改表结构时：同步更新两个方言脚本与宿主迁移记录（gflow 仓库
---     internal/migrations），并重新同步 gflow 仓库的 scripts/engine/ 快照。
+--   - 修改表结构时：同步更新两个方言脚本，存量库差异补丁落 gflow 仓库
+--     scripts/patch/，并重新同步 gflow 仓库的 scripts/engine/ 快照。
 -- ============================================================
 
 -- 1. 流程定义表（同一租户内 process_key 按 version 递增，保留多个发布版本）
