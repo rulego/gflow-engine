@@ -1145,3 +1145,70 @@ func TestRecallReservedVarGuardsFailClosed(t *testing.T) {
 	require.False(t, recallCountExhausted(nil))
 	require.False(t, recallCountExhausted(secFixStrPtr("{}")))
 }
+
+// 链式收回：乙收回自己的 B 票后流程停泊回 B（乙重审中），此时甲仍可收回更早的
+// A 票——已收回的 B 票已删出运行表，既不是可收回票也不构成「更晚的办理记录」，
+// 不阻挡上游收回；收回 A 时乙重审中的待办随之作废，流程回退到 A。
+func TestRecall_Chained_AfterDownstreamRecall_UpstreamStillRecallable(t *testing.T) {
+	q := secFixDB(t)
+	jiaCtx := SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"})
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask"), recallNode("c", "userTask")},
+		[]string{recallConn("a", "b"), recallConn("b", "c")})
+	recallSeedInstance(t, q, "inst-chain", string(enums.InstanceStatusActive))
+	base := time.Now().Add(-time.Hour)
+	recallSeedTask(t, q, "t-a", "inst-chain", "a", constants.TaskTypeUserTask, string(enums.TaskStatusCompleted),
+		"jia", base, base.Add(time.Minute), "")
+	recallSeedTask(t, q, "t-b", "inst-chain", "b", constants.TaskTypeUserTask, string(enums.TaskStatusCompleted),
+		"yi", base.Add(2*time.Minute), base.Add(3*time.Minute), "")
+	recallSeedTask(t, q, "t-c", "inst-chain", "c", constants.TaskTypeUserTask, string(enums.TaskStatusActive),
+		"bing", base.Add(4*time.Minute), time.Time{}, "")
+	if _, err := q.WfInstance.WithContext(jiaCtx).
+		Where(q.WfInstance.ID.Eq("inst-chain")).
+		UpdateSimple(q.WfInstance.CurrentActivity.Value("c")); err != nil {
+		t.Fatalf("set current activity: %v", err)
+	}
+	svc, _ := newRecallSvc(q, def, nil)
+
+	// 第一轮：乙收回自己的 B 票，C 待办作废，B 重建待审
+	require.NoError(t, svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}),
+		Actor{UserID: "yi", TenantID: "t1"}, "inst-chain", "票投错了"), "乙可收回自己的 B 票")
+	require.Nil(t, recallTaskByID(t, q, "t-c"), "C 待办应随第一轮收回终止")
+	require.Nil(t, recallTaskByID(t, q, "t-b"), "B 旧票应删出运行表")
+	bRowsAfterFirst, err := q.WfTask.WithContext(jiaCtx).
+		Where(q.WfTask.ProcessInstanceID.Eq("inst-chain")).
+		Where(q.WfTask.TaskDefKey.Eq("b")).Find()
+	require.NoError(t, err)
+	require.Len(t, bRowsAfterFirst, 1, "B 应重建乙的待审任务")
+	require.Equal(t, string(enums.TaskStatusActive), bRowsAfterFirst[0].Status)
+	require.Equal(t, "yi", *bRowsAfterFirst[0].Assignee)
+
+	// 第二轮：甲收回 A 票——乙重审中的 B 待办被作废，流程回退到 A
+	require.NoError(t, svc.Recall(jiaCtx, Actor{UserID: "jia", TenantID: "t1"}, "inst-chain", "上游要改"),
+		"已收回的 B 票不构成更晚办理记录，甲仍可收回 A 票")
+	bRows, err := q.WfTask.WithContext(jiaCtx).
+		Where(q.WfTask.ProcessInstanceID.Eq("inst-chain")).
+		Where(q.WfTask.TaskDefKey.Eq("b")).Find()
+	require.NoError(t, err)
+	require.Len(t, bRows, 0, "乙重审中的 B 待办应随第二轮收回作废")
+	aRows, err := q.WfTask.WithContext(jiaCtx).
+		Where(q.WfTask.ProcessInstanceID.Eq("inst-chain")).
+		Where(q.WfTask.TaskDefKey.Eq("a")).Find()
+	require.NoError(t, err)
+	require.Len(t, aRows, 1, "A 应重建甲的待审任务")
+	require.Equal(t, "jia", *aRows[0].Assignee)
+	require.Equal(t, string(enums.TaskStatusActive), aRows[0].Status)
+	rows, err := q.WfTask.WithContext(jiaCtx).Where(q.WfTask.ProcessInstanceID.Eq("inst-chain")).Find()
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "运行表应只剩甲的 A 待审任务")
+	inst, err := q.WfInstance.WithContext(jiaCtx).Where(q.WfInstance.ID.Eq("inst-chain")).First()
+	require.NoError(t, err)
+	require.NotNil(t, inst.CurrentActivity)
+	require.Equal(t, "a", *inst.CurrentActivity, "当前节点应回拨到 A")
+
+	// 两轮收回各计一次，归档痕迹：B 旧票 recalled + 重建 B 待办 terminated + A 旧票 recalled
+	require.EqualValues(t, 1, countHi(t, q, "t-a"))
+	require.EqualValues(t, 1, countHi(t, q, "t-b"))
+	require.EqualValues(t, 1, countHi(t, q, "t-c"))
+}
