@@ -371,6 +371,10 @@ func TestGetClaimableInstanceIDs(t *testing.T) {
 	now := time.Now()
 
 	// i1：pending 无 assignee，userX 是 person 候选 → 命中
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "i1", ProcessID: "p1", Name: "i1", Status: string(enums.InstanceStatusActive),
+		StartUserID: "starter", TenantID: "t1", CreatedBy: "starter", CreatedAt: now,
+	}))
 	require.NoError(t, q.WfTask.Create(&model.WfTask{
 		ID: "task-cl1", ProcessInstanceID: secFixStrPtr("i1"), TaskDefKey: "n1",
 		Name: "审批", TaskType: "user_task", Status: string(enums.TaskStatusPending),
@@ -381,6 +385,10 @@ func TestGetClaimableInstanceIDs(t *testing.T) {
 		CreatedAt: now,
 	}))
 	// i2：active 已有 assignee → 不命中
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "i2", ProcessID: "p1", Name: "i2", Status: string(enums.InstanceStatusActive),
+		StartUserID: "starter", TenantID: "t1", CreatedBy: "starter", CreatedAt: now,
+	}))
 	require.NoError(t, q.WfTask.Create(&model.WfTask{
 		ID: "task-cl2", ProcessInstanceID: secFixStrPtr("i2"), TaskDefKey: "n2",
 		Name: "审批", TaskType: "user_task", Status: string(enums.TaskStatusActive),

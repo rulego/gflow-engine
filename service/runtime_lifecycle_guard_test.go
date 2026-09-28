@@ -184,6 +184,15 @@ func TestTerminateInTx_DraftRejected(t *testing.T) {
 	require.Equal(t, string(enums.InstanceStatusDraft), persisted.Status, "实例应保持草稿态")
 }
 
+// withdrawProcEngineDouble 撤回开关校验需要流程定义可解析（发起即撤回按流程级
+// actionPermissions 判定），在 testEngineDouble 上补最小 ProcessService。
+type withdrawProcEngineDouble struct {
+	testEngineDouble
+	proc ProcessService
+}
+
+func (e *withdrawProcEngineDouble) GetProcessService() ProcessService { return e.proc }
+
 // 发起后首个任务尚未落库的撤回：start 异步驱动首节点存在窗口，此刻撤回按实例维度
 // 终止并落 withdrawn 口径，不再按“无活跃任务”拒绝。
 func TestWithdrawByInstance_BeforeFirstTaskTerminates(t *testing.T) {
@@ -200,7 +209,7 @@ func TestWithdrawByInstance_BeforeFirstTaskTerminates(t *testing.T) {
 	taskSvc := &TaskServiceImpl{
 		taskDAO:        dao.NewTaskDAOWithQuery(q),
 		hiTaskDAO:      dao.NewHiTaskDAOWithQuery(q),
-		workflowEngine: &testEngineDouble{runtime: rs},
+		workflowEngine: &withdrawProcEngineDouble{testEngineDouble{runtime: rs}, recallProcessFake{def: "{}"}},
 	}
 
 	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
@@ -228,4 +237,38 @@ func TestWithdrawByInstance_BeforeFirstTaskTerminates(t *testing.T) {
 	err = taskSvc.WithdrawByInstance(ctx, Actor{UserID: "imposter", TenantID: "t1"}, "inst-wd-fresh2", "想撤")
 	require.Error(t, err, "非发起人撤回必须拒绝")
 	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+}
+
+// 发起即撤回同样受设计器 withdraw 开关约束：流程级 actionPermissions 禁用撤回时，
+// 首任务未落库窗口不允许借实例维度撤回绕过配置。
+func TestWithdrawByInstance_BeforeFirstTask_DisabledByDesigner(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: &testEngineDouble{listener: func(_ context.Context, _ TaskEvent) {}},
+	}
+	taskSvc := &TaskServiceImpl{
+		taskDAO:   dao.NewTaskDAOWithQuery(q),
+		hiTaskDAO: dao.NewHiTaskDAOWithQuery(q),
+		workflowEngine: &withdrawProcEngineDouble{testEngineDouble{runtime: rs},
+			recallProcessFake{def: `{"ruleChain":{"additionalInfo":{"actionPermissions":{"withdraw":false}}},"metadata":{"nodes":[],"connections":[]}}`}},
+	}
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-wd-off", ProcessID: "proc-no-withdraw", Name: "禁撤回单",
+		Status: string(enums.InstanceStatusActive), TenantID: "t1",
+		StartUserID: "starter", CreatedBy: "starter", CreatedAt: time.Now(),
+	}))
+
+	err := taskSvc.WithdrawByInstance(ctx, Actor{UserID: "starter", TenantID: "t1"}, "inst-wd-off", "提交错了")
+	require.Error(t, err, "设计器禁用撤回时首任务未落库窗口不得终止实例")
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+
+	persisted, gErr := rs.instanceDAO.Get(ctx, "inst-wd-off")
+	require.NoError(t, gErr)
+	require.NotNil(t, persisted, "实例应保持 active 未被终止")
 }

@@ -94,7 +94,12 @@ func BuildUpcomingNodes(chain *types.RuleChain, activeNodeIDs []string, tenantID
 		if rt == "" {
 			rt = types.Success
 		}
-		successors[conn.FromId] = append(successors[conn.FromId], conn.ToId)
+		// 普通展开只沿成功边：Reject/Failure 边是异常分支，仅节点驳回/失败时才走，
+		// 预测正常推进路径不应把异常分支下游当 upcoming 展示。switch 命中解析
+		// 仍用全量边表 succByType，命中分支可能挂在任意关系类型上。
+		if rt == types.Success {
+			successors[conn.FromId] = append(successors[conn.FromId], conn.ToId)
+		}
 		if succByType[conn.FromId] == nil {
 			succByType[conn.FromId] = make(map[string]string)
 		}

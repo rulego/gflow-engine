@@ -1281,3 +1281,29 @@ func TestRecallCompleted_LastNodeVoterOutsideWindowRejected(t *testing.T) {
 	require.True(t, errors.Is(err, ErrValidation))
 	require.Contains(t, err.Error(), "窗口")
 }
+
+// 终态收回资格：末节点投票人只认本人的票——代审出的票（proxy_operator 标记）
+// 与系统自动完成票（UpdatedBy=system）不产生资格，被代审人不得把整单重开进
+// 自己名下，与在途收回 evaluateRecallGuard 的两类拒绝同口径。
+func TestLatestCompletedNodeInHistory_ExcludesProxyAndSystemVotes(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	proxyVars := `{"proxy_operator":"admin1"}`
+	seedVote := func(id, assignee string, vars *string, updatedBy *string) {
+		require.NoError(t, q.WfHiTask.Create(&model.WfHiTask{
+			ID: id, ProcessInstanceID: secFixStrPtr("inst-vote"), ProcessID: "proc-1",
+			TaskDefKey: secFixStrPtr("n-last"), Name: "末节点", TaskType: constants.TaskTypeUserTask,
+			Status: string(enums.TaskStatusCompleted), Assignee: secFixStrPtr(assignee),
+			Variables: vars, UpdatedBy: updatedBy, EndedAt: &now, CreatedAt: now,
+		}))
+	}
+	seedVote("hi-v1", "u1", nil, secFixStrPtr("张三"))
+	seedVote("hi-v2", "u2", &proxyVars, secFixStrPtr("admin1"))
+	seedVote("hi-v3", "u3", nil, secFixStrPtr("system"))
+
+	_, _, voters, err := latestCompletedNodeInHistory(ctx, q, "inst-vote")
+	require.NoError(t, err)
+	require.Equal(t, []string{"u1"}, voters, "代审票与系统票不应产生收回资格")
+}

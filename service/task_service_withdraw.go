@@ -109,6 +109,16 @@ func (s *TaskServiceImpl) withdrawBeforeFirstTask(ctx context.Context, scope *In
 	if instance.Status != string(enums.InstanceStatusActive) {
 		return fmt.Errorf("%w: only active instances can be withdrawn, current status: %s", ErrValidation, instance.Status)
 	}
+	// 首任务未落库同样受设计器 withdraw 开关约束：节点行不存在，退化按流程级
+	// actionPermissions 判定，与有任务分支的 requireActionEnabled 同口径
+	// （解析失败同样拒绝）。
+	ap, _, apErr := resolveProcessActionPermissions(ctx, s.workflowEngine, instance.ProcessID)
+	if apErr != nil {
+		return fmt.Errorf("cannot resolve action permissions for withdraw: %w", ErrPermissionDenied)
+	}
+	if designerDisabled(ap, "withdraw") {
+		return fmt.Errorf("action %q disabled by designer: %w", "withdraw", ErrPermissionDenied)
+	}
 
 	terminateReason := constants.EndReasonPrefixWithdrawn
 	if reason != "" {

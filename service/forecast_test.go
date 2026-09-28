@@ -98,3 +98,20 @@ func TestBuildUpcomingNodes_NonEvaluableTruncates(t *testing.T) {
 	up = BuildUpcomingNodes(chain, []string{"n_mgr"}, "t1", "starter", map[string]interface{}{"days": 8})
 	require.Empty(t, upcomingIDs(up), "inclusive 应维持截断")
 }
+
+// 普通展开只沿成功边：声明了 Reject/Failure 边的节点，其异常分支下游不得被
+// 预测为正常 upcoming（驳回/失败分支仅在运行时走到，预测给错比缺席更糟）。
+func TestBuildUpcomingNodes_SkipsNonSuccessEdges(t *testing.T) {
+	chain := forecastChain()
+	// n_gm 挂一条 Reject 边指向"驳回处理"节点：正常推进不应预测到它
+	chain.Metadata.Nodes = append(chain.Metadata.Nodes,
+		&types.RuleNode{Id: "n_reject_handler", Type: "userTask", Configuration: map[string]interface{}{}})
+	chain.Metadata.Connections = append(chain.Metadata.Connections,
+		types.NodeConnection{FromId: "n_gm", ToId: "n_reject_handler", Type: "Reject"})
+
+	SetApproverPreviewResolver(forecastResolver())
+	defer SetApproverPreviewResolver(nil)
+
+	up := BuildUpcomingNodes(chain, []string{"n_mgr"}, "t1", "starter", map[string]interface{}{"days": 8})
+	require.Equal(t, []string{"n_gm"}, upcomingIDs(up), "正常推进不应把 Reject 边下游当 upcoming")
+}

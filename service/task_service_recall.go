@@ -319,6 +319,11 @@ func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceI
 		if r.Assignee == nil || seen[*r.Assignee] {
 			continue
 		}
+		// 代审出的票与系统自动完成的票不是本人的决定，剔除后原办理人不因
+		// 他人代行使而取得终态收回资格——与在途收回 evaluateRecallGuard 同口径
+		if !isHumanCompletedVote(r.Variables, r.UpdatedBy) {
+			continue
+		}
 		seen[*r.Assignee] = true
 		voters = append(voters, *r.Assignee)
 	}
@@ -823,10 +828,17 @@ func stripReservedMarks(vars *string) *string {
 // 解析失败按带标记处理：变量损坏时无法证明未被代审，放行收回会覆盖代审事实。
 // 变量为空即未代审（ProxyAudit 必写标记），不受影响。
 func hasProxyMark(t *model.WfTask) bool {
-	if t == nil || t.Variables == nil || *t.Variables == "" {
+	if t == nil {
 		return false
 	}
-	m, err := ParseVariablesJSON(t.Variables)
+	return varsHaveProxyMark(t.Variables)
+}
+
+func varsHaveProxyMark(vars *string) bool {
+	if vars == nil || *vars == "" {
+		return false
+	}
+	m, err := ParseVariablesJSON(vars)
 	if err != nil {
 		return true
 	}
@@ -834,6 +846,17 @@ func hasProxyMark(t *model.WfTask) bool {
 		return v != ""
 	}
 	return false
+}
+
+// isHumanCompletedVote 已完成的办理记录是否本人的人工决定：代审出的票
+// （proxy_operator 标记）与系统自动完成票（UpdatedBy=system）不算，原办理人
+// 不得据此取得收回资格。与在途收回 evaluateRecallGuard 的两类拒绝同口径，
+// 供终态收回资格（写路径 voters 与详情按钮位）共用。
+func isHumanCompletedVote(vars, updatedBy *string) bool {
+	if varsHaveProxyMark(vars) {
+		return false
+	}
+	return updatedBy == nil || *updatedBy != constants.UserSystem
 }
 
 // listAllInstanceTasksTx 行锁事务内翻页取全单实例任务集。守卫（更晚办理记录、

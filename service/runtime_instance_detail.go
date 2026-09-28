@@ -488,7 +488,8 @@ func designerEnabled(actionPermissions map[string]interface{}, key string) bool 
 // currentUserIsLastNodeVoter 判断查询者是否末节点（最近完成的 userTask 节点）
 // 的已完成投票人——终态收回的第三类资格，与 recallCompleted 的
 // latestCompletedNodeInHistory 同口径：按结束时间取最近完成的 userTask 节点，
-// 该节点上本人存在已完成且有办理人的记录。
+// 该节点上本人存在已完成且有办理人的记录；代审票与系统自动完成票不算
+// （isHumanCompletedVote），与写路径资格一致。
 func currentUserIsLastNodeVoter(tasks []*model.WfTask, userID string) bool {
 	var last *model.WfTask
 	for _, t := range tasks {
@@ -506,7 +507,8 @@ func currentUserIsLastNodeVoter(tasks []*model.WfTask, userID string) bool {
 	for _, t := range tasks {
 		if t != nil && t.TaskDefKey == last.TaskDefKey &&
 			t.Status == string(enums.TaskStatusCompleted) &&
-			t.Assignee != nil && *t.Assignee == userID {
+			t.Assignee != nil && *t.Assignee == userID &&
+			isHumanCompletedVote(t.Variables, t.UpdatedBy) {
 			return true
 		}
 	}
