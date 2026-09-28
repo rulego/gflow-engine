@@ -105,6 +105,9 @@ const (
 	TaskTypeUserTask = "userTask"
 	TaskTypeDelay    = "delay"
 	TaskTypeCCTask   = "ccTask"
+	// TaskTypeRecall 终态收回的轨迹记录行（落归档任务表，非真实任务）：
+	// 时间轴与打印据此在两轮审批之间渲染收回节点，标注操作人与原因
+	TaskTypeRecall = "recall"
 )
 
 // DSL 节点类型（DefinitionJSON metadata.nodes[].type 取值，与 rulego 注册的

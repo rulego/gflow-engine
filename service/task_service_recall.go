@@ -204,6 +204,36 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 			Timestamp:           time.Now(),
 		}, ctx)
 	}
+
+	// 轨迹记录行：时间轴与打印据此在两轮审批之间渲染收回节点，否则上一轮的
+	// 「已通过」原样保留、重审通过再次出现，读轨迹的人无法分辨中间发生过收回。
+	// 无办理人（不进按办理人查询的已办列表），操作人进节点名，原因进意见。
+	operator := actor.UserName
+	if operator == "" {
+		operator = userID
+	}
+	now := time.Now()
+	recalled := string(enums.EndReasonRecalled)
+	marker := &model.WfHiTask{
+		ID:                s.idGenerator.GenerateTaskID(),
+		ProcessInstanceID: &instanceID,
+		ProcessID:         hi.ProcessID,
+		Name:              "收回（" + operator + "）",
+		TaskType:          constants.TaskTypeRecall,
+		Status:            string(enums.TaskStatusCompleted),
+		EndReason:         &recalled,
+		CreatedBy:         userID,
+		CreatedAt:         now,
+		EndedAt:           &now,
+		TenantID:          hi.TenantID,
+	}
+	if reason != "" {
+		marker.Comment = &reason
+	}
+	if err := s.hiTaskDAO.Create(ctx, marker); err != nil {
+		logrus.WithError(err).WithField("instanceId", instanceID).
+			Warn("failed to persist recall trace row")
+	}
 	return nil
 }
 

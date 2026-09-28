@@ -757,7 +757,7 @@ func TestRecallCompleted_ByStarterReopensInstance(t *testing.T) {
 
 	require.NoError(t, svc.Recall(
 		SetUserToCtx(context.Background(), &Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}),
-		Actor{UserID: "starter", TenantID: "t1"}, "inst-term", "批错了，整单重开"))
+		Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-term", "批错了，整单重开"))
 
 	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term")).First()
 	require.NoError(t, err, "实例应回插运行表")
@@ -767,6 +767,16 @@ func TestRecallCompleted_ByStarterReopensInstance(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 0, hiGone, "归档行应移除")
 	require.Equal(t, "b", eng.internal.execNextNode, "应重入末节点 b")
+
+	// 时间轴轨迹：收回落一条 recall 记录行（操作人在节点名，原因在意见）
+	var markers []model.WfHiTask
+	require.NoError(t, q.WfHiTask.WithContext(context.Background()).
+		Where(q.WfHiTask.ProcessInstanceID.Eq("inst-term")).
+		Where(q.WfHiTask.TaskType.Eq(constants.TaskTypeRecall)).Scan(&markers))
+	require.Len(t, markers, 1, "应落一条收回轨迹记录行")
+	require.Contains(t, markers[0].Name, "发起人")
+	require.NotNil(t, markers[0].Comment)
+	require.Equal(t, "批错了，整单重开", *markers[0].Comment)
 }
 
 // 终态收回复活实例剥离上一轮的引擎保留标记，收回次数照常累加。
@@ -1227,7 +1237,7 @@ func TestRecallCompleted_ByLastNodeVoterReopens(t *testing.T) {
 
 	require.NoError(t, svc.Recall(
 		SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}),
-		Actor{UserID: "yi", TenantID: "t1"}, "inst-term-v", "批快了，取回重审"))
+		Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}, "inst-term-v", "批快了，取回重审"))
 
 	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term-v")).First()
 	require.NoError(t, err, "实例应回插运行表")
