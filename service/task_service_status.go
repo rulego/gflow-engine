@@ -250,13 +250,16 @@ func (s *TaskServiceImpl) activateTaskInternal(ctx context.Context, scope *Insta
 	}
 
 	// 挂起/失败实例不得单独唤醒任务，恢复走实例级 activate；
-	// 实例 active 下的任务级唤醒（单任务微操）不受影响。
+	// 实例 active 下的任务级唤醒（单任务微操）不受影响。实例不存在或查询失败
+	// 同样拒绝：锁内读不到实例说明实例已被清扫，唤醒会复活孤儿任务。
 	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
-		if inst, iErr := scope.Instances().Get(ctx, *task.ProcessInstanceID); iErr == nil && inst != nil {
-			switch inst.Status {
-			case string(enums.InstanceStatusSuspended), string(enums.InstanceStatusFailed):
-				return fmt.Errorf("instance is %s, resume it before waking tasks: %w", inst.Status, ErrConflict)
-			}
+		inst, iErr := scope.Instances().Get(ctx, *task.ProcessInstanceID)
+		if iErr != nil || inst == nil {
+			return fmt.Errorf("instance %s unavailable, cannot activate task: %w", *task.ProcessInstanceID, ErrConflict)
+		}
+		switch inst.Status {
+		case string(enums.InstanceStatusSuspended), string(enums.InstanceStatusFailed):
+			return fmt.Errorf("instance is %s, resume it before waking tasks: %w", inst.Status, ErrConflict)
 		}
 	}
 

@@ -57,6 +57,9 @@ func (s *TaskServiceImpl) GetClaimableInstanceIDs(ctx context.Context, actor Act
 		CandidateUser:    userID,
 		CandidateRoleIDs: s.candidateRoleIDs(ctx, tenantID, userID),
 		CandidateDeptIDs: s.candidateDeptIDs(ctx, tenantID, userID),
+		// 挂起/失败实例的任务签收会被守卫拒绝，这里同步按实例状态过滤，
+		// 避免列表标出「待认领」而签收必败（与超时扫描的实例状态口径一致）
+		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
 		PageRequest: dto.PageRequest{
 			Page:     1,
 			PageSize: 500,

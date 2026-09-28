@@ -5,9 +5,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
@@ -41,25 +43,48 @@ func (s *TaskServiceImpl) CreateTask(ctx context.Context, actor Actor, task *mod
 	task.UpdatedAt = &now
 
 	// 终态实例不可再落任务：撤回/终止与异步链驱动存在竞态——驱动入口的状态守卫
-	// 只能挡住尚未起飞的推进，挡不住已在链上飞行的消息。这里落库前按实例状态终审，
-	// 避免“实例已 terminated，待办却稍后冒出”的幽灵任务。GetProcessInstance 运行表
-	// 未命中回退历史表，归档后同样可判。Completed 不拦（end 节点尾任务清理路径允许）。
+	// 只能挡住尚未起飞的推进，挡不住已在链上飞行的消息。这里在实例行锁事务内
+	// 落库前终审，锁内读到的即权威状态；实例不存在或查询失败同样拒绝，放行会
+	// 落下无法溯源的孤儿任务。Completed 放行：end 节点崩溃恢复的尾任务补录允许
+	// 在已完成实例上落收尾任务，终态行不再有并发变更，走下面的锁外快速路径。
 	// Suspended 落库即冻结：晚于挂起动作创建的任务直接以 suspended 入库，与级联
 	// 挂起后的任务同态——恢复时随级联激活翻回，流程不会因缺任务卡死。
-	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" && s.workflowEngine != nil {
-		if rs := s.workflowEngine.GetRuntimeService(); rs != nil {
-			if inst, err := rs.GetProcessInstance(ctx, actor, *task.ProcessInstanceID); err == nil && inst != nil {
-				switch inst.Status {
-				case string(enums.InstanceStatusTerminated),
-					string(enums.InstanceStatusCancelled),
-					string(enums.InstanceStatusFailed):
-					return "", fmt.Errorf("instance %s is %s, cannot create task: %w",
-						*task.ProcessInstanceID, inst.Status, ErrTaskTerminated)
-				case string(enums.InstanceStatusSuspended):
-					task.Status = string(enums.TaskStatusSuspended)
-				}
+	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
+		instanceID := *task.ProcessInstanceID
+		q := s.taskDAO.Underlying()
+		if inst, err := dao.NewInstanceDAOWithQuery(q).Get(ctx, instanceID); err == nil && inst != nil &&
+			inst.Status == string(enums.InstanceStatusCompleted) {
+			if err := s.taskDAO.Create(ctx, task); err != nil {
+				return "", fmt.Errorf("failed to create task: %w", err)
 			}
+			return task.ID, nil
 		}
+		err := WithInstanceTx(ctx, q, instanceID, func(scope *InstanceScope) error {
+			inst, err := scope.Instances().Get(ctx, instanceID)
+			if err != nil {
+				return fmt.Errorf("instance %s state unavailable, refuse to create task: %w", instanceID, err)
+			}
+			if inst == nil {
+				return fmt.Errorf("%w: %s", ErrInstanceNotFound, instanceID)
+			}
+			switch inst.Status {
+			case string(enums.InstanceStatusTerminated),
+				string(enums.InstanceStatusCancelled),
+				string(enums.InstanceStatusFailed):
+				return fmt.Errorf("instance %s is %s, cannot create task: %w",
+					instanceID, inst.Status, ErrTaskTerminated)
+			case string(enums.InstanceStatusSuspended):
+				task.Status = string(enums.TaskStatusSuspended)
+			}
+			return scope.Tasks().Create(ctx, task)
+		})
+		if err != nil {
+			if errors.Is(err, ErrInstanceTerminal) || errors.Is(err, ErrInstanceNotFound) {
+				return "", fmt.Errorf("instance %s cannot accept tasks: %w", instanceID, err)
+			}
+			return "", fmt.Errorf("failed to create task: %w", err)
+		}
+		return task.ID, nil
 	}
 
 	if err := s.taskDAO.Create(ctx, task); err != nil {
