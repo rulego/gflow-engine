@@ -1899,6 +1899,7 @@ func (s *RuntimeServiceImpl) GetProcessInstancesByTaskConditions(ctx context.Con
 // 候选人池依赖 wf_task_assignee 表；表不存在时退化为仅 ①。
 // 过滤不含 returned：退回任务生成即归档进历史表（活表无此状态），
 // 列入过滤只会经 ListByTaskConditions 的历史分支把已结束实例捞回待办。
+// 只认 active 实例：挂起/失败实例的任务不构成待办入口。
 func (s *RuntimeServiceImpl) GetTodoProcessInstanceList(ctx context.Context, actor Actor, page, pageSize int, keyword string, startUserIDs []string, orderBy string, orderDesc bool) ([]*model.WfInstance, int64, error) {
 	ctx = bindActor(ctx, actor)
 	if err := requireNonEmptyTenantForRealUser(&actor); err != nil {
@@ -1913,6 +1914,7 @@ func (s *RuntimeServiceImpl) GetTodoProcessInstanceList(ctx context.Context, act
 		TenantID:         tenantID,
 		Keyword:          keyword,
 		StartUserIDs:     startUserIDs,
+		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
 		PageRequest: dto.PageRequest{
 			Page:      page,
 			PageSize:  pageSize,

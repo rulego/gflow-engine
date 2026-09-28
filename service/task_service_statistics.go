@@ -94,19 +94,21 @@ func (s *TaskServiceImpl) GetApprovalStatistics(ctx context.Context, actor Actor
 	// 待办（已签收 assignee + 候选组未签收）
 	_, todoCount, err := s.QueryTasks(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID,
-		PageRequest: dto.PageRequest{Status: activeStatuses, PageSize: 1},
+		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
+		PageRequest:      dto.PageRequest{Status: activeStatuses, PageSize: 1},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query todo tasks: %w", err)
 	}
-	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, deptIDs, []string{string(enums.TaskStatusPending)}, nil, nil); cerr == nil {
+	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, deptIDs, []string{string(enums.TaskStatusPending)}, nil, nil, string(enums.InstanceStatusActive)); cerr == nil {
 		todoCount += candCnt
 	}
 
 	// 进行中（已签收 active），供任务页"待领取/进行中"两卡分化
 	_, activeCount, err := s.QueryTasks(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID,
-		PageRequest: dto.PageRequest{Status: []string{string(enums.TaskStatusActive)}, PageSize: 1},
+		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
+		PageRequest:      dto.PageRequest{Status: []string{string(enums.TaskStatusActive)}, PageSize: 1},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query active tasks: %w", err)
@@ -140,7 +142,8 @@ func (s *TaskServiceImpl) GetApprovalStatistics(ctx context.Context, actor Actor
 	// 今日新增待办（今日创建且未完成，含候选）
 	_, todayArrived, err := s.QueryTasks(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID, CreatedAfter: &todayStart,
-		PageRequest: dto.PageRequest{Status: activeStatuses, PageSize: 1},
+		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
+		PageRequest:      dto.PageRequest{Status: activeStatuses, PageSize: 1},
 	})
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to query today arrived tasks")
@@ -156,7 +159,7 @@ func (s *TaskServiceImpl) GetApprovalStatistics(ctx context.Context, actor Actor
 		logrus.WithError(err).Warn("Failed to query overdue tasks")
 		overdueCount = 0
 	}
-	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, deptIDs, []string{string(enums.TaskStatusPending)}, nil, &now); cerr == nil {
+	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, roleIDs, deptIDs, []string{string(enums.TaskStatusPending)}, nil, &now, string(enums.InstanceStatusActive)); cerr == nil {
 		overdueCount += candCnt
 	}
 
@@ -219,6 +222,7 @@ func (s *TaskServiceImpl) countTasksBothTables(ctx context.Context, userID, tena
 func (s *TaskServiceImpl) countOverdueActiveTasks(ctx context.Context, userID, tenantID string, now time.Time) (int64, error) {
 	tasks, _, err := s.QueryTasks(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID,
+		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
 		PageRequest: dto.PageRequest{
 			Status:   []string{string(enums.TaskStatusPending), string(enums.TaskStatusActive)},
 			PageSize: statsPageSizeFetchAll,
@@ -307,8 +311,9 @@ func (s *TaskServiceImpl) GetApprovalStatisticsDetail(ctx context.Context, actor
 
 	// 查询待办任务数量
 	todoQuery := &dto.TaskQuery{
-		Assignee: userID,
-		TenantID: tenantID,
+		Assignee:         userID,
+		TenantID:         tenantID,
+		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
 		PageRequest: dto.PageRequest{
 			Status:   []string{string(enums.TaskStatusPending), string(enums.TaskStatusActive)},
 			PageSize: 1,
@@ -318,7 +323,7 @@ func (s *TaskServiceImpl) GetApprovalStatisticsDetail(ctx context.Context, actor
 	if err != nil {
 		return nil, fmt.Errorf("failed to query todo tasks: %w", err)
 	}
-	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, s.candidateRoleIDs(ctx, tenantID, userID), s.candidateDeptIDs(ctx, tenantID, userID), []string{string(enums.TaskStatusPending)}, nil, nil); cerr == nil {
+	if candCnt, cerr := s.taskAssigneeDAO.CountCandidateTasks(ctx, tenantID, userID, s.candidateRoleIDs(ctx, tenantID, userID), s.candidateDeptIDs(ctx, tenantID, userID), []string{string(enums.TaskStatusPending)}, nil, nil, string(enums.InstanceStatusActive)); cerr == nil {
 		todoCount += candCnt
 	}
 

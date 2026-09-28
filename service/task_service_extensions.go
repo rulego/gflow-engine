@@ -25,6 +25,9 @@ func (s *TaskServiceImpl) ScanOverdueTasks(ctx context.Context, limit int) ([]*m
 	q := &dto.TaskQuery{
 		// TenantID 留空：不限租户。DAO 对空 TenantID 不加过滤条件。
 		DueDateBefore: &now,
+		// 只巡检活跃实例：挂起实例的任务冻结在原地，超时提醒与超时自动办理
+		// 都不应在其上触发。
+		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
 		PageRequest: dto.PageRequest{
 			Page:     1,
 			PageSize: limit,

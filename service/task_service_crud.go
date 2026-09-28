@@ -44,13 +44,16 @@ func (s *TaskServiceImpl) CreateTask(ctx context.Context, actor Actor, task *mod
 	// 只能挡住尚未起飞的推进，挡不住已在链上飞行的消息。这里落库前按实例状态终审，
 	// 避免“实例已 terminated，待办却稍后冒出”的幽灵任务。GetProcessInstance 运行表
 	// 未命中回退历史表，归档后同样可判。Completed 不拦（end 节点尾任务清理路径允许）。
+	// Suspended 同拦：挂起期间不落新任务，恢复走级联激活既有任务——
+	// 实例上不应出现晚于挂起动作创建的任务。
 	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" && s.workflowEngine != nil {
 		if rs := s.workflowEngine.GetRuntimeService(); rs != nil {
 			if inst, err := rs.GetProcessInstance(ctx, actor, *task.ProcessInstanceID); err == nil && inst != nil {
 				switch inst.Status {
 				case string(enums.InstanceStatusTerminated),
 					string(enums.InstanceStatusCancelled),
-					string(enums.InstanceStatusFailed):
+					string(enums.InstanceStatusFailed),
+					string(enums.InstanceStatusSuspended):
 					return "", fmt.Errorf("instance %s is %s, cannot create task: %w",
 						*task.ProcessInstanceID, inst.Status, ErrTaskTerminated)
 				}

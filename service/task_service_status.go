@@ -249,6 +249,17 @@ func (s *TaskServiceImpl) activateTaskInternal(ctx context.Context, scope *Insta
 		return fmt.Errorf("task is %s, cannot activate: %w", task.Status, ErrConflict)
 	}
 
+	// 挂起/失败实例不得单独唤醒任务，恢复走实例级 activate；
+	// 实例 active 下的任务级唤醒（单任务微操）不受影响。
+	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
+		if inst, iErr := scope.Instances().Get(ctx, *task.ProcessInstanceID); iErr == nil && inst != nil {
+			switch inst.Status {
+			case string(enums.InstanceStatusSuspended), string(enums.InstanceStatusFailed):
+				return fmt.Errorf("instance is %s, resume it before waking tasks: %w", inst.Status, ErrConflict)
+			}
+		}
+	}
+
 	if u := GetUserFromCtx(ctx); u != nil {
 		if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != u.UserID {
 			return fmt.Errorf("task assigned to %s, current user %s: %w", *task.Assignee, u.UserID, ErrPermissionDenied)

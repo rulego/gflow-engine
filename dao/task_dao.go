@@ -162,6 +162,13 @@ func (d *TaskDAO) List(ctx context.Context, query *dto.TaskQuery) ([]*model.WfTa
 	if len(query.Status) > 0 {
 		queryBuilder = queryBuilder.Where(q.Status.In(query.Status...))
 	}
+	// 实例状态过滤（i.status 层，区别于任务状态）：子查询圈定实例集合，
+	// 待办统计用它与待办列表同口径。
+	if len(query.InstanceStatuses) > 0 {
+		iw := d.Query.WfInstance
+		sub := iw.WithContext(ctx).Select(iw.ID).Where(iw.Status.In(query.InstanceStatuses...))
+		queryBuilder = queryBuilder.Where(field.ContainsSubQuery([]field.Expr{q.ProcessInstanceID}, sub.UnderlyingDB()))
+	}
 	if query.ApprovalType != "" {
 		queryBuilder = queryBuilder.Where(q.ApprovalType.Eq(query.ApprovalType))
 	}

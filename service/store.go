@@ -86,7 +86,7 @@ type TaskAssigneeStore interface {
 	GetByTaskID(ctx context.Context, tenantID, taskID string) ([]*model.WfTaskAssignee, error)
 	GetByInstanceAndDefKey(ctx context.Context, tenantID, processInstanceID, taskDefKey string) ([]*model.WfTaskAssignee, error)
 	DeleteByTaskAndEntities(ctx context.Context, tenantID, taskID, entityType string, entityIDs []string) error
-	CountCandidateTasks(ctx context.Context, tenantID, userID string, roleIDs, deptIDs, statuses []string, createdAfter, dueBefore *time.Time) (int64, error)
+	CountCandidateTasks(ctx context.Context, tenantID, userID string, roleIDs, deptIDs, statuses []string, createdAfter, dueBefore *time.Time, instanceStatuses ...string) (int64, error)
 }
 
 // TaskCommentStore 任务评论表存储。

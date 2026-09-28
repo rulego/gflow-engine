@@ -75,6 +75,16 @@ func (s *TaskServiceImpl) claimInternal(ctx context.Context, scope *InstanceScop
 		return nil
 	}
 
+	// 挂起/失败实例的候选任务不可签收；scope 在实例行锁内，读到的即权威状态。
+	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
+		if inst, iErr := scope.Instances().Get(ctx, *task.ProcessInstanceID); iErr == nil && inst != nil {
+			switch inst.Status {
+			case string(enums.InstanceStatusSuspended), string(enums.InstanceStatusFailed):
+				return fmt.Errorf("instance is %s, cannot claim until resumed: %w", inst.Status, ErrTaskNotClaimable)
+			}
+		}
+	}
+
 	// 检查任务是否可以认领
 	if task.Assignee != nil && *task.Assignee != "" {
 		return fmt.Errorf("%w: task already assigned", ErrTaskNotClaimable)

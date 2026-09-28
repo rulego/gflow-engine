@@ -118,7 +118,8 @@ func (d *TaskAssigneeDAO) DeleteByTaskAndEntities(ctx context.Context, tenantID,
 
 // CountCandidateTasks 统计用户作为候选人（person、role 成员或 department 成员）的待办任务数。
 // JOIN wf_task 过滤状态/创建/截止时间；候选任务无 assignee，与 assignee 计数不重叠。
-func (d *TaskAssigneeDAO) CountCandidateTasks(ctx context.Context, tenantID, userID string, roleIDs, deptIDs, statuses []string, createdAfter, dueBefore *time.Time) (int64, error) {
+// instanceStatuses 非空时再 JOIN wf_instance 过滤实例状态（待办统计剔除挂起/失败实例）。
+func (d *TaskAssigneeDAO) CountCandidateTasks(ctx context.Context, tenantID, userID string, roleIDs, deptIDs, statuses []string, createdAfter, dueBefore *time.Time, instanceStatuses ...string) (int64, error) {
 	if userID == "" {
 		return 0, nil
 	}
@@ -142,6 +143,9 @@ func (d *TaskAssigneeDAO) CountCandidateTasks(ctx context.Context, tenantID, use
 	}
 	if len(statuses) > 0 {
 		q = q.Where("t.status IN (?)", statuses)
+	}
+	if len(instanceStatuses) > 0 {
+		q = q.Joins("JOIN "+model.TableNameWfInstance+" AS i ON i.id = t.process_instance_id AND i.status IN (?)", instanceStatuses)
 	}
 	if createdAfter != nil {
 		q = q.Where("t.created_at >= ?", *createdAfter)

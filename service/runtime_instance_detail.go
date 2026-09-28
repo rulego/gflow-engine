@@ -384,7 +384,9 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		case string(enums.TaskStatusPending):
 			resp.ActionPermissions["claim"] = true // 待领取→必须能签收（设计器不可控制）
 		case string(enums.TaskStatusSuspended):
-			if !designerDisabled(actionPermissions, "awaken") {
+			// 唤醒只在 active 实例上可用（单任务微操）：实例级挂起期间任务冻结，
+			// 恢复走实例级 activate，与 ActivateTask 写路径守卫同口径
+			if instance.Status == string(enums.InstanceStatusActive) && !designerDisabled(actionPermissions, "awaken") {
 				resp.ActionPermissions["awaken"] = true
 			}
 		}
