@@ -8,7 +8,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -53,8 +52,9 @@ func suspendGuardSeed(t *testing.T, q *query.Query, instanceID, instanceStatus, 
 	require.NoError(t, q.WfTask.Create(task))
 }
 
-// CreateTask：挂起实例不得落新任务（与 terminated/cancelled/failed 同守卫）。
-func TestCreateTask_Blocked_SuspendedInstance(t *testing.T) {
+// CreateTask：挂起实例上晚到的任务以 suspended 冻结落库（与级联挂起同态，
+// 恢复时随级联激活翻回，流程不因缺任务卡死）。
+func TestCreateTask_SuspendedInstance_FrozenTask(t *testing.T) {
 	q := secFixDB(t)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "system", TenantID: "t1"})
 	suspendGuardSeed(t, q, "inst-sus", string(enums.InstanceStatusSuspended), "t-existing", string(enums.TaskStatusActive), "")
@@ -70,7 +70,7 @@ func TestCreateTask_Blocked_SuspendedInstance(t *testing.T) {
 		idGenerator:    DefaultIDGenerator,
 	}
 
-	_, err := svc.CreateTask(ctx, Actor{UserID: "system", TenantID: "t1"}, &model.WfTask{
+	taskID, err := svc.CreateTask(ctx, Actor{UserID: "system", TenantID: "t1"}, &model.WfTask{
 		ProcessInstanceID: secFixStrPtr("inst-sus"),
 		TaskDefKey:        "node-b",
 		TaskType:          "user_task",
@@ -79,8 +79,10 @@ func TestCreateTask_Blocked_SuspendedInstance(t *testing.T) {
 		CreatedBy:         "system",
 		CreatedAt:         time.Now(),
 	})
-	require.Error(t, err, "挂起实例不得落新任务")
-	require.True(t, errors.Is(err, ErrTaskTerminated))
+	require.NoError(t, err, "挂起实例的任务应冻结落库而非拒绝")
+	row, gErr := q.WfTask.WithContext(ctx).Where(q.WfTask.ID.Eq(taskID)).First()
+	require.NoError(t, gErr)
+	require.Equal(t, string(enums.TaskStatusSuspended), row.Status, "落库任务应为 suspended 冻结态")
 }
 
 // Claim：挂起实例的候选池任务拒绝签收（幂等放行仅限已是本人 active 任务的场景）。
