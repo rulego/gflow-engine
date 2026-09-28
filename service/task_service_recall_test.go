@@ -819,7 +819,7 @@ func TestRecallCompleted_Guards(t *testing.T) {
 		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
 		[]string{recallConn("a", "b")})
 
-	t.Run("非发起人且非管理员", func(t *testing.T) {
+	t.Run("非发起人且非管理员且非末节点审批人", func(t *testing.T) {
 		q := secFixDB(t)
 		recallSeedHiInstance(t, q, "inst-g1", string(enums.InstanceStatusCompleted), time.Now().Add(-time.Hour))
 		recallSeedHiTask(t, q, "ht-g1", "inst-g1", "b", "yi", time.Now().Add(-30*time.Minute))
@@ -829,7 +829,7 @@ func TestRecallCompleted_Guards(t *testing.T) {
 			Actor{UserID: "jia", TenantID: "t1"}, "inst-g1", "")
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrPermissionDenied))
-		require.Contains(t, err.Error(), "发起人或管理员")
+		require.Contains(t, err.Error(), "发起人、管理员或末节点审批人")
 	})
 
 	t.Run("超过窗口", func(t *testing.T) {
@@ -1211,4 +1211,63 @@ func TestRecall_Chained_AfterDownstreamRecall_UpstreamStillRecallable(t *testing
 	require.EqualValues(t, 1, countHi(t, q, "t-a"))
 	require.EqualValues(t, 1, countHi(t, q, "t-b"))
 	require.EqualValues(t, 1, countHi(t, q, "t-c"))
+}
+
+// 末节点审批人窗口期内取回自己审完的已完成实例：实例复活、重入末节点、
+// 新待办落回末节点审批人（与发起人触发同一套机制）。
+func TestRecallCompleted_ByLastNodeVoterReopens(t *testing.T) {
+	q := secFixDB(t)
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedHiInstance(t, q, "inst-term-v", string(enums.InstanceStatusCompleted), time.Now().Add(-24*time.Hour))
+	recallSeedHiTask(t, q, "ht-v-a", "inst-term-v", "a", "jia", time.Now().Add(-23*time.Hour))
+	recallSeedHiTask(t, q, "ht-v-b", "inst-term-v", "b", "yi", time.Now().Add(-22*time.Hour))
+	svc, eng := newRecallSvc(q, def, nil)
+
+	require.NoError(t, svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}),
+		Actor{UserID: "yi", TenantID: "t1"}, "inst-term-v", "批快了，取回重审"))
+
+	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term-v")).First()
+	require.NoError(t, err, "实例应回插运行表")
+	require.Equal(t, string(enums.InstanceStatusActive), revived.Status)
+	require.Equal(t, "b", eng.internal.execNextNode, "应重入末节点 b，新待办落回末节点审批人")
+}
+
+// 非末节点审批人（只在更早节点投过票）不属于终态收回的资格范围：
+// 重审只针对末节点，更早节点的审批人取回会跳过中间环节。
+func TestRecallCompleted_NonLastNodeVoterRejected(t *testing.T) {
+	q := secFixDB(t)
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedHiInstance(t, q, "inst-term-nv", string(enums.InstanceStatusCompleted), time.Now().Add(-24*time.Hour))
+	recallSeedHiTask(t, q, "ht-nv-a", "inst-term-nv", "a", "jia", time.Now().Add(-23*time.Hour))
+	recallSeedHiTask(t, q, "ht-nv-b", "inst-term-nv", "b", "yi", time.Now().Add(-22*time.Hour))
+	svc, _ := newRecallSvc(q, def, nil)
+
+	err := svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"}),
+		Actor{UserID: "jia", TenantID: "t1"}, "inst-term-nv", "")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrPermissionDenied))
+}
+
+// 末节点审批人同样受收回窗口约束，超窗拒绝。
+func TestRecallCompleted_LastNodeVoterOutsideWindowRejected(t *testing.T) {
+	q := secFixDB(t)
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedHiInstance(t, q, "inst-term-w", string(enums.InstanceStatusCompleted), time.Now().Add(-8*24*time.Hour))
+	recallSeedHiTask(t, q, "ht-w-b", "inst-term-w", "b", "yi", time.Now().Add(-8*24*time.Hour))
+	svc, _ := newRecallSvc(q, def, nil)
+
+	err := svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}),
+		Actor{UserID: "yi", TenantID: "t1"}, "inst-term-w", "")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrValidation))
+	require.Contains(t, err.Error(), "窗口")
 }

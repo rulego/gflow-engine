@@ -324,8 +324,9 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		}
 	}
 
-	// 审批人收回:运行中实例=本人存在可收回记录且守卫通过;已完成实例=发起人在
-	// 窗口期内可整单重开(末节点重审)。守卫与 Recall 写路径同口径。
+	// 审批人收回:运行中实例=本人存在可收回记录且守卫通过;已完成实例=发起人、
+	// 管理员或末节点审批人在窗口期内可整单重开(末节点重审)。守卫与 Recall
+	// 写路径同口径。
 	if instance.Status == string(enums.InstanceStatusActive) && !designerDisabled(starterActionPermissions, "recall") {
 		if t := findRecallableCompletedTask(tasks, currentUserId); t != nil {
 			if evaluateRecallGuard(tasks, t, ruleChain) == nil {
@@ -344,7 +345,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 	}
 	if instance.Status == string(enums.InstanceStatusCompleted) && completedInstanceHasUserTask &&
 		!designerDisabled(starterActionPermissions, "recall") &&
-		(instance.StartUserID == currentUserId || isWorkflowAdmin(&actor)) && withinRecallWindow(starterActionPermissions, instance.EndedAt) {
+		(instance.StartUserID == currentUserId || isWorkflowAdmin(&actor) || currentUserIsLastNodeVoter(tasks, currentUserId)) &&
+		withinRecallWindow(starterActionPermissions, instance.EndedAt) {
 		resp.ActionPermissions["recall"] = true
 	}
 
@@ -481,6 +483,34 @@ func designerEnabled(actionPermissions map[string]interface{}, key string) bool 
 	}
 	b, ok := v.(bool)
 	return ok && b
+}
+
+// currentUserIsLastNodeVoter 判断查询者是否末节点（最近完成的 userTask 节点）
+// 的已完成投票人——终态收回的第三类资格，与 recallCompleted 的
+// latestCompletedNodeInHistory 同口径：按结束时间取最近完成的 userTask 节点，
+// 该节点上本人存在已完成且有办理人的记录。
+func currentUserIsLastNodeVoter(tasks []*model.WfTask, userID string) bool {
+	var last *model.WfTask
+	for _, t := range tasks {
+		if t == nil || t.TaskType != constants.TaskTypeUserTask ||
+			t.Status != string(enums.TaskStatusCompleted) || t.TaskDefKey == "" {
+			continue
+		}
+		if last == nil || (t.EndedAt != nil && (last.EndedAt == nil || t.EndedAt.After(*last.EndedAt))) {
+			last = t
+		}
+	}
+	if last == nil {
+		return false
+	}
+	for _, t := range tasks {
+		if t != nil && t.TaskDefKey == last.TaskDefKey &&
+			t.Status == string(enums.TaskStatusCompleted) &&
+			t.Assignee != nil && *t.Assignee == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // Task2ExecutionInfo 把任务行装配为审批时间线视图。tasks 须包含同实例（至少是
