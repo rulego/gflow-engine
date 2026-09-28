@@ -89,7 +89,29 @@ func overdueTestDB(t *testing.T) *dao.TaskDAO {
 		updated_by TEXT,
 		updated_at DATETIME
 	)`).Error)
+	// wf_instance：ScanOverdueTasks 的实例状态过滤子查询需要
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS wf_instance (
+		id TEXT PRIMARY KEY,
+		process_id TEXT,
+		business_key TEXT,
+		name TEXT,
+		status TEXT,
+		variables TEXT,
+		current_activity TEXT,
+		priority INTEGER,
+		parent_id TEXT,
+		tenant_id TEXT,
+		created_by TEXT,
+		created_at DATETIME,
+		updated_by TEXT,
+		updated_at DATETIME,
+		end_reason TEXT,
+		duration INTEGER,
+		ended_at DATETIME,
+		start_user_id TEXT
+	)`).Error)
 	require.NoError(t, db.Exec("DELETE FROM wf_task").Error)
+	require.NoError(t, db.Exec("DELETE FROM wf_instance").Error)
 	return dao.NewTaskDAOWithQuery(query.Use(db))
 }
 
@@ -170,6 +192,8 @@ func TestGetOverdueTasks_EmptyTenant(t *testing.T) {
 }
 
 // TestScanOverdueTasks_AcrossTenants 跨租户巡检：只返回已过期的 active/pending 任务。
+// 巡检限定 active 实例：挂起实例的任务即使过期也不进扫描集（超时自动办理不得
+// 推进挂起流程）。
 func TestScanOverdueTasks_AcrossTenants(t *testing.T) {
 	d := overdueTestDB(t)
 	svc := &TaskServiceImpl{taskDAO: d, workflowEngine: noopBacklogEngine{}}
@@ -177,17 +201,31 @@ func TestScanOverdueTasks_AcrossTenants(t *testing.T) {
 	past := time.Now().Add(-2 * time.Hour)
 	future := time.Now().Add(2 * time.Hour)
 
-	seed := func(id, tenant, status string, due *time.Time, assignee string) {
+	now := time.Now()
+	require.NoError(t, d.Query.WfInstance.WithContext(ctx).Create(&model.WfInstance{
+		ID: "inst-od-a", ProcessID: "p", Name: "a", Status: "active", TenantID: "t1", CreatedBy: "sys", CreatedAt: now,
+	}))
+	require.NoError(t, d.Query.WfInstance.WithContext(ctx).Create(&model.WfInstance{
+		ID: "inst-od-b", ProcessID: "p", Name: "b", Status: "active", TenantID: "t2", CreatedBy: "sys", CreatedAt: now,
+	}))
+	require.NoError(t, d.Query.WfInstance.WithContext(ctx).Create(&model.WfInstance{
+		ID: "inst-od-sus", ProcessID: "p", Name: "sus", Status: "suspended", TenantID: "t1", CreatedBy: "sys", CreatedAt: now,
+	}))
+
+	instID := func(id string) *string { return &id }
+	seed := func(id, tenant, status string, due *time.Time, assignee string, inst *string) {
 		require.NoError(t, d.Create(ctx, &model.WfTask{
 			ID: id, Status: status, TenantID: tenant, DueDate: due,
 			Assignee: &assignee, Name: "t", TaskType: "user_task",
-			CreatedAt: time.Now(), CreatedBy: "sys",
+			ProcessInstanceID: inst,
+			CreatedAt:         time.Now(), CreatedBy: "sys",
 		}))
 	}
-	seed("od-1", "t1", string(enums.TaskStatusActive), &past, "u1")
-	seed("od-2", "t2", string(enums.TaskStatusPending), &past, "")
-	seed("od-3", "t1", string(enums.TaskStatusActive), &future, "u1")  // 未到期
-	seed("od-4", "t1", string(enums.TaskStatusCompleted), &past, "u1") // 已完成
+	seed("od-1", "t1", string(enums.TaskStatusActive), &past, "u1", instID("inst-od-a"))
+	seed("od-2", "t2", string(enums.TaskStatusPending), &past, "", instID("inst-od-b"))
+	seed("od-3", "t1", string(enums.TaskStatusActive), &future, "u1", instID("inst-od-a"))  // 未到期
+	seed("od-4", "t1", string(enums.TaskStatusCompleted), &past, "u1", instID("inst-od-a")) // 已完成
+	seed("od-5", "t1", string(enums.TaskStatusActive), &past, "u1", instID("inst-od-sus"))  // 挂起实例：不巡检
 
 	tasks, err := svc.ScanOverdueTasks(ctx, 100)
 	require.NoError(t, err)
@@ -199,4 +237,5 @@ func TestScanOverdueTasks_AcrossTenants(t *testing.T) {
 	require.True(t, ids["od-2"], "租户2 过期任务应命中（跨租户）")
 	require.False(t, ids["od-3"], "未到期任务不应命中")
 	require.False(t, ids["od-4"], "已完成任务不应命中")
+	require.False(t, ids["od-5"], "挂起实例的任务不应命中")
 }
