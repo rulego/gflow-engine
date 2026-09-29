@@ -92,10 +92,10 @@ func TestTerminateInTx_NotifiesOnlyLiveAssignees(t *testing.T) {
 		TenantID: "t1", CreatedBy: "system", CreatedAt: now,
 	}))
 
-	evt, err := rs.TerminateInTx(ctx, q, "inst-term", "测试终止")
+	evts, err := rs.TerminateInTx(ctx, q, "inst-term", "测试终止")
 	require.NoError(t, err)
-	require.NotNil(t, evt, "存在需通知的收件人时应返回事件")
-	require.Equal(t, []string{"starter", "current-approver"}, evt.ToUsers,
+	require.Len(t, evts, 1, "存在需通知的收件人时应返回事件")
+	require.Equal(t, []string{"starter", "current-approver"}, evts[0].ToUsers,
 		"通知对象应为发起人+活跃办理人，不含历史审批人")
 
 	// 运行表清空、任务与实例均归档

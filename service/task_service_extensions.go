@@ -60,18 +60,24 @@ func (s *TaskServiceImpl) GetClaimableInstanceIDs(ctx context.Context, actor Act
 		// 挂起/失败实例的任务签收会被守卫拒绝，这里同步按实例状态过滤，
 		// 避免列表标出「待认领」而签收必败（与超时扫描的实例状态口径一致）
 		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
-		PageRequest: dto.PageRequest{
-			Page:     1,
-			PageSize: 500,
-			Status:   []string{string(enums.TaskStatusPending)},
-		},
 	}
+	q.Status = []string{string(enums.TaskStatusPending)}
 	if len(instanceIDs) > 0 {
 		q.InstanceIDs = instanceIDs
 	}
-	tasks, _, err := s.taskDAO.List(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query candidate tasks: %w", err)
+	// 候选任务量不受单页上限约束，按 total 翻页取全量，漏页会把在办实例漏标「可认领」
+	var tasks []*model.WfTask
+	for page := 1; ; page++ {
+		q.Page = page
+		q.PageSize = TaskFetchAllPageSize
+		batch, total, err := s.taskDAO.List(ctx, q)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query candidate tasks: %w", err)
+		}
+		tasks = append(tasks, batch...)
+		if int64(len(tasks)) >= total || len(batch) == 0 {
+			break
+		}
 	}
 
 	wanted := make(map[string]struct{}, len(instanceIDs))

@@ -137,16 +137,21 @@ func nodeConfigValidatorForRead() func(nodeType, nodeID string, cfg map[string]i
 // ValidateChainConfigurations 校验链内所有节点的 configuration，返回问题列表
 // （空=通过）。链加载期 Init 错误只 warn，配置错误（未知取值、必填缺失、互斥组合、
 // 跨节点引用悬空）必须在部署期拦截，否则带病落库、运行期才炸。
+// 拓扑环检测不依赖节点配置校验器注入：纯环（每节点都有出边）到不了 end 节点，
+// 部署后运行期无限派发，userTask 同样不豁免。
 func ValidateChainConfigurations(chain *types.RuleChain) []string {
 	if chain == nil {
 		return nil
 	}
-	validator := nodeConfigValidatorForRead()
-	if validator == nil {
-		return nil
-	}
 	graph := buildChainGraph(chain)
 	var issues []string
+	if cycle := detectChainCycle(graph); len(cycle) > 0 {
+		issues = append(issues, fmt.Sprintf("cyclic chain detected: %s", strings.Join(cycle, " -> ")))
+	}
+	validator := nodeConfigValidatorForRead()
+	if validator == nil {
+		return issues
+	}
 	for _, node := range chain.Metadata.Nodes {
 		// configuration 为 nil 也必须过校验器：userTask 等审批节点空配置
 		// 恰是最需要拦截的形态（运行期 no assignees），Map2Struct(nil) 零值可正常报错。
@@ -156,6 +161,56 @@ func ValidateChainConfigurations(chain *types.RuleChain) []string {
 		}
 	}
 	return issues
+}
+
+// detectChainCycle DFS 三色标记检测有向环，返回环上节点序列（首尾相接），
+// 无环返回 nil。环意味着部分节点到不了 end，部署期必须拒绝。
+func detectChainCycle(g *ChainGraph) []string {
+	if g == nil {
+		return nil
+	}
+	const (
+		white = 0 // 未访问
+		gray  = 1 // 在当前 DFS 栈上
+		black = 2 // 已完成
+	)
+	color := make(map[string]int, len(g.NodeIDs))
+	stack := make([]string, 0, len(g.NodeIDs))
+	var cycle []string
+	var dfs func(id string) bool
+	dfs = func(id string) bool {
+		color[id] = gray
+		stack = append(stack, id)
+		for _, next := range g.Forward[id] {
+			if _, ok := g.NodeIDs[next]; !ok {
+				continue // 悬空边的存在性由跨节点引用校验负责
+			}
+			switch color[next] {
+			case gray:
+				// 回边命中：从栈中 next 的位置截出整条环
+				for i, nid := range stack {
+					if nid == next {
+						cycle = append(append([]string(nil), stack[i:]...), next)
+						return true
+					}
+				}
+				return true
+			case white:
+				if dfs(next) {
+					return true
+				}
+			}
+		}
+		stack = stack[:len(stack)-1]
+		color[id] = black
+		return false
+	}
+	for id := range g.NodeIDs {
+		if color[id] == white && dfs(id) {
+			return cycle
+		}
+	}
+	return nil
 }
 
 // buildChainGraph 把规则链定义转成拓扑视图。

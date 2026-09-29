@@ -178,14 +178,19 @@ func (d *ProcessDAO) Update(ctx context.Context, entity *model.WfProcess) error 
 	return nil
 }
 
-// Delete 删除流程定义
+// Delete 删除流程定义。tenantID 非空时附加租户条件；为空（系统身份，归属校验
+// 已由调用方前置 Get 兜底）按全局 ID 删除——拼出空串租户条件会永远查不到行。
 func (d *ProcessDAO) Delete(ctx context.Context, tenantID, id string) error {
 	if id == "" {
 		return fmt.Errorf("id cannot be empty")
 	}
 
 	q := d.Query.WfProcess
-	result, err := q.WithContext(ctx).Where(q.TenantID.Eq(tenantID), q.ID.Eq(id)).Delete()
+	qu := q.WithContext(ctx).Where(q.ID.Eq(id))
+	if tenantID != "" {
+		qu = qu.Where(q.TenantID.Eq(tenantID))
+	}
+	result, err := qu.Delete()
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,9 @@ package dto
 // DefaultPageSize 全库统一的默认分页大小（page/pageSize 口径见 PageRequest）。
 const DefaultPageSize = 10
 
+// MaxPageSize 单页大小上限：调用方传入超大值会被截断，防止一页拉全表拖垮 DB 与内存。
+const MaxPageSize = 200
+
 // PageRequest 分页请求参数
 // 全库统一 page/pageSize 口径（引擎、宿主 HTTP、前端一致）。
 type PageRequest struct {
@@ -30,6 +33,10 @@ func (r *PageRequest) GetPage() int {
 func (r *PageRequest) GetPageSize() int {
 	if r.PageSize <= 0 {
 		return DefaultPageSize
+	}
+	// 超上限截断：防止单页拉全表；全量语义的内部查询须走 service 层翻页取全量口径
+	if r.PageSize > MaxPageSize {
+		return MaxPageSize
 	}
 	return r.PageSize
 }

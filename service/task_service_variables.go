@@ -111,9 +111,10 @@ func (s *TaskServiceImpl) setTaskVariablesInternal(ctx context.Context, scope *I
 		return err
 	}
 	// 系统保留键不开放给办理人改写：reassign_* 是改派溯源标记（收回存量据此
-	// 判定受管链路，被改写会伪造/抹掉改派来源），proxy_operator 是代审标记
-	// （被清除会让代审出的票重新取得收回资格），_sequentialAssignees 是顺序
-	// 审批推进缓存（被冲掉会卡死后续节点）。
+	// 判定受管链路，被改写会伪造/抹掉改派来源），proxy_operator/proxy_time 是
+	// 代审标记（被清除会让代审出的票重新取得收回资格），fallback_* 是审批人为空
+	// 兜底留痕（伪造可骗过自动通过钩子），_sequentialAssignees 是顺序审批推进
+	// 缓存（被冲掉会卡死后续节点）。仅校验本次提交的键。
 	for k := range variables {
 		if isReservedTaskVariableKey(k) {
 			return fmt.Errorf("variable %q is reserved by the engine: %w", k, ErrValidation)
@@ -121,13 +122,20 @@ func (s *TaskServiceImpl) setTaskVariablesInternal(ctx context.Context, scope *I
 	}
 	// 合并而非整体替换：任务变量里存有引擎的运行时状态（如顺序审批的
 	// _sequentialAssignees 缓存），整体覆盖会将其冲掉，后续推进丢失进度。
-	merged := map[string]interface{}{}
-	if task.Variables != nil && *task.Variables != "" {
-		_ = utils2.FromJSON(*task.Variables, &merged)
+	// 损坏 JSON 按错误拒绝：静默清空会连带冲掉引擎运行时状态。
+	merged, err := ParseVariablesJSON(task.Variables)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrValidation, err)
 	}
 	for k, v := range variables {
 		merged[k] = v
 	}
+	return s.writeTaskVariables(ctx, taskDAO, task, merged)
+}
+
+// writeTaskVariables 序列化并落库合并后的任务变量。鉴权与保留键校验由调用方完成，
+// 各写路径共享此处，保证 UpdatedBy/UpdatedAt 口径一致。
+func (s *TaskServiceImpl) writeTaskVariables(ctx context.Context, taskDAO TaskStore, task *model.WfTask, merged map[string]interface{}) error {
 	variablesJSON, err := utils2.ToJSON(merged)
 	if err != nil {
 		return fmt.Errorf("failed to serialize task variables: %w", err)
@@ -185,13 +193,17 @@ func (s *TaskServiceImpl) setTaskVariableInternal(ctx context.Context, scope *In
 	if err := s.authorizeTaskOperator(ctx, task); err != nil {
 		return err
 	}
-
-	variables := map[string]interface{}{}
-	if task.Variables != nil && *task.Variables != "" {
-		_ = utils2.FromJSON(*task.Variables, &variables)
+	// 只校验被写的键：既有变量集含引擎保留键（如顺序审批推进缓存）属正常状态，
+	// 整包校验会让带保留键的任务连任意新变量都写不进
+	if isReservedTaskVariableKey(variableName) {
+		return fmt.Errorf("variable %q is reserved by the engine: %w", variableName, ErrValidation)
 	}
-	variables[variableName] = value
-	return s.setTaskVariablesInternal(ctx, scope, taskID, variables)
+	merged, err := ParseVariablesJSON(task.Variables)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	merged[variableName] = value
+	return s.writeTaskVariables(ctx, taskDAO, task, merged)
 }
 
 // RemoveTaskVariable 删除任务变量
@@ -230,19 +242,33 @@ func (s *TaskServiceImpl) removeTaskVariableInternal(ctx context.Context, scope 
 	if task == nil {
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
-	variables := map[string]interface{}{}
-	if task.Variables != nil && *task.Variables != "" {
-		_ = utils2.FromJSON(*task.Variables, &variables)
+	if err := s.authorizeTaskOperator(ctx, task); err != nil {
+		return err
 	}
-	delete(variables, variableName)
-	return s.setTaskVariablesInternal(ctx, scope, taskID, variables)
+	// 只校验被删除的键：既有变量集含引擎保留键（如顺序审批推进缓存）属正常状态，
+	// 整包校验会让顺序审批任务删任何变量都报错；删除保留键本身才拒绝
+	if isReservedTaskVariableKey(variableName) {
+		return fmt.Errorf("variable %q is reserved by the engine: %w", variableName, ErrValidation)
+	}
+	merged, err := ParseVariablesJSON(task.Variables)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	delete(merged, variableName)
+	return s.writeTaskVariables(ctx, taskDAO, task, merged)
 }
 
 // isReservedTaskVariableKey 引擎托管的任务变量键：办理人经 SetTaskVariables/
-// RemoveTaskVariable 不得读写改名派溯源、代审标记、加签留痕与推进缓存。前缀
-// 保留留给未来的 reassign_* 家族字段。
+// RemoveTaskVariable 不得读写改名派溯源、代审标记、兜底留痕、加签留痕与推进
+// 缓存（与审批主路径 stripEngineReservedVars 剥离的键集同源）。前缀保留留给
+// 未来的 reassign_* 家族字段。
 func isReservedTaskVariableKey(key string) bool {
 	return key == constants.VarsProxyOperator ||
+		key == constants.VarsProxyTime ||
+		key == constants.VarsFallbackPolicy ||
+		key == constants.VarsFallbackFrom ||
+		key == constants.VarsFallbackReason ||
+		key == constants.VarsFallbackTime ||
 		key == constants.VarsSignAddedBy ||
 		key == constants.KeySequentialAssignees ||
 		strings.HasPrefix(key, "reassign_")

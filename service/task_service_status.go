@@ -44,6 +44,11 @@ func (s *TaskServiceImpl) SetPriority(ctx context.Context, actor Actor, taskID s
 }
 
 func (s *TaskServiceImpl) setPriorityInternal(ctx context.Context, scope *InstanceScope, taskID string, priority int) error {
+	// 优先级语义为 0~100（数值越大越优先，见 constants.Priority*），越界值入库
+	// 后排序/筛选失真，入库前拒绝
+	if priority < 0 || priority > 100 {
+		return fmt.Errorf("priority %d out of range [0, 100]: %w", priority, ErrValidation)
+	}
 	taskDAO := scope.Tasks()
 	task, err := taskDAO.Get(ctx, taskID)
 	if err != nil {
@@ -60,16 +65,24 @@ func (s *TaskServiceImpl) setPriorityInternal(ctx context.Context, scope *Instan
 	if task.Priority == int32(priority) {
 		return nil
 	}
-	task.Priority = int32(priority)
 	username := ""
 	if u := GetUserFromCtx(ctx); u != nil {
 		username = u.UserName
 	}
 	now := time.Now()
-	task.UpdatedBy = &username
-	task.UpdatedAt = &now
-	if err := taskDAO.Update(ctx, task); err != nil {
+	// 0 是合法下限，gorm Updates(struct) 跳过零值字段会把它静默丢弃，
+	// 降值到 0 必须走 map 落库
+	q := scope.Tx().WfTask
+	result, err := q.WithContext(ctx).Where(q.ID.Eq(taskID)).Updates(map[string]interface{}{
+		q.Priority.ColumnName().String():  int32(priority),
+		q.UpdatedBy.ColumnName().String(): username,
+		q.UpdatedAt.ColumnName().String(): &now,
+	})
+	if err != nil {
 		return fmt.Errorf("failed to set priority: %w", err)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("%w: task", ErrNotFound)
 	}
 	return nil
 }
@@ -179,10 +192,10 @@ func (s *TaskServiceImpl) suspendTaskInternal(ctx context.Context, scope *Instan
 	if isTerminalTaskStatus(task.Status) {
 		return fmt.Errorf("task is %s, cannot suspend: %w", task.Status, ErrConflict)
 	}
-	if u := GetUserFromCtx(ctx); u != nil {
-		if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != u.UserID {
-			return fmt.Errorf("task assigned to %s, current user %s: %w", *task.Assignee, u.UserID, ErrPermissionDenied)
-		}
+	// 归属校验收口到统一口径：办理人可挂起自己的任务，未指派任务仅管理员/系统可操作
+	// （只比对 assignee 会让任意同租户用户冻结未指派任务）
+	if err := requireTaskOperatorAuthorized(ctx, task); err != nil {
+		return err
 	}
 	task.Status = string(enums.TaskStatusSuspended)
 	username := ""
@@ -263,10 +276,10 @@ func (s *TaskServiceImpl) activateTaskInternal(ctx context.Context, scope *Insta
 		}
 	}
 
-	if u := GetUserFromCtx(ctx); u != nil {
-		if task.Assignee != nil && *task.Assignee != "" && *task.Assignee != u.UserID {
-			return fmt.Errorf("task assigned to %s, current user %s: %w", *task.Assignee, u.UserID, ErrPermissionDenied)
-		}
+	// 归属校验收口到统一口径：办理人可唤醒自己名下的任务，未指派任务仅管理员/系统
+	// 可操作（只比对 assignee 会让任意同租户用户唤醒未指派任务）
+	if err := requireTaskOperatorAuthorized(ctx, task); err != nil {
+		return err
 	}
 
 	if task.Assignee != nil && *task.Assignee != "" {

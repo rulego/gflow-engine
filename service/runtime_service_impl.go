@@ -22,6 +22,7 @@ import (
 	"github.com/rulego/rulego/api/types"
 	"github.com/rulego/rulego/utils/cast"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var _ RuntimeServiceInternal = (*RuntimeServiceImpl)(nil)
@@ -404,14 +405,16 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 			return fmt.Errorf("failed to archive instance to history: %w", err)
 		}
 
-		// 5. 清理候选池 wf_task_assignee（避免孤儿，参照 TaskDAO.DeleteByProcessInstanceID）
+		// 5. 清理候选池 wf_task_assignee（避免孤儿，参照 TaskDAO.DeleteByProcessInstanceID）。
+		// 清理失败随事务回滚：孤儿候选行没有补偿路径，warn-and-continue 会把
+		// 已删任务/实例的候选行永久留在池里
 		taskIDs := make([]string, 0, len(tasks))
 		for _, t := range tasks {
 			taskIDs = append(taskIDs, t.ID)
 		}
 		if len(taskIDs) > 0 {
 			if _, err := tx.WfTaskAssignee.WithContext(ctx).Where(tx.WfTaskAssignee.TaskID.In(taskIDs...)).Delete(); err != nil {
-				logrus.Warnf("failed to clean wf_task_assignee: %v", err)
+				return fmt.Errorf("failed to clean wf_task_assignee: %w", err)
 			}
 		}
 
@@ -439,14 +442,20 @@ func (s *RuntimeServiceImpl) DeleteProcessInstance(ctx context.Context, actor Ac
 // markArchivedInstanceDeleted 把已归档实例的历史行标为 deleted。
 func (s *RuntimeServiceImpl) markArchivedInstanceDeleted(ctx context.Context, processInstanceID, reason string) error {
 	q := s.instanceDAO.Underlying()
-	hi, err := q.WfHiInstance.WithContext(ctx).Where(q.WfHiInstance.ID.Eq(processInstanceID)).First()
+	// 读原始行（含已标 deleted 的）：与 DeleteHistoricProcessInstance 同口径
+	hi, err := dao.NewHiInstanceDAOWithQuery(q).GetIncludingDeleted(ctx, processInstanceID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return fmt.Errorf("%w: process instance", ErrInstanceNotFound)
-		}
 		return fmt.Errorf("failed to get archived instance: %w", err)
 	}
+	if hi == nil {
+		return fmt.Errorf("%w: process instance", ErrInstanceNotFound)
+	}
 	if err := ensureTenantAccess(ctx, "process instance", hi.TenantID); err != nil {
+		return err
+	}
+	// 归档删除与在办实例生命周期同口径（发起人/管理员/系统），
+	// 防止同租户横向越权抹掉他人审批记录
+	if err := requireInstanceOwnerAuthorized(ctx, hi); err != nil {
 		return err
 	}
 	if _, err := q.WfHiInstance.WithContext(ctx).
@@ -844,6 +853,13 @@ func (s *RuntimeServiceImpl) GetProcessInstanceVariable(ctx context.Context, act
 	return variables[variableName], nil
 }
 
+// isReservedInstanceVariableKey 引擎托管的实例变量键：_recallCount 是收回频控计数器，
+// 只允许收回路径写入/累加，经变量 API 改写或清零会绕过单实例收回上限，
+// 三个变量写入口（Set/Remove）统一据此拒绝。
+func isReservedInstanceVariableKey(key string) bool {
+	return key == constants.VarsRecallCount
+}
+
 // SetProcessInstanceVariables 批量设置流程实例变量。
 // 读-合并-写必须在实例行锁事务内完成，否则并发写会用整 map 互相覆盖；
 // 与单变量版 SetProcessInstanceVariable 同口径。
@@ -851,6 +867,12 @@ func (s *RuntimeServiceImpl) SetProcessInstanceVariables(ctx context.Context, ac
 	ctx = bindActor(ctx, actor)
 	if processInstanceID == "" {
 		return fmt.Errorf("process instance ID cannot be empty")
+	}
+	// 引擎保留键只对本次提交的键校验：既有变量集含保留键（如收回计数）属正常状态
+	for k := range variables {
+		if isReservedInstanceVariableKey(k) {
+			return fmt.Errorf("variable %q is reserved by the engine: %w", k, ErrValidation)
+		}
 	}
 
 	instance, err := s.instanceDAO.Get(ctx, processInstanceID)
@@ -892,6 +914,9 @@ func (s *RuntimeServiceImpl) SetProcessInstanceVariable(ctx context.Context, act
 	if variableName == "" {
 		return fmt.Errorf("variable name cannot be empty")
 	}
+	if isReservedInstanceVariableKey(variableName) {
+		return fmt.Errorf("variable %q is reserved by the engine: %w", variableName, ErrValidation)
+	}
 	return WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
 		variables, err := s.getProcessInstanceVariablesInTx(ctx, tx, processInstanceID)
@@ -911,6 +936,10 @@ func (s *RuntimeServiceImpl) RemoveProcessInstanceVariable(ctx context.Context, 
 	}
 	if variableName == "" {
 		return fmt.Errorf("variable name cannot be empty")
+	}
+	// 删除与改写同口径拦截：删掉保留键同样会破坏引擎状态（清零收回计数）
+	if isReservedInstanceVariableKey(variableName) {
+		return fmt.Errorf("variable %q is reserved by the engine: %w", variableName, ErrValidation)
 	}
 	return WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
@@ -2184,13 +2213,14 @@ func (s *RuntimeServiceImpl) TerminateProcessInstance(ctx context.Context, actor
 		return fmt.Errorf("process instance ID cannot be empty")
 	}
 	if err := WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
-		evt, err := s.TerminateInTx(ctx, scope.Tx(), processInstanceID, reason)
+		evts, err := s.TerminateInTx(ctx, scope.Tx(), processInstanceID, reason)
 		if err != nil {
 			return err
 		}
-		if evt != nil {
+		for _, evt := range evts {
+			e := *evt
 			scope.AfterCommit(func() error {
-				DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), *evt, ctx)
+				DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), e, ctx)
 				return nil
 			})
 		}
@@ -2209,9 +2239,10 @@ func (s *RuntimeServiceImpl) TerminateProcessInstance(ctx context.Context, actor
 // 该方法是内部 API，仅供同 package（含跨服务级联调用，如 TaskService.Withdraw）
 // 调用；外部调用方应使用 TerminateProcessInstance。
 //
-// 返回待派发的 terminated 事件（可能为 nil）：事件必须在事务提交后派发，
-// 而本方法运行在事务内，故由持有 InstanceScope 的调用方 AfterCommit 派发。
-func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query, processInstanceID, reason string) (*TaskEvent, error) {
+// 返回待派发的 terminated 事件列表（可为空）：被终止的每个实例（含级联子实例）
+// 各一条，供通知作废按实例维度清理；事件必须在事务提交后派发，而本方法运行在
+// 事务内，故由持有 InstanceScope 的调用方 AfterCommit 派发。
+func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query, processInstanceID, reason string) ([]*TaskEvent, error) {
 	if processInstanceID == "" {
 		return nil, fmt.Errorf("process instance ID cannot be empty")
 	}
@@ -2251,6 +2282,96 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 			processInstanceID, ErrValidation)
 	}
 
+	// 终止并归档本实例（任务置终态 + 双表归档 + 候选池清理 + 删活表行）
+	liveAssignees, err := s.terminateAndArchiveInstanceInTx(ctx, tx, instance, reason)
+	if err != nil {
+		return nil, err
+	}
+	events := s.collectTerminatedEvents(ctx, instance, liveAssignees, reason)
+
+	// 级联终止未结束的子实例（subProcess 嵌套）：父实例终止后子实例失去父侧恢复
+	// 入口，不级联会永远悬挂。队列逐层展开防深嵌套递归；查询带行锁防并发完成的
+	// 子实例与归档撞主键；suspended 一并终止（父死后无从唤醒）；租户/属主随父
+	// 实例的本次终止动作连带授权。
+	seen := map[string]bool{processInstanceID: true}
+	queue := []string{processInstanceID}
+	for len(queue) > 0 {
+		parentID := queue[0]
+		queue = queue[1:]
+		children, cerr := tx.WfInstance.WithContext(ctx).
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where(tx.WfInstance.ParentID.Eq(parentID)).
+			Where(tx.WfInstance.Status.In(string(enums.InstanceStatusActive), string(enums.InstanceStatusSuspended))).
+			Find()
+		if cerr != nil {
+			return nil, fmt.Errorf("failed to get child instances of %s: %w", parentID, cerr)
+		}
+		for _, child := range children {
+			if seen[child.ID] {
+				continue
+			}
+			seen[child.ID] = true
+			childAssignees, terr := s.terminateAndArchiveInstanceInTx(ctx, tx, child, reason)
+			if terr != nil {
+				return nil, terr
+			}
+			events = append(events, s.collectTerminatedEvents(ctx, child, childAssignees, reason)...)
+			s.evictStaleChain(ctx, tx, child.TenantID, child.ProcessID)
+			queue = append(queue, child.ID)
+		}
+	}
+
+	// 实例终止后 best-effort 驱逐：若其版本已无其它活实例且非最新版，清理租户池链（收内存）。
+	// 传事务 tx：走全局连接会与本事务互等死锁。
+	s.evictStaleChain(ctx, tx, instance.TenantID, instance.ProcessID)
+
+	return events, nil
+}
+
+// collectTerminatedEvents 组装单个实例的 terminated 事件：通知发起人与终止时
+// 仍有未决工作的办理人。级联终止时父与子实例各产一条，消费方按 InstanceID
+// 作废在途通知才不漏。无监听器或通知对象为空时返回 nil。
+func (s *RuntimeServiceImpl) collectTerminatedEvents(ctx context.Context, instance *model.WfInstance, liveAssignees []string, reason string) []*TaskEvent {
+	if s.workflowEngine.GetTaskEventListener() == nil {
+		return nil
+	}
+	toUsers := []string{}
+	if instance.StartUserID != "" {
+		toUsers = append(toUsers, instance.StartUserID)
+	}
+	toUsers = append(toUsers, liveAssignees...)
+	toUsers = uniqueStrings(toUsers)
+	if len(toUsers) == 0 {
+		return nil
+	}
+	// FromUser 取 ctx Actor；Source 区分 api/withdraw/reject 来源
+	fromUser := ""
+	if u := GetUserFromCtx(ctx); u != nil {
+		fromUser = u.UserID
+	}
+	return []*TaskEvent{
+		{
+			Type:                TaskEventTerminated,
+			InstanceID:          instance.ID,
+			ProcessID:           instance.ProcessID,
+			ProcessName:         instance.Name,
+			StartUserID:         instance.StartUserID,
+			InstanceStatusAfter: string(enums.InstanceStatusTerminated),
+			TenantID:            instance.TenantID,
+			ToUsers:             toUsers,
+			FromUser:            fromUser,
+			Reason:              reason,
+			Source:              EventSourceFromCtx(ctx),
+			Timestamp:           time.Now(),
+		},
+	}
+}
+
+// terminateAndArchiveInstanceInTx 终止并归档单个实例：未完结任务置 terminated、
+// 任务/实例归档历史表、清理候选池、删除活表行。终态守卫与鉴权由调用方负责
+// （入口路径逐实例校验；子实例级联随父实例的终止动作连带授权）。
+// 返回终止时仍有未决工作的办理人，并入 terminated 事件通知。
+func (s *RuntimeServiceImpl) terminateAndArchiveInstanceInTx(ctx context.Context, tx *query.Query, instance *model.WfInstance, reason string) ([]string, error) {
 	now := time.Now()
 	username := s.GetUsernameFromCtx(ctx)
 	endReason := "流程实例被终止"
@@ -2268,7 +2389,7 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 	// 终止所有未完结的任务；同时收集这些任务的办理人——终止通知只发给
 	// 终止时尚有未决工作的办理人，已完成节点的历史审批人不再打扰。
 	liveAssignees := make([]string, 0, 4)
-	tasks, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ProcessInstanceID.Eq(processInstanceID)).Find()
+	tasks, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ProcessInstanceID.Eq(instance.ID)).Find()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get tasks for termination: %w", err)
 	}
@@ -2320,61 +2441,27 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 		return nil, fmt.Errorf("failed to archive instance to history: %w", err)
 	}
 
-	// 清理候选池 wf_task_assignee（避免孤儿）
+	// 清理候选池 wf_task_assignee（避免孤儿）。清理失败随事务回滚：孤儿候选行
+	// 没有补偿路径，warn-and-continue 会把已删任务的候选行永久留在池里
 	taskIDs := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		taskIDs = append(taskIDs, t.ID)
 	}
 	if len(taskIDs) > 0 {
 		if _, err := tx.WfTaskAssignee.WithContext(ctx).Where(tx.WfTaskAssignee.TaskID.In(taskIDs...)).Delete(); err != nil {
-			logrus.Warnf("failed to clean wf_task_assignee: %v", err)
+			return nil, fmt.Errorf("failed to clean wf_task_assignee: %w", err)
 		}
 	}
 
 	// 删除原始任务记录
-	if _, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ProcessInstanceID.Eq(processInstanceID)).Delete(); err != nil {
+	if _, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ProcessInstanceID.Eq(instance.ID)).Delete(); err != nil {
 		return nil, fmt.Errorf("failed to delete original tasks: %w", err)
 	}
 
 	// 删除原始实例记录
-	if _, err := tx.WfInstance.WithContext(ctx).Where(tx.WfInstance.ID.Eq(processInstanceID)).Delete(); err != nil {
+	if _, err := tx.WfInstance.WithContext(ctx).Where(tx.WfInstance.ID.Eq(instance.ID)).Delete(); err != nil {
 		return nil, fmt.Errorf("failed to delete original instance: %w", err)
 	}
 
-	// 实例终止后 best-effort 驱逐：若其版本已无其它活实例且非最新版，清理租户池链（收内存）。
-	// 传事务 tx：走全局连接会与本事务互等死锁。
-	s.evictStaleChain(ctx, tx, instance.TenantID, instance.ProcessID)
-
-	// 构造 terminated 事件（通知发起人 + 终止时的活跃办理人），交给调用方提交后派发
-	if s.workflowEngine.GetTaskEventListener() != nil {
-		toUsers := []string{}
-		if instance.StartUserID != "" {
-			toUsers = append(toUsers, instance.StartUserID)
-		}
-		toUsers = append(toUsers, liveAssignees...)
-		toUsers = uniqueStrings(toUsers)
-		if len(toUsers) > 0 {
-			// FromUser 取 ctx Actor；Source 区分 api/withdraw/reject 来源
-			fromUser := ""
-			if u := GetUserFromCtx(ctx); u != nil {
-				fromUser = u.UserID
-			}
-			return &TaskEvent{
-				Type:                TaskEventTerminated,
-				InstanceID:          processInstanceID,
-				ProcessID:           instance.ProcessID,
-				ProcessName:         instance.Name,
-				StartUserID:         instance.StartUserID,
-				InstanceStatusAfter: string(enums.InstanceStatusTerminated),
-				TenantID:            instance.TenantID,
-				ToUsers:             toUsers,
-				FromUser:            fromUser,
-				Reason:              reason,
-				Source:              EventSourceFromCtx(ctx),
-				Timestamp:           time.Now(),
-			}, nil
-		}
-	}
-
-	return nil, nil
+	return liveAssignees, nil
 }

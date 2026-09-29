@@ -41,6 +41,13 @@ func (s *TaskServiceImpl) SetAssignee(ctx context.Context, actor Actor, taskID, 
 	if isTerminalTaskStatus(task.Status) {
 		return fmt.Errorf("task is %s, cannot set assignee: %w", task.Status, ErrConflict)
 	}
+	// 目标用户租户归属校验（与 Reassign/Transfer/Delegate 同口径，防止改派给
+	// 其他租户用户）；空 userID 是解除分配语义，无目标可校验
+	if userID != "" {
+		if err := s.ensureTargetUserInTenant(ctx, task, userID, "setAssignee"); err != nil {
+			return err
+		}
+	}
 
 	instanceID := ""
 	if task.ProcessInstanceID != nil {

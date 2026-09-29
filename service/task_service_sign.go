@@ -273,6 +273,12 @@ func (s *TaskServiceImpl) reduceSignInternal(ctx context.Context, scope *Instanc
 		return err
 	}
 
+	// 或签互斥/兄弟完成会置 Terminated 而 assignee 还在：不加拦会在已终结节点上
+	// 继续删票并重驱流转，与 addSignInternal 的活跃态守卫同口径
+	if task.Status != string(enums.TaskStatusActive) {
+		return fmt.Errorf("task is %s, can only reduce sign to an active task: %w", task.Status, ErrConflict)
+	}
+
 	// 操作人同时用于减签资格校验与事件派发。资格分层：带 sign_added_by 标记的
 	// 加签子任务只能由加签人本人移除（标记为引擎保留键，审批提交/变量 API 均
 	// 剥离，无法伪造）；无标记的子任务（流程配置的会签/票签人、存量加签）不受
@@ -359,6 +365,10 @@ func signAddedBy(task *model.WfTask) string {
 // reevaluateCountersignAfterReduce 减签后重新评估会签/票签节点完成状态：
 // 剩余子任务满足阈值 → 标记 parent 完成 + 聚合变量 + 流转；无剩余子任务(减到 0) → 终止实例。
 func (s *TaskServiceImpl) reevaluateCountersignAfterReduce(ctx context.Context, scope *InstanceScope, parentTask *model.WfTask) error {
+	// 幂等：父任务已随此前一次减签定局（并发减签/重试），不再重复判票与流转
+	if parentTask.Status == string(enums.TaskStatusCompleted) {
+		return nil
+	}
 	taskDAO := scope.Tasks()
 	rule := s.getApprovalRuleString(parentTask.ApprovalRule)
 	isCompleted, approved, err := s.checkCountersignSubTaskCompletionInternal(ctx, scope, parentTask.ID, rule)
@@ -368,15 +378,18 @@ func (s *TaskServiceImpl) reevaluateCountersignAfterReduce(ctx context.Context, 
 			return err
 		}
 		if parentTask.ProcessInstanceID != nil && *parentTask.ProcessInstanceID != "" {
-			evt, terr := terminateProcessInstanceInTx(ctx, s.workflowEngine.GetRuntimeService(), scope.Tx(), *parentTask.ProcessInstanceID, "all approvers reduced during reduce-sign")
+			evts, terr := terminateProcessInstanceInTx(ctx, s.workflowEngine.GetRuntimeService(), scope.Tx(), *parentTask.ProcessInstanceID, "all approvers reduced during reduce-sign")
 			if terr != nil {
 				return terr
 			}
-			if evt != nil && s.workflowEngine.GetTaskEventListener() != nil {
-				scope.AfterCommit(func() error {
-					DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), *evt, ctx)
-					return nil
-				})
+			if s.workflowEngine.GetTaskEventListener() != nil {
+				for _, evt := range evts {
+					e := *evt
+					scope.AfterCommit(func() error {
+						DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), e, ctx)
+						return nil
+					})
+				}
 			}
 			return nil
 		}
@@ -403,9 +416,12 @@ func (s *TaskServiceImpl) reevaluateCountersignAfterReduce(ctx context.Context, 
 	if perr != nil || vars == nil {
 		vars = map[string]interface{}{}
 	}
-	scope.AfterCommit(func() error {
-		s.driveAfterCommit(ctx, *inst, key, vars)
-		return nil
-	})
+	// 孤儿任务无实例可驱动，无可注册的流转副作用
+	if inst != nil {
+		scope.AfterCommit(func() error {
+			s.driveAfterCommit(ctx, *inst, key, vars)
+			return nil
+		})
+	}
 	return nil
 }

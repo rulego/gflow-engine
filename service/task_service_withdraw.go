@@ -104,9 +104,13 @@ func (s *TaskServiceImpl) WithdrawByInstance(ctx context.Context, actor Actor, i
 			return fmt.Errorf("failed to list active tasks: %w", err)
 		}
 		if len(tasks) > 0 {
-			// 设计器显式禁用 withdraw（节点级手工配置）→ 拒绝；流程级开关已在锁外校验
-			if err := s.requireActionEnabled(ctx, tasks[0], "withdraw"); err != nil {
-				return err
+			// 设计器显式禁用 withdraw（节点级手工配置）→ 拒绝；流程级开关已在锁外校验。
+			// 逐活跃任务校验：并行分支上任一节点禁用撤回即整体拒绝，只查首个任务
+			// 会漏掉其余分支的禁用配置。
+			for _, t := range tasks {
+				if err := s.requireActionEnabled(ctx, t, "withdraw"); err != nil {
+					return err
+				}
 			}
 			return s.withdrawInternal(ctx, scope, tasks[0].ID, userID, reason, isAdmin)
 		}
@@ -144,16 +148,18 @@ func (s *TaskServiceImpl) withdrawBeforeFirstTask(ctx context.Context, scope *In
 		terminateReason = fmt.Sprintf("%s：%s", constants.EndReasonPrefixWithdrawn, reason)
 	}
 	withdrawCtx := WithEventSource(ctx, EventSourceWithdraw)
-	terminatedEvt, err := terminateProcessInstanceInTx(withdrawCtx, s.workflowEngine.GetRuntimeService(), scope.Tx(), instanceID, terminateReason)
+	terminatedEvts, err := terminateProcessInstanceInTx(withdrawCtx, s.workflowEngine.GetRuntimeService(), scope.Tx(), instanceID, terminateReason)
 	if err != nil {
 		return fmt.Errorf("failed to terminate process instance after withdraw: %w", err)
 	}
-	if terminatedEvt != nil && s.workflowEngine.GetTaskEventListener() != nil {
-		evt := *terminatedEvt
-		scope.AfterCommit(func() error {
-			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, withdrawCtx)
-			return nil
-		})
+	if s.workflowEngine.GetTaskEventListener() != nil {
+		for _, terminatedEvt := range terminatedEvts {
+			evt := *terminatedEvt
+			scope.AfterCommit(func() error {
+				DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, withdrawCtx)
+				return nil
+			})
+		}
 	}
 	return nil
 }
@@ -266,18 +272,20 @@ func (s *TaskServiceImpl) withdrawInternal(ctx context.Context, scope *InstanceS
 		terminateReason = fmt.Sprintf("%s：%s", constants.EndReasonPrefixWithdrawn, reason)
 	}
 	withdrawCtx := WithEventSource(ctx, EventSourceWithdraw)
-	terminatedEvt, err := terminateProcessInstanceInTx(withdrawCtx, runtimeService, scope.Tx(), *task.ProcessInstanceID, terminateReason)
+	terminatedEvts, err := terminateProcessInstanceInTx(withdrawCtx, runtimeService, scope.Tx(), *task.ProcessInstanceID, terminateReason)
 	if err != nil {
 		logrus.Warnf("failed to terminate instance %s after withdraw: %v", *task.ProcessInstanceID, err)
 		return fmt.Errorf("failed to terminate process instance after withdraw: %w", err)
 	}
 	// terminated 事件先于 withdrawn 注册，保证监听方按此顺序收到
-	if terminatedEvt != nil && s.workflowEngine.GetTaskEventListener() != nil {
-		evt := *terminatedEvt
-		scope.AfterCommit(func() error {
-			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, withdrawCtx)
-			return nil
-		})
+	if s.workflowEngine.GetTaskEventListener() != nil {
+		for _, terminatedEvt := range terminatedEvts {
+			evt := *terminatedEvt
+			scope.AfterCommit(func() error {
+				DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, withdrawCtx)
+				return nil
+			})
+		}
 	}
 
 	// 撤回事件：AfterCommit 派发，回滚不产生幽灵事件。
@@ -315,20 +323,16 @@ func (s *TaskServiceImpl) withdrawInternal(ctx context.Context, scope *InstanceS
 }
 
 // terminateProcessInstanceInTx 复用调用方事务调用 RuntimeService 的内部终止逻辑。
-// 通过类型断言访问 *RuntimeServiceImpl.TerminateInTx；如果 runtime 是 mock 或
-// 其他实现，回退到重新进入 TerminateProcessInstance（在 GORM savepoint 下会
-// 重复 FOR UPDATE，但行为正确）。
-// 返回待派发的 terminated 事件（回退路径已在自身提交后派发，返回 nil）。
-func terminateProcessInstanceInTx(ctx context.Context, runtime RuntimeService, tx *query.Query, instanceID, reason string) (*TaskEvent, error) {
-	if impl, ok := runtime.(*RuntimeServiceImpl); ok {
-		return impl.TerminateInTx(ctx, tx, instanceID, reason)
+// 通过类型断言访问 *RuntimeServiceImpl.TerminateInTx。非该实现的 runtime（mock 等）
+// 直接报错拒绝：回退路径会在事务外用全局连接重入同一实例行，与调用方已持有的
+// FOR UPDATE 锁互等自锁挂死，宁可显式失败也不走这条路径。
+// 返回待派发的 terminated 事件列表（被终止的每个实例各一条）。
+func terminateProcessInstanceInTx(ctx context.Context, runtime RuntimeService, tx *query.Query, instanceID, reason string) ([]*TaskEvent, error) {
+	impl, ok := runtime.(*RuntimeServiceImpl)
+	if !ok {
+		return nil, fmt.Errorf("runtime service %T does not support in-tx termination of instance %s", runtime, instanceID)
 	}
-	// 显式 actor：沿用 ctx 已绑定身份（撤回/减签触发人），无身份时按系统动作处理
-	actor := ActorFromCtx(ctx)
-	if err := runtime.TerminateProcessInstance(ctx, actor, instanceID, reason); err != nil {
-		return nil, err
-	}
-	return nil, nil
+	return impl.TerminateInTx(ctx, tx, instanceID, reason)
 }
 
 // Return 退回（将任务退回到指定节点）。目标口径：本实例中已运行过的 userTask
@@ -514,12 +518,14 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 	}
 
 	// 触发流程跳转：ExecuteNext 推迟到事务提交后执行，避免 rulego OnMsg 同步副作用
-	// 重入 WithInstanceTx 抢同一行的 FOR UPDATE 锁。
+	// 重入 WithInstanceTx 抢同一行的 FOR UPDATE 锁。孤儿任务无实例可驱动，跳过注册。
 	inst := task.ProcessInstanceID
-	scope.AfterCommit(func() error {
-		s.driveAfterCommit(ctx, *inst, targetActivityID, nil)
-		return nil
-	})
+	if inst != nil {
+		scope.AfterCommit(func() error {
+			s.driveAfterCommit(ctx, *inst, targetActivityID, nil)
+			return nil
+		})
+	}
 	return nil
 }
 

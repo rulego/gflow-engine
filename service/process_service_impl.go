@@ -78,6 +78,14 @@ func (s *ProcessServiceImpl) Update(ctx context.Context, actor Actor, process *m
 	if existingProcess == nil {
 		return fmt.Errorf("process not found")
 	}
+	// 在途实例按 process_id 解析定义链，原地改写 definition_json 会偷换它们的
+	// 运行时拓扑（join 凑不齐/路由分叉）。有活跃实例一律拒绝，改动须以新版本
+	// Deploy 承载；系统身份同样拦截，定义版本隔离是硬约束。
+	if active, aerr := s.instanceDAO.CountActiveByProcessID(ctx, existingProcess.TenantID, existingProcess.ID); aerr != nil {
+		return fmt.Errorf("failed to check running instances: %w", aerr)
+	} else if active > 0 {
+		return fmt.Errorf("cannot update process definition with running instances (%d active), deploy a new version instead: %w", active, ErrConflict)
+	}
 	// 禁止改 processKey：避免破坏版本族 / 误 retire 同 key 流程
 	if process.ProcessKey != "" && process.ProcessKey != existingProcess.ProcessKey {
 		return fmt.Errorf("processKey cannot be changed: %w", ErrValidation)

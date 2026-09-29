@@ -16,8 +16,12 @@ import (
 // GetOverdueTasks 全局视角查询已过 dueDate 的 active 任务（管理员监控）。
 // 与 countOverdueActiveTasks 区别：不带 userID/assignee 过滤，返回任务切片而非计数。
 // 复用 countOverdueFromTasks 同款 DueDate 判定（filterOverdueTasks）。
+// 不带 assignee 过滤＝全租户任务可见，仅管理员/系统可调用。
 func (s *TaskServiceImpl) GetOverdueTasks(ctx context.Context, actor Actor, query *dto.TaskQuery) ([]*model.WfTask, int64, error) {
 	ctx = bindActor(ctx, actor)
+	if err := requireAdminIdentity(&actor); err != nil {
+		return nil, 0, err
+	}
 	tenantID := actor.TenantID
 	if tenantID == "" {
 		return nil, 0, fmt.Errorf("tenant ID cannot be empty")

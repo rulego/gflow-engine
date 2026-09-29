@@ -432,10 +432,13 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 					if cerr := s.cancelRemainingCountersignSubTasks(ctx, scope, parentTask.ID); cerr != nil {
 						logrus.WithError(cerr).WithField("parentTaskID", parentTask.ID).Warn("failed to cancel remaining sub-tasks after early veto")
 					}
-					scope.AfterCommit(func() error {
-						s.driveAfterCommit(ctx, *parentInst, parentKey, vars)
-						return nil
-					})
+					// 孤儿任务无实例可驱动，无可注册的流转副作用
+					if parentInst != nil {
+						scope.AfterCommit(func() error {
+							s.driveAfterCommit(ctx, *parentInst, parentKey, vars)
+							return nil
+						})
+					}
 				}
 				return nil
 			}
@@ -495,10 +498,13 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 					vars = stripReservedTaskVars(vars)
 					parentInst := parentTask.ProcessInstanceID
 					parentKey := parentTask.TaskDefKey
-					scope.AfterCommit(func() error {
-						s.driveAfterCommit(ctx, *parentInst, parentKey, vars)
-						return nil
-					})
+					// 孤儿任务无实例可驱动，无可注册的流转副作用
+					if parentInst != nil {
+						scope.AfterCommit(func() error {
+							s.driveAfterCommit(ctx, *parentInst, parentKey, vars)
+							return nil
+						})
+					}
 				}
 				return nil
 			}
@@ -564,10 +570,13 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 		vars = stripReservedTaskVars(vars)
 		inst := task.ProcessInstanceID
 		key := task.TaskDefKey
-		scope.AfterCommit(func() error {
-			s.driveAfterCommit(ctx, *inst, key, vars)
-			return nil
-		})
+		// 孤儿任务无实例可驱动，无可注册的流转副作用
+		if inst != nil {
+			scope.AfterCommit(func() error {
+				s.driveAfterCommit(ctx, *inst, key, vars)
+				return nil
+			})
+		}
 	}
 
 	return nil
@@ -679,9 +688,13 @@ func stripReservedTaskVars(m map[string]interface{}) map[string]interface{} {
 // 把 assignee 还原为 Owner 并清空 Owner，合并 delegatee 的意见到变量供原审批人参考。
 func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *InstanceScope, task *model.WfTask, request *ApprovalRequest) error {
 	taskDAO := scope.Tasks()
-	if merged, err := s.mergeVariables(task.Variables, request.Variables); err == nil {
-		task.Variables = merged
+	// 变量合并失败必须拒绝归还（fail-closed）：静默吞掉会丢弃被委派人提交的
+	// 审批意见，与审批主路径对损坏变量的口径一致
+	merged, err := s.mergeVariables(task.Variables, request.Variables)
+	if err != nil {
+		return fmt.Errorf("failed to merge variables: %w", err)
 	}
+	task.Variables = merged
 	task.Assignee = task.Owner
 	// gorm Updates(struct) 忽略 nil 字段,用空串指针强制清空 owner。owner=="" 语义等同无 owner:
 	// resolve 触发条件 *Owner != "" 见空串即不再重触发。否则 owner 永不清 → 每次 approve 重走

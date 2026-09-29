@@ -17,8 +17,12 @@ type BacklogItem struct {
 
 // GetBacklogByProcess 按流程定义聚合 active 任务数，倒序取 top 10（管理员积压看板）。
 // 单条 GROUP BY 聚合 + 单条批量取 processName，共 2 条 SQL。
+// 全租户视角的聚合看板，仅管理员/系统可调用。
 func (s *TaskServiceImpl) GetBacklogByProcess(ctx context.Context, actor Actor) ([]*BacklogItem, error) {
 	ctx = bindActor(ctx, actor)
+	if err := requireAdminIdentity(&actor); err != nil {
+		return nil, err
+	}
 	if err := requireNonEmptyTenantForRealUser(&actor); err != nil {
 		return nil, err
 	}

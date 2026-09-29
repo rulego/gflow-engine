@@ -211,7 +211,8 @@ func TestGetBacklogByProcess_SQL(t *testing.T) {
 	require.NoError(t, q.WfProcess.WithContext(ctx).Create(&model.WfProcess{ID: "proc-B", Name: "报销", TenantID: "t1", Version: 1, Status: "active"}))
 
 	svc := &TaskServiceImpl{taskDAO: d, workflowEngine: &noopBacklogEngine{}}
-	items, err := svc.GetBacklogByProcess(ctx, Actor{TenantID: "t1"})
+	// 积压看板属管理员口径，须以 WorkflowAdmin 身份调用
+	items, err := svc.GetBacklogByProcess(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
 	require.NoError(t, err)
 	sortByCountThenID(items)
 

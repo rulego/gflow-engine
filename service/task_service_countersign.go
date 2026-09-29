@@ -192,6 +192,12 @@ func (s *TaskServiceImpl) checkCountersignSubTaskCompletionInternal(ctx context.
 		voters = append(voters, st)
 	}
 
+	// 有效票全被剔除（全部子任务已终止）按无子任务处理：继续往下判会把空票集
+	// 算成节点完成；调用方（减签重评）对 ErrNoSubTasks 有专门的终止实例分支
+	if len(voters) == 0 {
+		return false, false, fmt.Errorf("%w: no valid sub tasks left for parent task %s", ErrNoSubTasks, parentTaskID)
+	}
+
 	// 统计完成情况
 	totalCount := len(voters)
 	completedCount := 0
@@ -250,13 +256,12 @@ func (s *TaskServiceImpl) getCompletedTasksByDefKey(ctx context.Context, process
 		InstanceID: &processInstanceID,
 		TaskDefKey: taskDefKey,
 		PageRequest: dto.PageRequest{
-			Status:   []string{string(enums.TaskStatusCompleted)},
-			PageSize: 100,
+			Status: []string{string(enums.TaskStatusCompleted)},
 		},
 	}
 
-	tasks, _, err := s.QueryTasks(ctx, query)
-	return tasks, err
+	// 全量语义查询：单页硬编码会在大会签节点截断已审批名单
+	return listAllTasks(ctx, s.taskDAO, query)
 }
 
 func countersignOperator(ctx context.Context) string {

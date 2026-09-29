@@ -140,7 +140,8 @@ func TestGetOverdueTasks_DBFilter(t *testing.T) {
 	}
 
 	svc := &TaskServiceImpl{taskDAO: d, workflowEngine: noopBacklogEngine{}}
-	got, total, err := svc.GetOverdueTasks(ctx, Actor{TenantID: "t1"}, &dto.TaskQuery{PageRequest: dto.PageRequest{PageSize: 100}})
+	// 全局超时视图属管理员口径，须以 WorkflowAdmin 身份调用
+	got, total, err := svc.GetOverdueTasks(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, &dto.TaskQuery{PageRequest: dto.PageRequest{PageSize: 100}})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -177,7 +178,7 @@ func TestGetOverdueTasks_TotalAcrossPages(t *testing.T) {
 	}
 
 	svc := &TaskServiceImpl{taskDAO: d, workflowEngine: noopBacklogEngine{}}
-	got, total, err := svc.GetOverdueTasks(ctx, Actor{TenantID: "t1"}, &dto.TaskQuery{PageRequest: dto.PageRequest{Page: 1, PageSize: 2}})
+	got, total, err := svc.GetOverdueTasks(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, &dto.TaskQuery{PageRequest: dto.PageRequest{Page: 1, PageSize: 2}})
 	require.NoError(t, err)
 	require.Len(t, got, 2, "第一页只返回 pageSize 条")
 	require.EqualValues(t, 3, total, "total 应为全部超时任务数而非当页行数")
