@@ -51,6 +51,11 @@ var ErrProcessDefinitionNotFound = errors.New("process definition not found")
 // other failures (and retry or surface a clear message to the user).
 var ErrInstanceLockTimeout = errors.New("instance lock acquisition timed out")
 
+// ErrInstanceStateUnavailable 实例状态不可判读（读取失败）：与终态拒绝不同，
+// 实例可能仍健康，服务端可重试——链驱动节点据此重试落库，而不是把健康实例
+// 拖进失败终止。
+var ErrInstanceStateUnavailable = errors.New("instance state unavailable")
+
 // defaultInstanceLockTimeout 是 WithInstanceTx 的应用层超时上限。
 //
 // 作用：调用方常直接传 HTTP/引擎的原始 ctx 而没有 deadline，FOR UPDATE 的锁

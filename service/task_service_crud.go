@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
@@ -44,25 +43,18 @@ func (s *TaskServiceImpl) CreateTask(ctx context.Context, actor Actor, task *mod
 
 	// 终态实例不可再落任务：撤回/终止与异步链驱动存在竞态——驱动入口的状态守卫
 	// 只能挡住尚未起飞的推进，挡不住已在链上飞行的消息。这里在实例行锁事务内
-	// 落库前终审，锁内读到的即权威状态；实例不存在或查询失败同样拒绝，放行会
-	// 落下无法溯源的孤儿任务。Completed 放行：end 节点崩溃恢复的尾任务补录允许
-	// 在已完成实例上落收尾任务，终态行不再有并发变更，走下面的锁外快速路径。
+	// 落库前终审，锁内读到的即权威状态。实例不存在（含终态归档后运行表行已删）
+	// 一律拒绝，放行会落下无法溯源的孤儿任务；查询失败同样拒绝，错误以
+	// ErrInstanceStateUnavailable 标记，供节点层识别瞬时故障后重试。
 	// Suspended 落库即冻结：晚于挂起动作创建的任务直接以 suspended 入库，与级联
 	// 挂起后的任务同态——恢复时随级联激活翻回，流程不会因缺任务卡死。
 	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
 		instanceID := *task.ProcessInstanceID
-		q := s.taskDAO.Underlying()
-		if inst, err := dao.NewInstanceDAOWithQuery(q).Get(ctx, instanceID); err == nil && inst != nil &&
-			inst.Status == string(enums.InstanceStatusCompleted) {
-			if err := s.taskDAO.Create(ctx, task); err != nil {
-				return "", fmt.Errorf("failed to create task: %w", err)
-			}
-			return task.ID, nil
-		}
-		err := WithInstanceTx(ctx, q, instanceID, func(scope *InstanceScope) error {
+		err := WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 			inst, err := scope.Instances().Get(ctx, instanceID)
 			if err != nil {
-				return fmt.Errorf("instance %s state unavailable, refuse to create task: %w", instanceID, err)
+				return fmt.Errorf("instance %s state unavailable, refuse to create task (%v): %w",
+					instanceID, err, ErrInstanceStateUnavailable)
 			}
 			if inst == nil {
 				return fmt.Errorf("%w: %s", ErrInstanceNotFound, instanceID)

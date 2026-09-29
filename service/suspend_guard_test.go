@@ -175,6 +175,7 @@ func TestTaskDAO_List_InstanceStatusesFilter(t *testing.T) {
 }
 
 // CreateTask：实例行不存在（已清扫/归档删除）拒绝落库——放行会产生无法溯源的孤儿任务。
+// 终态实例归档时运行表行一并删除，completed 同样查不到运行表行，走的是同一拒绝分支。
 func TestCreateTask_MissingInstance_Rejected(t *testing.T) {
 	q := secFixDB(t)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "system", TenantID: "t1"})
@@ -193,34 +194,4 @@ func TestCreateTask_MissingInstance_Rejected(t *testing.T) {
 		CreatedAt:         time.Now(),
 	})
 	require.Error(t, err, "实例不存在的落库必须拒绝")
-}
-
-// CreateTask：已完成实例放行尾任务补录（end 节点崩溃恢复路径），终态行无并发
-// 变更，直接落库不受行锁事务约束。
-func TestCreateTask_CompletedInstance_TailTaskAllowed(t *testing.T) {
-	q := secFixDB(t)
-	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "system", TenantID: "t1"})
-	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
-		ID: "inst-done", ProcessID: "proc-1", Name: "已完成",
-		Status:      string(enums.InstanceStatusCompleted),
-		StartUserID: "starter", TenantID: "t1", CreatedBy: "starter", CreatedAt: time.Now(),
-	}))
-	svc := &TaskServiceImpl{
-		taskDAO:     dao.NewTaskDAOWithQuery(q),
-		hiTaskDAO:   dao.NewHiTaskDAOWithQuery(q),
-		idGenerator: DefaultIDGenerator,
-	}
-
-	taskID, err := svc.CreateTask(ctx, Actor{UserID: "system", TenantID: "t1"}, &model.WfTask{
-		ProcessInstanceID: secFixStrPtr("inst-done"),
-		TaskDefKey:        "gflow_end",
-		TaskType:          "end",
-		TenantID:          "t1",
-		CreatedBy:         "system",
-		CreatedAt:         time.Now(),
-	})
-	require.NoError(t, err, "已完成实例的尾任务补录应放行")
-	row, gErr := q.WfTask.WithContext(ctx).Where(q.WfTask.ID.Eq(taskID)).First()
-	require.NoError(t, gErr)
-	require.Equal(t, string(enums.TaskStatusPending), row.Status)
 }

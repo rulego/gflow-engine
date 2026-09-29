@@ -17,6 +17,8 @@ import "errors"
 //     消费方映射 404 需单独 errors.Is
 //   - ErrInstanceLockTimeout     (instance_lock.go) — 服务端可重试错误，
 //     IsUserError 不识别，消费方建议映射 HTTP 503/429
+//   - ErrInstanceStateUnavailable (instance_lock.go) — 实例状态读取失败，
+//     服务端可重试，链驱动节点据此重试任务落库
 var (
 	// ErrPermissionDenied — caller lacks required permission for the operation.
 	// Map to HTTP 403 in the consumer.
