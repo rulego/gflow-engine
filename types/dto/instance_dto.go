@@ -116,6 +116,16 @@ type InstanceDetailResponse struct {
 	// ActionPermissions 节点动作权限映射：key 为动作名（如 return/addSign），
 	// value 为是否允许（false 表示设计器显式禁用该按钮）
 	ActionPermissions map[string]interface{} `json:"actionPermissions"`
+	// ReturnableNodes 当前办理人可回退的目标节点（仅 return 按钮可见时计算）：
+	// 本实例中已有完成任务的 userTask 节点，按最近完成在前排序；已剔除当前节点
+	// 自身与回退路径跨并行分支的节点，与服务端 Return 写路径校验同口径
+	ReturnableNodes []ReturnableNode `json:"returnableNodes,omitempty"`
+}
+
+// ReturnableNode 可回退目标节点
+type ReturnableNode struct {
+	Key  string `json:"key"`  // 节点 ID（taskDefKey，Return 请求的 targetActivityId）
+	Name string `json:"name"` // 节点名（取该节点最近一次任务的名称）
 }
 
 type CurrentUserActivityTask struct {

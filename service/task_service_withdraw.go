@@ -331,7 +331,9 @@ func terminateProcessInstanceInTx(ctx context.Context, runtime RuntimeService, t
 	return nil, nil
 }
 
-// Return 退回（将任务退回到指定节点）
+// Return 退回（将任务退回到指定节点）。目标口径：本实例中已运行过的 userTask
+// 节点、当前节点的拓扑上游且非自身、重执行区域不穿并行网关，与详情接口
+// returnableNodes 列表同源。
 func (s *TaskServiceImpl) Return(ctx context.Context, actor Actor, taskID, targetActivityID, reason string) error {
 	ctx = bindActor(ctx, actor)
 	userID := actor.UserID
@@ -364,12 +366,20 @@ func (s *TaskServiceImpl) Return(ctx context.Context, actor Actor, taskID, targe
 	if instanceID == "" {
 		return fmt.Errorf("task has no associated process instance")
 	}
+
+	// 目标校验依赖流程拓扑：规则链在进事务前加载并构建图视图，解析失败
+	// fail-closed 拒绝（事务内走非 tx 连接读流程表会与外层事务互等死锁）
+	graph, gerr := s.returnTargetGraph(ctx, task)
+	if gerr != nil {
+		return gerr
+	}
+
 	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
-		return s.returnInternal(ctx, scope, taskID, targetActivityID, userID, reason)
+		return s.returnInternal(ctx, scope, graph, taskID, targetActivityID, userID, reason)
 	})
 }
 
-func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceScope, taskID, targetActivityID, userID, reason string) error {
+func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceScope, graph *ChainGraph, taskID, targetActivityID, userID, reason string) error {
 	taskDAO := scope.Tasks()
 	hiTaskDAO := scope.HiTasks()
 	task, err := taskDAO.Get(ctx, taskID)
@@ -389,8 +399,9 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 		return fmt.Errorf("only active tasks can be returned, current status: %s", task.Status)
 	}
 
-	// 校验退回目标必须是上一个 userTask 节点，且操作人为该节点任务的受理人或候选人
-	if err := s.requireReturnTarget(ctx, scope, task, targetActivityID, userID); err != nil {
+	// 校验退回目标为合法上游节点（已运行/拓扑上游/非自身/区域不跨并行网关），
+	// 且操作人为该节点任务的受理人或候选人
+	if err := s.requireReturnTarget(ctx, scope, graph, task, targetActivityID, userID); err != nil {
 		return err
 	}
 
@@ -462,6 +473,24 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 					logrus.Warnf("failed to archive task %s before return: %v", t.ID, herr)
 				}
 				_ = taskDAO.Delete(ctx, t.ID)
+			}
+		}
+	}
+
+	// 清理重执行区域内其余节点的遗留任务（多跳回退）：中间节点的旧票不清，
+	// 流程重跑经过时会被旧 Completed 任务判为已完成而静默跳过。target 节点已在
+	// 上方清理；当前节点在上方只剩已完成旧票（操作人票与在途兄弟票已随
+	// returned/terminated 归档删除）——顺序审批/会签节点的旧票也必须清，否则
+	// 重入时按旧进度续跑而非整节点重跑。清理失败不阻断跳转（best-effort），
+	// 与驳回回跳同口径。
+	if task.ProcessInstanceID != nil {
+		for _, nodeID := range returnRegionNodes(graph, targetActivityID, task.TaskDefKey) {
+			if nodeID == targetActivityID {
+				continue
+			}
+			if _, err := s.supersedeNodeTasksInternal(ctx, scope, *task.ProcessInstanceID, nodeID, "superseded_by_return_jump"); err != nil {
+				logrus.WithError(err).WithField("node", nodeID).
+					Warn("supersede stale tasks before return jump failed; stale tasks may cause silent misjudgment")
 			}
 		}
 	}

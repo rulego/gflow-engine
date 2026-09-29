@@ -10,11 +10,14 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/constants"
+	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/rulego/api/types"
 )
@@ -249,61 +252,208 @@ func (s *TaskServiceImpl) filterVariablesByFormPermissions(ctx context.Context, 
 	return filtered
 }
 
-// getPreviousUserTaskDefKey 返回该实例中最近一个已 completed 的 userTask 节点 defKey
-// （按 ended_at desc）。用于 Return 目标合法性校验：只允许退回到这一个节点。
-// ccTask / 系统节点 / 未完成 userTask 一律不作为合法目标。
-//
-// 查 wf_task 运行表（单任务审批后留在运行表，实例终结才归档到 wf_hi_task），
-// 直走 gen query 以支持 TaskType 过滤，单条 SQL 取目标。
-func (s *TaskServiceImpl) getPreviousUserTaskDefKey(ctx context.Context, scope *InstanceScope, instanceID string) (string, error) {
-	if instanceID == "" {
-		return "", nil
-	}
+// hasCompletedTaskAtNode 判断实例中某节点是否存在已完成的 userTask 任务。
+// 只查运行表：活跃实例的终态任务在实例归档前留在运行表，而 Return 仅对
+// active 实例的任务可用，历史表查询在这里不可达也无必要。
+func (s *TaskServiceImpl) hasCompletedTaskAtNode(ctx context.Context, scope *InstanceScope, instanceID, taskDefKey string) (bool, error) {
 	wt := scope.Tx().WfTask
 	var task model.WfTask
 	err := wt.WithContext(ctx).
 		Where(wt.ProcessInstanceID.Eq(instanceID)).
+		Where(wt.TaskDefKey.Eq(taskDefKey)).
 		Where(wt.TaskType.Eq(constants.TaskTypeUserTask)).
 		Where(wt.Status.Eq(string(enums.TaskStatusCompleted))).
-		Order(wt.EndedAt.Desc()).
 		Limit(1).
 		Scan(&task)
 	if err != nil {
-		return "", fmt.Errorf("failed to query previous userTask: %w", err)
+		return false, fmt.Errorf("failed to query completed tasks at node %s: %w", taskDefKey, err)
 	}
-	if task.ID == "" {
-		return "", nil
-	}
-	return task.TaskDefKey, nil
+	return task.ID != "", nil
 }
 
-// requireReturnTarget 校验 Return 目标：必须是上一 userTask；操作人须为当前任务受理人/候选人。
-func (s *TaskServiceImpl) requireReturnTarget(ctx context.Context, scope *InstanceScope, task *model.WfTask, targetActivityID, userID string) error {
+// requireReturnTarget 校验 Return 目标与操作人：
+//   - 操作人须为当前任务受理人或候选人（scope 内判定）；
+//   - 目标须为图内 userTask 节点、当前节点的拓扑上游且非当前节点自身，重执行
+//     区域（target→self）不得穿过并行网关——与驳回回跳的部署期/运行期守卫同口径
+//     （重入 fork 会向各分支重复派发任务，重入 join 会因兄弟分支消息不再到来而
+//     永久等待）；
+//   - 目标在本实例中已有完成的 userTask 任务（只退回已经运行过的节点）。
+func (s *TaskServiceImpl) requireReturnTarget(ctx context.Context, scope *InstanceScope, graph *ChainGraph, task *model.WfTask, targetActivityID, userID string) error {
 	if task == nil || task.ProcessInstanceID == nil {
 		return nil
 	}
 	instanceID := *task.ProcessInstanceID
+	selfDefKey := task.TaskDefKey
 
 	// 1. 操作人须为当前任务受理人或候选人
 	if !s.isReturnOperator(ctx, scope, task, userID) {
 		return fmt.Errorf("return by non-assignee/non-candidate %s: %w", userID, ErrPermissionDenied)
 	}
 
-	// 2. 目标必须是上一 userTask（解析失败 fail-closed，防绕过流程约束回退到任意节点）
-	prevDefKey, err := s.getPreviousUserTaskDefKey(ctx, scope, instanceID)
+	// 2. 目标须为图内 userTask 节点
+	if targetActivityID == "" || !graph.HasNode(targetActivityID) {
+		return fmt.Errorf("return target %q is not in the process definition: %w", targetActivityID, ErrValidation)
+	}
+	if graph.NodeTypes[targetActivityID] != constants.NodeTypeUserTask {
+		return fmt.Errorf("return target %q is not a user task node: %w", targetActivityID, ErrValidation)
+	}
+
+	// 3. 目标须为当前节点的上游且非当前节点自身
+	if targetActivityID == selfDefKey {
+		return fmt.Errorf("return target %q is the current node itself: %w", targetActivityID, ErrValidation)
+	}
+	if !graph.UpstreamReachable(selfDefKey, targetActivityID) {
+		return fmt.Errorf("return target %q is not upstream of current node %q: %w", targetActivityID, selfDefKey, ErrValidation)
+	}
+
+	// 4. 重执行区域不得穿过并行网关
+	if graph.RollbackRegionForked(targetActivityID, selfDefKey) {
+		return fmt.Errorf("return path from %q to %q crosses a parallel gateway: %w", selfDefKey, targetActivityID, ErrValidation)
+	}
+
+	// 5. 目标在本实例中已有完成的任务
+	exists, err := s.hasCompletedTaskAtNode(ctx, scope, instanceID, targetActivityID)
 	if err != nil {
 		logrus.WithError(err).WithField("instanceId", instanceID).
-			Warn("failed to resolve previous userTask for return")
+			Warn("failed to check completed tasks at return target")
 		return fmt.Errorf("failed to resolve return target: %w", ErrPermissionDenied)
 	}
-	if prevDefKey == "" {
-		return fmt.Errorf("no completed userTask to return to: %w", ErrValidation)
-	}
-	if targetActivityID != prevDefKey {
-		return fmt.Errorf("return target %q is not the previous userTask %q: %w",
-			targetActivityID, prevDefKey, ErrValidation)
+	if !exists {
+		return fmt.Errorf("return target %q has no completed task to return to: %w", targetActivityID, ErrValidation)
 	}
 	return nil
+}
+
+// returnTargetGraph 加载任务所属流程的规则链并构建拓扑视图，供回退目标校验与
+// 重执行区域计算使用。定义缺失/解析失败返回错误（fail-closed）——无法证明目标
+// 合法性时放行等于绕过流程约束。须在进入实例事务之前调用：事务内走非 tx 连接
+// 读流程表，单写锁数据库会与外层事务互等。
+func (s *TaskServiceImpl) returnTargetGraph(ctx context.Context, task *model.WfTask) (*ChainGraph, error) {
+	const failReason = "cannot resolve process graph for return"
+	if task == nil || task.ProcessID == "" || s.workflowEngine == nil {
+		return nil, fmt.Errorf("%s: %w", failReason, ErrPermissionDenied)
+	}
+	procDef, err := s.workflowEngine.GetProcessService().Get(ctx, task.ProcessID)
+	if err != nil || procDef == nil {
+		return nil, fmt.Errorf("%s: %w", failReason, ErrPermissionDenied)
+	}
+	rc, err := procDef.ToRuleChain()
+	if err != nil || rc == nil {
+		return nil, fmt.Errorf("%s: %w", failReason, ErrPermissionDenied)
+	}
+	return buildChainGraph(rc), nil
+}
+
+// returnRegionNodes 计算回退需要清理任务的重执行区域：从 target 正向可达、且能
+// 到达 self 的 userTask 节点（含 target 与 self 自身），与驳回回跳的
+// rejectResetNodes（components 层）同口径。区域外节点（如另一条并行分支）不在
+// 回流路径上，其任务——尤其是仍在办理中的——必须保持原状，否则汇合点永远凑不齐。
+// graph 为 nil 时退化为只返回两者自身。输出按节点 ID 排序保证确定性。
+func returnRegionNodes(g *ChainGraph, target, self string) []string {
+	seen := make(map[string]bool, 4)
+	out := make([]string, 0, 4)
+	add := func(id, nodeType string) {
+		if id == "" || seen[id] || nodeType != constants.NodeTypeUserTask {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if g == nil {
+		add(target, constants.NodeTypeUserTask)
+		add(self, constants.NodeTypeUserTask)
+		return out
+	}
+	reachableFromTarget := map[string]bool{target: true}
+	queue := []string{target}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, next := range g.Forward[cur] {
+			if !reachableFromTarget[next] {
+				reachableFromTarget[next] = true
+				queue = append(queue, next)
+			}
+		}
+	}
+	reachesSelf := map[string]bool{self: true}
+	queue = []string{self}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, prev := range g.Backward[cur] {
+			if !reachesSelf[prev] {
+				reachesSelf[prev] = true
+				queue = append(queue, prev)
+			}
+		}
+	}
+	add(target, g.NodeTypes[target])
+	add(self, g.NodeTypes[self])
+	for id := range reachableFromTarget {
+		if reachesSelf[id] {
+			add(id, g.NodeTypes[id])
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// buildReturnableNodes 装配当前办理人的可回退目标节点：从本实例已有完成任务的
+// userTask 节点中，过滤出当前节点的拓扑上游、非当前节点自身、且重执行区域不穿
+// 并行网关的节点，按最近完成在前排序。与 requireReturnTarget 写路径校验同口径，
+// 前端回退弹窗据此直出选项，不再从 executions 自行推断。仅当前节点存在可办
+// 任务且 return 按钮可见时调用。
+func buildReturnableNodes(chain *types.RuleChain, tasks []*model.WfTask, selfDefKey string) []dto.ReturnableNode {
+	if chain == nil || selfDefKey == "" {
+		return nil
+	}
+	g := buildChainGraph(chain)
+	// 每节点取最近一次完成记录（按 defKey 去重，名称取最近一轮的任务名）
+	type nodeLatest struct {
+		name    string
+		endedAt time.Time
+	}
+	latest := make(map[string]*nodeLatest, len(tasks))
+	for _, t := range tasks {
+		if t == nil || t.TaskType != constants.TaskTypeUserTask || t.TaskDefKey == "" ||
+			t.TaskDefKey == selfDefKey || t.Status != string(enums.TaskStatusCompleted) {
+			continue
+		}
+		ended := time.Time{}
+		if t.EndedAt != nil {
+			ended = *t.EndedAt
+		}
+		cur, ok := latest[t.TaskDefKey]
+		if !ok || ended.After(cur.endedAt) {
+			latest[t.TaskDefKey] = &nodeLatest{name: t.Name, endedAt: ended}
+		}
+	}
+	keys := make([]string, 0, len(latest))
+	for k := range latest {
+		keys = append(keys, k)
+	}
+	// 最近完成在前；同一时刻按 ID 兜底排序保证输出稳定
+	sort.Slice(keys, func(i, j int) bool {
+		if !latest[keys[i]].endedAt.Equal(latest[keys[j]].endedAt) {
+			return latest[keys[i]].endedAt.After(latest[keys[j]].endedAt)
+		}
+		return keys[i] < keys[j]
+	})
+	out := make([]dto.ReturnableNode, 0, len(keys))
+	for _, k := range keys {
+		if !g.HasNode(k) || g.NodeTypes[k] != constants.NodeTypeUserTask {
+			continue
+		}
+		if !g.UpstreamReachable(selfDefKey, k) {
+			continue
+		}
+		if g.RollbackRegionForked(k, selfDefKey) {
+			continue
+		}
+		out = append(out, dto.ReturnableNode{Key: k, Name: latest[k].name})
+	}
+	return out
 }
 
 // isReturnOperator 判断 userID 是否为当前任务的受理人或候选人。

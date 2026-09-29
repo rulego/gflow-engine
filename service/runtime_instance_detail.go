@@ -403,6 +403,12 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 			}
 		}
 
+		// 可回退目标节点：仅在 return 按钮可见时计算，供前端回退弹窗直出选项，
+		// 与 Return 写路径校验同口径（已运行 + 拓扑上游 + 非自身 + 重执行区域不跨并行网关）
+		if isActiveTask && ruleChain != nil && designerEnabled(actionPermissions, "return") {
+			resp.ReturnableNodes = buildReturnableNodes(ruleChain, tasks, currentUserTask.TaskDefKey)
+		}
+
 		resp.CurrentUserActivityTask = dto.CurrentUserActivityTask{
 			TaskID:          currentUserTask.ID,
 			TaskDefKey:      currentUserTask.TaskDefKey,
