@@ -210,6 +210,25 @@ func (s *TaskServiceImpl) requireActionEnabled(ctx context.Context, task *model.
 	return nil
 }
 
+// requireProcessActionEnabled 流程级动作开关：设计器把撤回等实例级动作的开关写在
+// ruleChain.additionalInfo.actionPermissions，节点级配置里不存在，节点级校验拦不住。
+// 须在实例行锁事务外调用——流程定义读取走默认连接，锁内调用属于 tx 逃逸（单写库
+// 与外层事务互等）。解析失败记录根因后拒绝（fail-closed）。
+func (s *TaskServiceImpl) requireProcessActionEnabled(ctx context.Context, processID, actionKey string) error {
+	ap, _, err := resolveProcessActionPermissions(ctx, s.workflowEngine, processID)
+	if err != nil {
+		logrus.WithError(err).WithFields(logrus.Fields{
+			"process_id": processID,
+			"action":     actionKey,
+		}).Warn("resolve process action permissions failed")
+		return fmt.Errorf("cannot resolve action permissions for action %q: %w", actionKey, ErrPermissionDenied)
+	}
+	if designerDisabled(ap, actionKey) {
+		return fmt.Errorf("action %q disabled by designer: %w", actionKey, ErrPermissionDenied)
+	}
+	return nil
+}
+
 // filterVariablesByFormPermissions 按节点 formPermissions 过滤审批人提交的变量：
 // 只读(r)/隐藏(h)字段不允许审批人覆盖；可写(w/缺省)字段放行。无配置时不限制。
 func (s *TaskServiceImpl) filterVariablesByFormPermissions(ctx context.Context, scope *InstanceScope, task *model.WfTask, vars map[string]interface{}) map[string]interface{} {

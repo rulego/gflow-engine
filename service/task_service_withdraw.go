@@ -13,6 +13,8 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/rulego/gflow-engine/dao"
+	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/query"
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
@@ -44,8 +46,9 @@ func (s *TaskServiceImpl) Withdraw(ctx context.Context, actor Actor, taskID, rea
 	if task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
 		return fmt.Errorf("task has no associated process instance")
 	}
-	// 设计器显式禁用 withdraw → 拒绝
-	if err := s.requireActionEnabled(ctx, task, "withdraw"); err != nil {
+	// 设计器显式禁用 withdraw → 拒绝。流程级与节点级都校验：开关写在流程级
+	// additionalInfo，节点级配置里不存在；两级都在实例行锁事务外解析。
+	if err := s.requireWithdrawEnabled(ctx, *task.ProcessInstanceID, task); err != nil {
 		return err
 	}
 
@@ -53,6 +56,19 @@ func (s *TaskServiceImpl) Withdraw(ctx context.Context, actor Actor, taskID, rea
 	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
 		return s.withdrawInternal(ctx, scope, taskID, userID, reason, false)
 	})
+}
+
+// requireWithdrawEnabled 撤回开关的两级校验：流程级（设计器唯一写入层级）对齐
+// 按钮位口径，节点级保留给手工配置的节点开关。实例须存在（查不到即拒绝）。
+func (s *TaskServiceImpl) requireWithdrawEnabled(ctx context.Context, instanceID string, task *model.WfTask) error {
+	instance, err := dao.NewInstanceDAOWithQuery(s.taskDAO.Underlying()).Get(ctx, instanceID)
+	if err != nil || instance == nil {
+		return fmt.Errorf("%w: process instance", ErrNotFound)
+	}
+	if err := s.requireProcessActionEnabled(ctx, instance.ProcessID, "withdraw"); err != nil {
+		return err
+	}
+	return s.requireActionEnabled(ctx, task, "withdraw")
 }
 
 // WithdrawByInstance 按流程实例撤回（发起人视角入口）。
@@ -63,6 +79,17 @@ func (s *TaskServiceImpl) WithdrawByInstance(ctx context.Context, actor Actor, i
 	userID, isAdmin := actor.UserID, isWorkflowAdmin(&actor)
 	if instanceID == "" || userID == "" {
 		return fmt.Errorf("instance ID and user ID cannot be empty")
+	}
+
+	// 流程级撤回开关在进锁前校验：流程定义读取走默认连接，锁内调用属于 tx 逃逸
+	// （单写库与外层事务互等）。ProcessID 在实例行上不可变，锁外解析足够；
+	// 实例状态与属主在锁内仍有权威复核。
+	instance, err := dao.NewInstanceDAOWithQuery(s.taskDAO.Underlying()).Get(ctx, instanceID)
+	if err != nil || instance == nil {
+		return fmt.Errorf("%w: process instance", ErrNotFound)
+	}
+	if err := s.requireProcessActionEnabled(ctx, instance.ProcessID, "withdraw"); err != nil {
+		return err
 	}
 
 	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
@@ -77,7 +104,7 @@ func (s *TaskServiceImpl) WithdrawByInstance(ctx context.Context, actor Actor, i
 			return fmt.Errorf("failed to list active tasks: %w", err)
 		}
 		if len(tasks) > 0 {
-			// 设计器显式禁用 withdraw → 拒绝
+			// 设计器显式禁用 withdraw（节点级手工配置）→ 拒绝；流程级开关已在锁外校验
 			if err := s.requireActionEnabled(ctx, tasks[0], "withdraw"); err != nil {
 				return err
 			}
@@ -109,16 +136,8 @@ func (s *TaskServiceImpl) withdrawBeforeFirstTask(ctx context.Context, scope *In
 	if instance.Status != string(enums.InstanceStatusActive) {
 		return fmt.Errorf("%w: only active instances can be withdrawn, current status: %s", ErrValidation, instance.Status)
 	}
-	// 首任务未落库同样受设计器 withdraw 开关约束：节点行不存在，退化按流程级
-	// actionPermissions 判定，与有任务分支的 requireActionEnabled 同口径
-	// （解析失败同样拒绝）。
-	ap, _, apErr := resolveProcessActionPermissions(ctx, s.workflowEngine, instance.ProcessID)
-	if apErr != nil {
-		return fmt.Errorf("cannot resolve action permissions for withdraw: %w", ErrPermissionDenied)
-	}
-	if designerDisabled(ap, "withdraw") {
-		return fmt.Errorf("action %q disabled by designer: %w", "withdraw", ErrPermissionDenied)
-	}
+	// 流程级 withdraw 开关已由 WithdrawByInstance 在进锁前校验（流程定义读取
+	// 不能发生在实例行锁事务内），这里只保留状态与属主复核。
 
 	terminateReason := constants.EndReasonPrefixWithdrawn
 	if reason != "" {

@@ -272,3 +272,42 @@ func TestWithdrawByInstance_BeforeFirstTask_DisabledByDesigner(t *testing.T) {
 	require.NoError(t, gErr)
 	require.NotNil(t, persisted, "实例应保持 active 未被终止")
 }
+
+// 任务维度撤回同样受流程级 withdraw 开关约束：开关写在流程级 additionalInfo，
+// 节点级校验拦不住，有任务分支与首任务未落库窗口同口径拒绝。
+func TestWithdrawByInstance_TaskDimension_DisabledByProcessSwitch(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: &testEngineDouble{listener: func(_ context.Context, _ TaskEvent) {}},
+	}
+	taskSvc := &TaskServiceImpl{
+		taskDAO:   dao.NewTaskDAOWithQuery(q),
+		hiTaskDAO: dao.NewHiTaskDAOWithQuery(q),
+		workflowEngine: &withdrawProcEngineDouble{testEngineDouble{runtime: rs},
+			recallProcessFake{def: `{"ruleChain":{"additionalInfo":{"actionPermissions":{"withdraw":false}}},"metadata":{"nodes":[],"connections":[]}}`}},
+	}
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-wd-task-off", ProcessID: "proc-no-withdraw-2", Name: "禁撤回有任务单",
+		Status: string(enums.InstanceStatusActive), TenantID: "t1",
+		StartUserID: "starter", CreatedBy: "starter", CreatedAt: time.Now(),
+	}))
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-wd-off", ProcessInstanceID: secFixStrPtr("inst-wd-task-off"), TaskDefKey: "n1",
+		Name: "审批", TaskType: "userTask", Status: string(enums.TaskStatusActive),
+		Assignee: secFixStrPtr("u1"), TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now(),
+	}))
+
+	err := taskSvc.WithdrawByInstance(ctx, Actor{UserID: "starter", TenantID: "t1"}, "inst-wd-task-off", "想撤")
+	require.Error(t, err, "流程级禁用撤回时有任务分支同样必须拒绝")
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+
+	persisted, gErr := rs.instanceDAO.Get(ctx, "inst-wd-task-off")
+	require.NoError(t, gErr)
+	require.NotNil(t, persisted, "实例应保持 active 未被终止")
+}
