@@ -7,9 +7,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/gflow-engine/types/constants"
 	utils2 "github.com/rulego/gflow-engine/utils"
 )
 
@@ -107,6 +109,15 @@ func (s *TaskServiceImpl) setTaskVariablesInternal(ctx context.Context, scope *I
 	}
 	if err := s.authorizeTaskOperator(ctx, task); err != nil {
 		return err
+	}
+	// 系统保留键不开放给办理人改写：reassign_* 是改派溯源标记（收回存量据此
+	// 判定受管链路，被改写会伪造/抹掉改派来源），proxy_operator 是代审标记
+	// （被清除会让代审出的票重新取得收回资格），_sequentialAssignees 是顺序
+	// 审批推进缓存（被冲掉会卡死后续节点）。
+	for k := range variables {
+		if isReservedTaskVariableKey(k) {
+			return fmt.Errorf("variable %q is reserved by the engine: %w", k, ErrValidation)
+		}
 	}
 	// 合并而非整体替换：任务变量里存有引擎的运行时状态（如顺序审批的
 	// _sequentialAssignees 缓存），整体覆盖会将其冲掉，后续推进丢失进度。
@@ -225,4 +236,13 @@ func (s *TaskServiceImpl) removeTaskVariableInternal(ctx context.Context, scope 
 	}
 	delete(variables, variableName)
 	return s.setTaskVariablesInternal(ctx, scope, taskID, variables)
+}
+
+// isReservedTaskVariableKey 引擎托管的任务变量键：办理人经 SetTaskVariables/
+// RemoveTaskVariable 不得读写改名派溯源、代审标记与推进缓存。前缀保留留给
+// 未来的 reassign_* 家族字段。
+func isReservedTaskVariableKey(key string) bool {
+	return key == constants.VarsProxyOperator ||
+		key == constants.KeySequentialAssignees ||
+		strings.HasPrefix(key, "reassign_")
 }
