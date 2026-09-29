@@ -171,8 +171,11 @@ type ExecutionInfo struct {
 	ApprovalType string  `json:"approvalType"`
 	// ProxyBy 代审管理员 userId：该票由管理员代替 assignee 审出；空表示本人办理。
 	// 时间线据此渲染「由 X 代审」，与 recall 守卫读同一份任务变量。
-	ProxyBy string  `json:"proxyBy,omitempty"`
-	Comment *string `json:"comment"`
+	ProxyBy string `json:"proxyBy,omitempty"`
+	// SignAddedBy 加签操作人 userId：带标记的加签子任务仅加签人本人可减，前端
+	// 减签候选与 ReduceSign 写路径校验同口径；流程配置的子任务无标记为空
+	SignAddedBy string  `json:"signAddedBy,omitempty"`
+	Comment     *string `json:"comment"`
 	// SubExecutions 子任务明细：加签（countersign 父子结构）场景下挂该任务的
 	// 会签子任务，普通审批任务为空
 	SubExecutions []ExecutionInfo `json:"subExecutions"`

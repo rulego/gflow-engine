@@ -942,6 +942,11 @@ func TestReduceSign_RuleErrorPropagates(t *testing.T) {
 	require.NoError(t, svc.taskDAO.Create(context.Background(), parent))
 	seedCountersignChild(t, svc, "cs-rp", "cs-rp-c1", "userA")
 	seedCountersignChild(t, svc, "cs-rp", "cs-rp-c2", "userB")
+	// 被减子任务带上 userA 的加签标记（本人可减），让用例聚焦
+	// "减签成功后会签规则损坏必须传播"的错误语义
+	require.NoError(t, svc.taskDAO.Update(context.Background(), &model.WfTask{
+		ID: "cs-rp-c2", Variables: secFixStrPtr(`{"sign_added_by":"userA"}`),
+	}))
 
 	actor := statusGuardActor()
 	err := svc.ReduceSign(SetUserToCtx(context.Background(), &actor), actor, "cs-rp", []string{"userB"}, "减签")

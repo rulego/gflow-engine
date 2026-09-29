@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -2214,6 +2215,14 @@ func (s *RuntimeServiceImpl) TerminateInTx(ctx context.Context, tx *query.Query,
 	now := time.Now()
 	username := s.GetUsernameFromCtx(ctx)
 	endReason := "流程实例被终止"
+	// 撤回级联终止：跨节点在途作废票与同节点同口径带 withdrawn 前缀，前端
+	// 时间轴/已办据此显示「已作废（撤回）」
+	if EventSourceFromCtx(ctx) == EventSourceWithdraw {
+		endReason = string(enums.EndReasonWithdrawn)
+		if rest := strings.TrimPrefix(reason, constants.EndReasonPrefixWithdrawn); rest != reason {
+			endReason = string(enums.EndReasonWithdrawn) + ": " + strings.TrimPrefix(rest, "：")
+		}
+	}
 	// 与 CompleteProcessInstance 同口径用 int64 毫秒（int32 约 24.8 天溢出）
 	duration := now.Sub(instance.CreatedAt).Milliseconds()
 

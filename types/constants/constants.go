@@ -86,6 +86,10 @@ const (
 	VarsFallbackFrom   = "fallback_from"
 	VarsFallbackReason = "fallback_reason"
 	VarsFallbackTime   = "fallback_time"
+	// VarsSignAddedBy 加签子任务记录的加签操作人：减签时据此限制带标记的子任务
+	// 只能由加签人本人移除（流程配置的会签子任务无标记，不受此限）。引擎保留键，
+	// 审批提交/变量 API 同名键一律剥离，防伪造标记转嫁加签归属
+	VarsSignAddedBy = "sign_added_by"
 	// VarsRecallCount 实例变量里的累计收回次数，达到 MaxRecallCountPerInstance
 	// 后拒绝继续收回，防止收回→重投→再收回循环骚扰后续审批人
 	VarsRecallCount = "_recallCount"
@@ -100,6 +104,9 @@ const (
 	EndReasonPrefixWithdrawn = "申请人撤回"
 	// EndReasonPrefixRecall 收回终止前沿任务写入 end_reason 的前缀
 	EndReasonPrefixRecall = "审批人收回"
+	// EndReasonPrefixReturnedVoid 流程退回/驳回重审时，被清理节点的遗留任务行
+	// 写入 end_reason 的前缀；原 end_reason 跟在冒号后保留供审计追溯
+	EndReasonPrefixReturnedVoid = "审批退回作废"
 )
 const (
 	TaskTypeUserTask = "userTask"

@@ -16,6 +16,7 @@ import (
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
+	utils2 "github.com/rulego/gflow-engine/utils"
 )
 
 // authorizeSignOperator 校验加签/减签操作者身份（用默认 DAO，供锁外廉价校验）。
@@ -136,6 +137,15 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 
 	now := time.Now()
 	desc := fmt.Sprintf("加签任务: %s", reason)
+	// 操作人同时用于加签留痕（减签资格校验）与事件派发
+	operator := ""
+	if u := GetUserFromCtx(ctx); u != nil {
+		operator = u.UserID
+	}
+	signVars, verr := utils2.ToJSON(map[string]interface{}{constants.VarsSignAddedBy: operator})
+	if verr != nil {
+		return fmt.Errorf("failed to serialize sign-added-by mark: %w", verr)
+	}
 	// 去重：收集该节点已存在的审批人（父任务 assignee + 现有子任务 assignee），避免重复加签
 	existing := map[string]bool{}
 	if task.Assignee != nil && *task.Assignee != "" {
@@ -172,6 +182,7 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 			CreatedAt:         time.Now(),
 			UpdatedAt:         &now,
 			TenantID:          task.TenantID,
+			Variables:         &signVars,
 		}
 		if err := taskDAO.Create(ctx, signTask); err != nil {
 			return fmt.Errorf("failed to create sign task for user %s: %w", userID, err)
@@ -183,10 +194,6 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 		instID := ""
 		if task.ProcessInstanceID != nil {
 			instID = *task.ProcessInstanceID
-		}
-		operator := ""
-		if u := GetUserFromCtx(ctx); u != nil {
-			operator = u.UserID
 		}
 		evt := TaskEvent{
 			Type:       TaskEventAddSign,
@@ -266,6 +273,14 @@ func (s *TaskServiceImpl) reduceSignInternal(ctx context.Context, scope *Instanc
 		return err
 	}
 
+	// 操作人同时用于减签资格校验与事件派发。资格分层：带 sign_added_by 标记的
+	// 加签子任务只能由加签人本人移除（标记为引擎保留键，审批提交/变量 API 均
+	// 剥离，无法伪造）；无标记的子任务（流程配置的会签/票签人、存量加签）不受
+	// 加签人限制——会签减到 0 终止实例的既有语义依赖于此。
+	operator := ""
+	if u := GetUserFromCtx(ctx); u != nil {
+		operator = u.UserID
+	}
 	for _, userID := range userIDs {
 		q := &dto.TaskQuery{
 			InstanceID: task.ProcessInstanceID,
@@ -280,6 +295,10 @@ func (s *TaskServiceImpl) reduceSignInternal(ctx context.Context, scope *Instanc
 		}
 		for _, signTask := range tasks {
 			if signTask.ParentID != nil && *signTask.ParentID == taskID {
+				if addedBy := signAddedBy(signTask); addedBy != "" && addedBy != operator {
+					return fmt.Errorf("sign task %s (assignee %s) was added by %q, only the signer who added it can reduce it: %w",
+						signTask.ID, userID, addedBy, ErrPermissionDenied)
+				}
 				// 在持锁事务内直接删除（绕过 DeleteTask 的权限校验，因为这里是
 				// 系统行为而非用户操作）
 				if derr := taskDAO.Delete(ctx, signTask.ID); derr != nil {
@@ -293,10 +312,6 @@ func (s *TaskServiceImpl) reduceSignInternal(ctx context.Context, scope *Instanc
 		instID := ""
 		if task.ProcessInstanceID != nil {
 			instID = *task.ProcessInstanceID
-		}
-		operator := ""
-		if u := GetUserFromCtx(ctx); u != nil {
-			operator = u.UserID
 		}
 		evt := TaskEvent{
 			Type:       TaskEventReduceSign,
@@ -324,6 +339,21 @@ func (s *TaskServiceImpl) reduceSignInternal(ctx context.Context, scope *Instanc
 		return s.reevaluateCountersignAfterReduce(ctx, scope, task)
 	}
 	return nil
+}
+
+// signAddedBy 从任务变量解析加签操作人。无标记或解析失败返回空串：空串表示
+// 该子任务不受加签人限制（流程配置的会签/票签子任务，或旧数据），非空且不
+// 等于操作人时减签拒绝。
+func signAddedBy(task *model.WfTask) string {
+	if task == nil || task.Variables == nil {
+		return ""
+	}
+	m, err := ParseVariablesJSON(task.Variables)
+	if err != nil {
+		return ""
+	}
+	v, _ := m[constants.VarsSignAddedBy].(string)
+	return v
 }
 
 // reevaluateCountersignAfterReduce 减签后重新评估会签/票签节点完成状态：

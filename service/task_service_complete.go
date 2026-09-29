@@ -625,6 +625,7 @@ var engineReservedVarKeys = []string{
 	constants.VarsProxyOperator, constants.VarsProxyTime,
 	constants.VarsFallbackPolicy, constants.VarsFallbackFrom,
 	constants.VarsFallbackReason, constants.VarsFallbackTime,
+	constants.VarsSignAddedBy,
 }
 
 // stripEngineReservedVars 就地剥除审批提交变量里的引擎保留键，防伪造代审

@@ -543,6 +543,9 @@ func Task2ExecutionInfo(task *model.WfTask, tasks []*model.WfTask) dto.Execution
 		if v, ok := m[constants.VarsProxyOperator].(string); ok {
 			executionInfo.ProxyBy = v
 		}
+		if v, ok := m[constants.VarsSignAddedBy].(string); ok {
+			executionInfo.SignAddedBy = v
+		}
 	}
 	if task.EndedAt != nil {
 		executionInfo.EndedAt = task.EndedAt.Format(constants.TimeFormatLayout)
