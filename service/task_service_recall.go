@@ -38,8 +38,15 @@ var recallTransparentNodeTypes = map[string]bool{
 	"startTask":                     true,
 }
 
+// terminalRecallEnabled 终态收回（已完成实例整单重开）总闸：暂置 false 下线——
+// 已完成单按主流口径保持不可逆，发起人反悔走「重新发起」。下线只封入口：
+// 资格/窗口/重开逻辑原样保留在 recallCompleted 及其用例（直驱绕过本闸），
+// 详情按钮位同闸于 GetProcessInstanceDetail，恢复时改回 true 即全量生效。
+const terminalRecallEnabled = false
+
 // Recall 收回（审批人撤销自己最近一条已通过的审批，重建自己的待审任务）。
-// 已完成(通过)实例走 recallCompleted：窗口期内发起人/管理员/末节点审批人整单重开，末节点重审。
+// 已完成(通过)实例原走 recallCompleted（窗口期内发起人/管理员/末节点审批人
+// 整单重开），该通道经 terminalRecallEnabled 下线中。
 func (s *TaskServiceImpl) Recall(ctx context.Context, actor Actor, instanceID, reason string) error {
 	ctx = bindActor(ctx, actor)
 	if instanceID == "" || actor.UserID == "" {
@@ -70,6 +77,11 @@ func (s *TaskServiceImpl) Recall(ctx context.Context, actor Actor, instanceID, r
 	case string(enums.InstanceStatusSuspended):
 		return fmt.Errorf("%w: 流程已挂起，无法收回", ErrValidation)
 	case string(enums.InstanceStatusCompleted):
+		// 终态收回下线中：已完成实例保持不可逆，与在途停泊校验前的各类
+		// 拒绝同口径直接打回，不进归档表查询
+		if !terminalRecallEnabled {
+			return fmt.Errorf("%w: 已完成的申请不支持收回", ErrValidation)
+		}
 		// 终态收回：实例已归档，窗口期内发起人/管理员/末节点审批人整单重开
 		return s.recallCompleted(ctx, actor, inst, instanceID, reason)
 	default:
@@ -114,6 +126,7 @@ func recallWindowDays(ap map[string]interface{}) int {
 // 任务、整轮重审。发起人触发是"发起人反悔"主场景；末节点审批人触发则是取回
 // 自己审完的单，重开后新待办落回末节点审批人。不做"只撤自己一票"的变体：实例已归档，
 // 逐票回迁的复杂度换不来场景收益，末节点整轮重审语义更直白。
+// 当前经 Recall 入口的通道下线中（terminalRecallEnabled），仅测试直驱可达。
 func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *model.WfInstance, instanceID, reason string) error {
 	ap, _, err := resolveProcessActionPermissions(ctx, s.workflowEngine, hi.ProcessID)
 	if err != nil {

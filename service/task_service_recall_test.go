@@ -744,6 +744,37 @@ func recallSeedHiTask(t *testing.T, q *query.Query, id, instID, defKey, assignee
 	require.NoError(t, q.WfHiTask.Create(row))
 }
 
+// recallCompletedDirect 绕过 Recall 入口的终态下线闸直驱 recallCompleted：
+// 下线只封入口，重开/资格/窗口逻辑的回归覆盖经此保留，
+// 入口闸本身的行为由 TestRecall_TerminalRecallDisabled 固化。
+func recallCompletedDirect(t *testing.T, svc *TaskServiceImpl, eng *recallEngineDouble, actor Actor, instanceID, reason string) error {
+	t.Helper()
+	ctx := SetUserToCtx(context.Background(), &actor)
+	inst, err := eng.GetRuntimeService().GetProcessInstance(ctx, actor, instanceID)
+	require.NoError(t, err)
+	require.NotNil(t, inst, "已完成实例应经历史表回退加载")
+	return svc.recallCompleted(ctx, actor, inst, instanceID, reason)
+}
+
+// 终态收回下线闸：已完成实例的 Recall 入口一律拒绝（按钮位同闸于
+// GetProcessInstanceDetail 的 terminalRecallEnabled），不再依赖资格与窗口。
+func TestRecall_TerminalRecallDisabled(t *testing.T) {
+	q := secFixDB(t)
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedHiInstance(t, q, "inst-term-off", string(enums.InstanceStatusCompleted), time.Now().Add(-24*time.Hour))
+	recallSeedHiTask(t, q, "ht-off-b", "inst-term-off", "b", "yi", time.Now().Add(-22*time.Hour))
+	svc, _ := newRecallSvc(q, def, nil)
+
+	err := svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}),
+		Actor{UserID: "starter", TenantID: "t1"}, "inst-term-off", "")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrValidation))
+	require.Contains(t, err.Error(), "已完成")
+}
+
 // 发起人在窗口期内收回已完成实例：实例复活为运行中、归档行移除。
 func TestRecallCompleted_ByStarterReopensInstance(t *testing.T) {
 	q := secFixDB(t)
@@ -755,8 +786,7 @@ func TestRecallCompleted_ByStarterReopensInstance(t *testing.T) {
 	recallSeedHiTask(t, q, "ht-b", "inst-term", "b", "yi", time.Now().Add(-22*time.Hour))
 	svc, eng := newRecallSvc(q, def, nil)
 
-	require.NoError(t, svc.Recall(
-		SetUserToCtx(context.Background(), &Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}),
+	require.NoError(t, recallCompletedDirect(t, svc, eng,
 		Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-term", "批错了，整单重开"))
 
 	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term")).First()
@@ -800,11 +830,10 @@ func TestRecallCompleted_InstanceVarsStripReservedMarks(t *testing.T) {
 	}))
 	recallSeedHiTask(t, q, "htm-a", "inst-term-marks", "a", "jia", time.Now().Add(-23*time.Hour))
 	recallSeedHiTask(t, q, "htm-b", "inst-term-marks", "b", "yi", time.Now().Add(-22*time.Hour))
-	svc, _ := newRecallSvc(q, def, nil)
+	svc, eng := newRecallSvc(q, def, nil)
 
-	require.NoError(t, svc.Recall(
-		SetUserToCtx(context.Background(), &Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}),
-		Actor{UserID: "starter", TenantID: "t1"}, "inst-term-marks", "批错了，整单重开"))
+	require.NoError(t, recallCompletedDirect(t, svc, eng,
+		Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-term-marks", "批错了，整单重开"))
 
 	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term-marks")).First()
 	require.NoError(t, err, "实例应回插运行表")
@@ -833,10 +862,9 @@ func TestRecallCompleted_Guards(t *testing.T) {
 		q := secFixDB(t)
 		recallSeedHiInstance(t, q, "inst-g1", string(enums.InstanceStatusCompleted), time.Now().Add(-time.Hour))
 		recallSeedHiTask(t, q, "ht-g1", "inst-g1", "b", "yi", time.Now().Add(-30*time.Minute))
-		svc, _ := newRecallSvc(q, def, nil)
-		err := svc.Recall(
-			SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"}),
-			Actor{UserID: "jia", TenantID: "t1"}, "inst-g1", "")
+		svc, eng := newRecallSvc(q, def, nil)
+		err := recallCompletedDirect(t, svc, eng,
+			Actor{UserID: "jia", TenantID: "t1", UserName: "甲"}, "inst-g1", "")
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrPermissionDenied))
 		require.Contains(t, err.Error(), "发起人、管理员或末节点审批人")
@@ -846,10 +874,9 @@ func TestRecallCompleted_Guards(t *testing.T) {
 		q := secFixDB(t)
 		recallSeedHiInstance(t, q, "inst-g2", string(enums.InstanceStatusCompleted), time.Now().Add(-8*24*time.Hour))
 		recallSeedHiTask(t, q, "ht-g2", "inst-g2", "b", "yi", time.Now().Add(-8*24*time.Hour))
-		svc, _ := newRecallSvc(q, def, nil)
-		err := svc.Recall(
-			SetUserToCtx(context.Background(), &Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}),
-			Actor{UserID: "starter", TenantID: "t1"}, "inst-g2", "")
+		svc, eng := newRecallSvc(q, def, nil)
+		err := recallCompletedDirect(t, svc, eng,
+			Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-g2", "")
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrValidation))
 		require.Contains(t, err.Error(), "窗口")
@@ -859,10 +886,9 @@ func TestRecallCompleted_Guards(t *testing.T) {
 		q := secFixDB(t)
 		recallSeedHiInstance(t, q, "inst-g3", string(enums.InstanceStatusCompleted), time.Now().Add(-time.Hour))
 		recallSeedHiTask(t, q, "ht-g3", "inst-g3", "b", "yi", time.Now().Add(-30*time.Minute))
-		svc, _ := newRecallSvc(q, defOff, nil)
-		err := svc.Recall(
-			SetUserToCtx(context.Background(), &Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}),
-			Actor{UserID: "starter", TenantID: "t1"}, "inst-g3", "")
+		svc, eng := newRecallSvc(q, defOff, nil)
+		err := recallCompletedDirect(t, svc, eng,
+			Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-g3", "")
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrPermissionDenied))
 	})
@@ -872,9 +898,8 @@ func TestRecallCompleted_Guards(t *testing.T) {
 		recallSeedHiInstance(t, q, "inst-g4", string(enums.InstanceStatusCompleted), time.Now().Add(-time.Hour))
 		recallSeedHiTask(t, q, "ht-g4", "inst-g4", "b", "yi", time.Now().Add(-30*time.Minute))
 		svc, eng := newRecallSvc(q, def, nil)
-		require.NoError(t, svc.Recall(
-			SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", UserName: "管理员", WorkflowAdmin: true}),
-			Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "inst-g4", ""))
+		require.NoError(t, recallCompletedDirect(t, svc, eng,
+			Actor{UserID: "admin", TenantID: "t1", UserName: "管理员", WorkflowAdmin: true}, "inst-g4", ""))
 		revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-g4")).First()
 		require.NoError(t, err)
 		require.Equal(t, string(enums.InstanceStatusActive), revived.Status)
@@ -1235,8 +1260,7 @@ func TestRecallCompleted_ByLastNodeVoterReopens(t *testing.T) {
 	recallSeedHiTask(t, q, "ht-v-b", "inst-term-v", "b", "yi", time.Now().Add(-22*time.Hour))
 	svc, eng := newRecallSvc(q, def, nil)
 
-	require.NoError(t, svc.Recall(
-		SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}),
+	require.NoError(t, recallCompletedDirect(t, svc, eng,
 		Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}, "inst-term-v", "批快了，取回重审"))
 
 	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term-v")).First()
@@ -1255,11 +1279,10 @@ func TestRecallCompleted_NonLastNodeVoterRejected(t *testing.T) {
 	recallSeedHiInstance(t, q, "inst-term-nv", string(enums.InstanceStatusCompleted), time.Now().Add(-24*time.Hour))
 	recallSeedHiTask(t, q, "ht-nv-a", "inst-term-nv", "a", "jia", time.Now().Add(-23*time.Hour))
 	recallSeedHiTask(t, q, "ht-nv-b", "inst-term-nv", "b", "yi", time.Now().Add(-22*time.Hour))
-	svc, _ := newRecallSvc(q, def, nil)
+	svc, eng := newRecallSvc(q, def, nil)
 
-	err := svc.Recall(
-		SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1", UserName: "甲"}),
-		Actor{UserID: "jia", TenantID: "t1"}, "inst-term-nv", "")
+	err := recallCompletedDirect(t, svc, eng,
+		Actor{UserID: "jia", TenantID: "t1", UserName: "甲"}, "inst-term-nv", "")
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrPermissionDenied))
 }
@@ -1272,11 +1295,10 @@ func TestRecallCompleted_LastNodeVoterOutsideWindowRejected(t *testing.T) {
 		[]string{recallConn("a", "b")})
 	recallSeedHiInstance(t, q, "inst-term-w", string(enums.InstanceStatusCompleted), time.Now().Add(-8*24*time.Hour))
 	recallSeedHiTask(t, q, "ht-w-b", "inst-term-w", "b", "yi", time.Now().Add(-8*24*time.Hour))
-	svc, _ := newRecallSvc(q, def, nil)
+	svc, eng := newRecallSvc(q, def, nil)
 
-	err := svc.Recall(
-		SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}),
-		Actor{UserID: "yi", TenantID: "t1"}, "inst-term-w", "")
+	err := recallCompletedDirect(t, svc, eng,
+		Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}, "inst-term-w", "")
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrValidation))
 	require.Contains(t, err.Error(), "窗口")
