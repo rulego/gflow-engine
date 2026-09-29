@@ -1112,6 +1112,45 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 			return fmt.Errorf("failed to get tasks for archiving: %w", err)
 		}
 
+		// 4.5 在途任务先作废再归档：原样归档会留下 active 无 end_reason 的历史行，
+		// 已完成实例的时间轴会永久挂着「进行中」节点。终态任务保留原状；作废行把
+		// 原 end_reason 跟在冒号后保留供审计追溯
+		operator := ""
+		if u := GetUserFromCtx(ctx); u != nil {
+			operator = u.UserName
+		}
+		inflightStatuses := map[string]bool{
+			string(enums.TaskStatusCreated):   true,
+			string(enums.TaskStatusWaiting):   true,
+			string(enums.TaskStatusPending):   true,
+			string(enums.TaskStatusAssigned):  true,
+			string(enums.TaskStatusActive):    true,
+			string(enums.TaskStatusDelegated): true,
+			string(enums.TaskStatusSuspended): true,
+		}
+		for _, t := range tasks {
+			if t == nil || !inflightStatuses[t.Status] {
+				continue
+			}
+			voided := constants.EndReasonPrefixForceCompleted
+			if t.EndReason != nil && *t.EndReason != "" {
+				voided += "：" + *t.EndReason
+			}
+			if _, err := tx.WfTask.WithContext(ctx).Where(tx.WfTask.ID.Eq(t.ID)).Updates(map[string]interface{}{
+				tx.WfTask.Status.ColumnName().String():    enums.TaskStatusTerminated,
+				tx.WfTask.EndedAt.ColumnName().String():   &now,
+				tx.WfTask.EndReason.ColumnName().String(): voided,
+				tx.WfTask.UpdatedBy.ColumnName().String(): operator,
+				tx.WfTask.UpdatedAt.ColumnName().String(): &now,
+			}); err != nil {
+				return fmt.Errorf("failed to void in-flight task %s: %w", t.ID, err)
+			}
+			t.Status = string(enums.TaskStatusTerminated)
+			t.EndReason = &voided
+			t.EndedAt = &now
+			t.UpdatedBy = &operator
+		}
+
 		// 5. 归档所有任务到历史表（批量插入，大会签实例免逐条往返）
 		hiTasks := make([]*model.WfHiTask, 0, len(tasks))
 		for _, task := range tasks {

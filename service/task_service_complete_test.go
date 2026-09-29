@@ -19,6 +19,7 @@ import (
 	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/query"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
 )
 
@@ -233,4 +234,42 @@ func TestExplicitUserID_InternalCtxWithRealUserDowngraded(t *testing.T) {
 	task, gerr := taskSvc.GetTask(context.Background(), SystemActor(), "task-authz")
 	require.NoError(t, gerr)
 	require.Equal(t, string(enums.TaskStatusActive), task.Status)
+}
+
+// TestComplete_APIRequiresApprovalIntent userTask 的普通完成不携带审批结果：
+// API 入口必须拒绝——无 end_reason 的完成票会被节点计票判成拒绝并终止实例；
+// 显式布尔 approved 与引擎内部调用不受守卫限制。用 terminated 任务承接放行的
+// 请求（守卫在前、终态校验在后），边界清晰且不触发事务后的链推进。
+func TestComplete_APIRequiresApprovalIntent(t *testing.T) {
+	q := explicitAuthzDB(t)
+	explicitAuthzSeed(t, q)
+	taskSvc := explicitAuthzTaskService(q)
+	// 守卫按 userTask 判定，种子的 task_type 是任意值，改成真实常量并置为终态
+	_, uerr := q.WfTask.WithContext(context.Background()).
+		Where(q.WfTask.ID.Eq("task-authz")).
+		Updates(map[string]interface{}{
+			"task_type": constants.TaskTypeUserTask,
+			"status":    string(enums.TaskStatusTerminated),
+		})
+	require.NoError(t, uerr)
+
+	apiActor := Actor{UserID: "userA", TenantID: "t1"}
+
+	// API 入口 + 无审批结果 → 守卫拒绝
+	err := taskSvc.Complete(context.Background(), apiActor, "task-authz", map[string]interface{}{"comment": "x"})
+	require.Error(t, err, "userTask 普通完成在 API 入口必须拒绝")
+	require.ErrorIs(t, err, ErrValidation)
+
+	// 非布尔 approved 同样视为无审批意图 → 守卫拒绝
+	err = taskSvc.Complete(context.Background(), apiActor, "task-authz",
+		map[string]interface{}{"approved": "false", "comment": "x"})
+	require.ErrorIs(t, err, ErrValidation, "非布尔 approved 不得视为审批意图")
+
+	// API 入口 + 显式布尔 approved → 越过守卫，落到终态任务的 terminated 拒绝
+	err = taskSvc.Complete(context.Background(), apiActor, "task-authz", map[string]interface{}{"approved": true})
+	require.ErrorIs(t, err, ErrTaskTerminated, "显式 approved 应越过守卫")
+
+	// 内部调用 + 无审批结果 → 同样越过守卫（aspect 对系统节点收尾依赖普通 Complete）
+	err = taskSvc.Complete(WithInternalCallingMode(context.Background()), SystemActor(), "task-authz", nil)
+	require.ErrorIs(t, err, ErrTaskTerminated, "内部调用应越过守卫")
 }

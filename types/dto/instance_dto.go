@@ -93,6 +93,10 @@ type ProcessVariableDTO struct {
 type InstanceDetailResponse struct {
 	InstanceID     string `json:"instanceId"`
 	InstanceStatus string `json:"instanceStatus"`
+	// EndReason 实例终态缘由（审批拒绝/申请人撤回前缀等）。前端据此把 terminated
+	// 细化为已拒绝/已撤回——深链直达详情页没有列表行可带，缺失会把已拒绝实例
+	// 显示成「已终止」
+	EndReason string `json:"endReason,omitempty"`
 	// 实例基础信息：详情页头部展示申请人/发起时间/流程名，打印模板取申请编号与申请人
 	Name        string    `json:"name"`        // 实例名称（申请标题）
 	ProcessName string    `json:"processName"` // 流程定义名称

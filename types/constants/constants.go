@@ -107,6 +107,9 @@ const (
 	// EndReasonPrefixReturnedVoid 流程退回/驳回重审时，被清理节点的遗留任务行
 	// 写入 end_reason 的前缀；原 end_reason 跟在冒号后保留供审计追溯
 	EndReasonPrefixReturnedVoid = "审批退回作废"
+	// EndReasonPrefixForceCompleted 管理员强制完成实例时，在途任务归档前写入
+	// end_reason 的前缀；原 end_reason 跟在冒号后保留供审计追溯
+	EndReasonPrefixForceCompleted = "强制完成作废"
 )
 const (
 	TaskTypeUserTask = "userTask"

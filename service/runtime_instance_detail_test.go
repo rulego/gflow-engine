@@ -14,6 +14,9 @@ import (
 
 	"github.com/rulego/gflow-engine/dao"
 	"github.com/rulego/gflow-engine/model"
+	"strings"
+
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/gflow-engine/utils/lock"
@@ -367,4 +370,120 @@ func TestGetProcessInstanceDetail_DraftFallsBackToInstanceVariables(t *testing.T
 	require.NotNil(t, resp.Variables, "草稿详情应回退实例行上的暂存变量")
 	require.Equal(t, "draft-reason-xyz", resp.Variables["reason"])
 	require.Equal(t, "2026-09-10", resp.Variables["startDate"])
+}
+
+// TestGetProcessInstanceDetail_terminatedCarriesEndReason 终态实例的详情响应必须
+// 携带 end_reason：前端把 terminated 细化为已拒绝/已撤回依赖它，深链直达详情页
+// 没有列表行可带，缺失会把已拒绝实例显示成「已终止」
+func TestGetProcessInstanceDetail_terminatedCarriesEndReason(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+
+	// 种子：实例已归档（活表无行，走历史表回退），end_reason 带拒绝前缀
+	require.NoError(t, q.WfHiInstance.Create(&model.WfHiInstance{
+		ID:          "inst-archived",
+		ProcessID:   "proc-1",
+		Name:        "archived_test",
+		Status:      string(enums.InstanceStatusTerminated),
+		EndReason:   secFixStrPtr("审批拒绝：终止流程"),
+		StartUserID: "userA",
+		TenantID:    "t1",
+		CreatedBy:   "userA",
+		CreatedAt:   time.Now(),
+	}))
+
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: &secFixEngine{taskSvc: &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), hiTaskDAO: dao.NewHiTaskDAOWithQuery(q)}},
+	}
+
+	aCtx := SetUserToCtx(ctx, &Actor{UserID: "userA", TenantID: "t1", UserName: "A"})
+	resp, err := rs.GetProcessInstanceDetail(aCtx, Actor{UserID: "userA", TenantID: "t1"}, "inst-archived")
+	require.NoError(t, err)
+	require.Equal(t, string(enums.InstanceStatusTerminated), resp.InstanceStatus)
+	require.Equal(t, "审批拒绝：终止流程", resp.EndReason, "详情响应必须携带终态缘由供前端细化状态文案")
+}
+
+// TestCompleteProcessInstance_VoidsInflightTasks 管理员强制完成实例时，在途任务
+// 必须先作废（terminated + 强制完成作废前缀）再归档：原样归档会留下 active 无
+// end_reason 的历史行，已完成实例的时间轴会永久挂「进行中」节点。已完结任务
+// 保留原审批结果不动
+func TestCompleteProcessInstance_VoidsInflightTasks(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID:          "inst-force",
+		ProcessID:   "proc-1",
+		Name:        "force_test",
+		Status:      string(enums.InstanceStatusActive),
+		StartUserID: "userA",
+		TenantID:    "t1",
+		CreatedBy:   "userA",
+		CreatedAt:   time.Now(),
+	}))
+	// 在途任务：active，无 end_reason
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID:                "task-inflight",
+		ProcessInstanceID: secFixStrPtr("inst-force"),
+		TaskDefKey:        "approve",
+		Name:              "审批",
+		TaskType:          constants.TaskTypeUserTask,
+		Status:            string(enums.TaskStatusActive),
+		Assignee:          secFixStrPtr("userA"),
+		ApprovalType:      string(enums.ApprovalTypeSingle),
+		TenantID:          "t1",
+		CreatedBy:         "system",
+		CreatedAt:         time.Now(),
+	}))
+	// 已完结任务：completed + approved，强制完成不得改写
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID:                "task-done",
+		ProcessInstanceID: secFixStrPtr("inst-force"),
+		TaskDefKey:        "manager",
+		Name:              "经理审批",
+		TaskType:          constants.TaskTypeUserTask,
+		Status:            string(enums.TaskStatusCompleted),
+		Assignee:          secFixStrPtr("userB"),
+		EndReason:         secFixStrPtr("approved"),
+		ApprovalType:      string(enums.ApprovalTypeSingle),
+		TenantID:          "t1",
+		CreatedBy:         "system",
+		CreatedAt:         time.Now(),
+	}))
+
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: &secFixEngine{taskSvc: &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), hiTaskDAO: dao.NewHiTaskDAOWithQuery(q)}},
+	}
+
+	aCtx := SetUserToCtx(ctx, &Actor{UserID: "userA", TenantID: "t1", UserName: "A"})
+	require.NoError(t, rs.CompleteProcessInstance(aCtx, Actor{UserID: "userA", TenantID: "t1"}, "inst-force", "管理员强制完成"))
+
+	// 实例完成并归档
+	hi, err := q.WfHiInstance.WithContext(ctx).Where(q.WfHiInstance.ID.Eq("inst-force")).First()
+	require.NoError(t, err)
+	require.Equal(t, string(enums.InstanceStatusCompleted), hi.Status)
+
+	// 在途任务归档行：terminated + 强制作废前缀
+	inflight, err := q.WfHiTask.WithContext(ctx).Where(q.WfHiTask.ID.Eq("task-inflight")).First()
+	require.NoError(t, err)
+	require.Equal(t, string(enums.TaskStatusTerminated), inflight.Status, "在途任务不得以 active 状态归档")
+	require.NotNil(t, inflight.EndReason)
+	require.True(t, strings.HasPrefix(*inflight.EndReason, "强制完成作废"), "在途任务须带强制作废前缀, got %q", *inflight.EndReason)
+
+	// 已完结任务归档行：原审批结果保留
+	done, err := q.WfHiTask.WithContext(ctx).Where(q.WfHiTask.ID.Eq("task-done")).First()
+	require.NoError(t, err)
+	require.Equal(t, string(enums.TaskStatusCompleted), done.Status)
+	require.Equal(t, "approved", *done.EndReason)
+
+	// 活表已清空
+	cnt, err := q.WfTask.WithContext(ctx).Where(q.WfTask.ProcessInstanceID.Eq("inst-force")).Count()
+	require.NoError(t, err)
+	require.Zero(t, cnt)
 }

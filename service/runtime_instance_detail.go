@@ -275,6 +275,9 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		Upcoming:          upcoming,
 		ActionPermissions: map[string]interface{}{},
 	}
+	if instance.EndReason != nil {
+		resp.EndReason = *instance.EndReason
+	}
 
 	// 7. 基于"状态 × 设计器"二维计算动作权限
 	// 设计器不可控的动作（核心审批 + 任务生命周期），按状态强制开放：
@@ -335,19 +338,23 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		}
 	}
 	// 完成实例的可重开前提：末尾存在已完成的 userTask 节点。末尾完成的是
-	// 系统节点时重入无从谈起，按钮位与写路径同拒，避免可点但必失败
-	completedInstanceHasUserTask := false
-	for _, t := range tasks {
-		if t != nil && t.TaskType == constants.TaskTypeUserTask && t.Status == string(enums.TaskStatusCompleted) {
-			completedInstanceHasUserTask = true
-			break
+	// 系统节点时重入无从谈起，按钮位与写路径同拒，避免可点但必失败。
+	// 终态收回下线中（terminalRecallEnabled）：已完成实例不再下发收回位，
+	// 与 Recall 写路径闸同开同关。
+	if terminalRecallEnabled {
+		completedInstanceHasUserTask := false
+		for _, t := range tasks {
+			if t != nil && t.TaskType == constants.TaskTypeUserTask && t.Status == string(enums.TaskStatusCompleted) {
+				completedInstanceHasUserTask = true
+				break
+			}
 		}
-	}
-	if instance.Status == string(enums.InstanceStatusCompleted) && completedInstanceHasUserTask &&
-		!designerDisabled(starterActionPermissions, "recall") &&
-		(instance.StartUserID == currentUserId || isWorkflowAdmin(&actor) || currentUserIsLastNodeVoter(tasks, currentUserId)) &&
-		withinRecallWindow(starterActionPermissions, instance.EndedAt) {
-		resp.ActionPermissions["recall"] = true
+		if instance.Status == string(enums.InstanceStatusCompleted) && completedInstanceHasUserTask &&
+			!designerDisabled(starterActionPermissions, "recall") &&
+			(instance.StartUserID == currentUserId || isWorkflowAdmin(&actor) || currentUserIsLastNodeVoter(tasks, currentUserId)) &&
+			withinRecallWindow(starterActionPermissions, instance.EndedAt) {
+			resp.ActionPermissions["recall"] = true
+		}
 	}
 
 	// 管理员代审按钮：流程开关未显式关闭（缺省即开，opt-out）+ WorkflowAdmin +

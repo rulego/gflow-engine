@@ -110,6 +110,15 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 		return fmt.Errorf("%w: task", ErrNotFound)
 	}
 
+	// 审批意图守卫：userTask 的普通完成不带审批结果，落库成 completed 而无
+	// end_reason；节点计票只认 end_reason，会把这类完成判成拒绝并终止实例。
+	// API 入口必须显式表达审批意图（approve/reject 或布尔 approved）；
+	// 引擎内部调用（aspect 收尾、自动通过）不受限。
+	if request.ApprovalResult == "" && GetCallingMode(ctx) == CallingModeAPI &&
+		task.TaskType == constants.TaskTypeUserTask {
+		return fmt.Errorf("%w: 审批任务不支持普通完成：请改用 approve/reject，或在 variables 中传布尔 approved 表达审批结果", ErrValidation)
+	}
+
 	// 幂等：任务已经 completed。
 	// 内部调用（aspect 推进、节点回调）直接返回 nil 保持幂等，保证 client retry 安全；
 	// API 路径（用户重复提交 / 并发抢占同一任务）必须返回 ErrTaskAlreadyCompleted，
