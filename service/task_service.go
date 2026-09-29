@@ -260,7 +260,8 @@ type TaskServiceInternal interface {
 	// evaluateApproval 看到历史 approved → TellSuccess，导致目标节点被"静默自动通过"，
 	// 驳回语义被绕过。
 	//
-	// 旧任务归档到 wf_hi_task 保留审计；删出 wf_task 后重入时 getExistingTasks 为空，
+	// 旧任务归档到 wf_hi_task 保留审计，end_reason 统一改写「审批退回作废」标记
+	// （原审批结果跟在冒号后）；删出 wf_task 后重入时 getExistingTasks 为空，
 	// 节点会重新创建任务、重新走审批。仅作用于 (instanceID, taskDefKey)，不波及其它节点。
 	// 正常推进（含 sequential）不走 jump 路径，不受影响。
 	SupersedeNodeTasks(ctx context.Context, instanceID, taskDefKey, reason string) (int, error)

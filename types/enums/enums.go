@@ -107,6 +107,8 @@ const (
 	EndReasonClaimedByOther EndReason = "claimed_by_other"
 	// EndReasonWithdrawn 发起人撤回
 	EndReasonWithdrawn EndReason = "withdrawn"
+	// EndReasonReturned 审批人退回（任务退回上游节点重新办理，退回原因跟在冒号后）
+	EndReasonReturned EndReason = "returned"
 	// EndReasonRecalled 审批人收回（撤销自己已通过的审批，重新待审）
 	EndReasonRecalled EndReason = "recalled"
 )

@@ -239,7 +239,7 @@ func (n *UserTaskNode) jumpToNode(ctx types.RuleContext, msg types.RuleMsg, inst
 	if n.TaskService != nil {
 		region := rejectResetNodes(nodeGraphFromDefinition(ctx), targetNodeID, n.GetSelfId())
 		for _, nodeID := range region {
-			if archived, err := n.TaskService.SupersedeNodeTasks(ctx.GetContext(), instanceID, nodeID, "superseded_by_reject_jump"); err != nil {
+			if archived, err := n.TaskService.SupersedeNodeTasks(ctx.GetContext(), instanceID, nodeID, "驳回后重新审批"); err != nil {
 				// 清理失败不阻断跳转（best-effort），但记录告警便于排查
 				logrus.WithError(err).WithField("node", nodeID).
 					Warn("SupersedeNodeTasks failed before reject jump; stale tasks may cause silent misjudgment")

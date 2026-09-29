@@ -411,6 +411,12 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 		username = u.UserName
 	}
 	now := time.Now()
+	// 退回原因落 end_reason（withdrawn 同款格式），时间线与打印据此带出退回说明
+	endReason := string(enums.EndReasonReturned)
+	if reason != "" {
+		endReason = string(enums.EndReasonReturned) + ": " + reason
+	}
+	task.EndReason = &endReason
 	task.EndedAt = &now
 	task.UpdatedBy = &username
 	task.UpdatedAt = &now
@@ -443,7 +449,7 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 				if t.ID != task.ID {
 					t.Status = string(enums.TaskStatusTerminated)
 					t.EndedAt = &now
-					terminateReason := fmt.Sprintf("流程退回到节点 %s", targetActivityID)
+					terminateReason := fmt.Sprintf("%s：流程退回至节点 %s", constants.EndReasonPrefixReturnedVoid, targetActivityID)
 					t.EndReason = &terminateReason
 					t.UpdatedBy = &username
 					t.UpdatedAt = &now
@@ -461,34 +467,14 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 		}
 	}
 
-	// 清理目标节点的所有任务
-	if task.ProcessInstanceID != nil {
-		targetQuery := &dto.TaskQuery{
-			InstanceID: task.ProcessInstanceID,
-			TaskDefKey: targetActivityID,
-		}
-		if targetTasks, terr := listAllTasks(ctx, taskDAO, targetQuery); terr == nil {
-			for _, t := range targetTasks {
-				if herr := hiTaskDAO.Create(ctx, taskToHiTask(t)); herr != nil {
-					logrus.Warnf("failed to archive task %s before return: %v", t.ID, herr)
-				}
-				_ = taskDAO.Delete(ctx, t.ID)
-			}
-		}
-	}
-
-	// 清理重执行区域内其余节点的遗留任务（多跳回退）：中间节点的旧票不清，
-	// 流程重跑经过时会被旧 Completed 任务判为已完成而静默跳过。target 节点已在
-	// 上方清理；当前节点在上方只剩已完成旧票（操作人票与在途兄弟票已随
-	// returned/terminated 归档删除）——顺序审批/会签节点的旧票也必须清，否则
-	// 重入时按旧进度续跑而非整节点重跑。清理失败不阻断跳转（best-effort），
-	// 与驳回回跳同口径。
+	// 清理重执行区域（目标节点到当前节点）的全部遗留任务：目标与中间节点的旧票
+	// 不清，流程重跑经过时会被旧 Completed 任务判为已完成而静默跳过；当前节点
+	// 此时只剩已完成旧票（操作人票与在途兄弟票已随 returned/terminated 归档删除），
+	// 顺序审批/会签节点的旧票也必须清，否则重入时按旧进度续跑而非整节点重跑。
+	// 清理失败不阻断跳转（best-effort），与驳回回跳同口径。
 	if task.ProcessInstanceID != nil {
 		for _, nodeID := range returnRegionNodes(graph, targetActivityID, task.TaskDefKey) {
-			if nodeID == targetActivityID {
-				continue
-			}
-			if _, err := s.supersedeNodeTasksInternal(ctx, scope, *task.ProcessInstanceID, nodeID, "superseded_by_return_jump"); err != nil {
+			if _, err := s.supersedeNodeTasksInternal(ctx, scope, *task.ProcessInstanceID, nodeID, ""); err != nil {
 				logrus.WithError(err).WithField("node", nodeID).
 					Warn("supersede stale tasks before return jump failed; stale tasks may cause silent misjudgment")
 			}
@@ -563,9 +549,11 @@ func (s *TaskServiceImpl) SupersedeNodeTasks(ctx context.Context, instanceID, ta
 }
 
 // supersedeNodeTasksInternal 在已持有实例行锁的事务内执行 SupersedeNodeTasks 实际逻辑。
-// 对命中的每个任务：写 wf_hi_task 归档（EndReason 标记 superseded）→ 从 wf_task 删除。
-// 单个任务归档/删除失败只记录告警并跳过（best-effort），不中断整体——与 returnInternal
-// 的 sibling 清理行为一致，避免一个坏行让整个驳回回跳失败。
+// 对命中的每个任务：status 落 terminated（与同节点 sibling 终止路径同口径，历史表
+// 按 status 维度的消费不得把作废票算成有效在途/已审）→ end_reason 改写作废标记
+// （原审批结果跟在冒号后保留供审计追溯，无原值时补充调用方说明）→ 写 wf_hi_task
+// 归档 → 从 wf_task 删除。单任务失败只记录告警并跳过（best-effort），不中断整体
+// ——一个坏行不应让整次回跳失败。
 func (s *TaskServiceImpl) supersedeNodeTasksInternal(ctx context.Context, scope *InstanceScope, instanceID, taskDefKey, reason string) (int, error) {
 	taskDAO := scope.Tasks()
 	hiTaskDAO := scope.HiTasks()
@@ -582,14 +570,14 @@ func (s *TaskServiceImpl) supersedeNodeTasksInternal(ctx context.Context, scope 
 	now := time.Now()
 	archived := 0
 	for _, t := range tasks {
-		// 记录 superseded 归档原因（若已有 EndReason 则保留原审批结果，便于审计区分）
-		if t.EndReason == nil || *t.EndReason == "" {
-			supersededReason := reason
-			if supersededReason == "" {
-				supersededReason = "superseded_by_reject_jump"
-			}
-			t.EndReason = &supersededReason
+		voided := constants.EndReasonPrefixReturnedVoid
+		if t.EndReason != nil && *t.EndReason != "" {
+			voided += "：" + *t.EndReason
+		} else if reason != "" {
+			voided += "：" + reason
 		}
+		t.Status = string(enums.TaskStatusTerminated)
+		t.EndReason = &voided
 		if t.EndedAt == nil {
 			t.EndedAt = &now
 		}

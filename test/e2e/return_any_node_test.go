@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 	"github.com/rulego/gflow-engine/types/enums"
 )
 
-// 回退目标放宽为"任意已完成上游节点"的回归用例集：
+// 回退目标为任意已完成上游节点的用例集：
 //   - 多跳回退后中间节点旧票必须清理，重跑不得被旧 Completed 任务静默跳过；
 //   - 目标校验（非上游/不存在/自身/非办理人）与并行网关守卫；
 //   - 详情接口 returnableNodes 列表与写路径同口径。
@@ -46,6 +47,7 @@ func (e *e2eTestEnv) deployLinearReturnProcess(processKey, name string, approver
 }
 
 // deployForkReturnProcess 部署 fork → [a1(→a2), b] → join → c → end，所有审批节点开启回退。
+// a2 为空时分支 A 只有 a1 一级，否则 a1 → a2 两级。
 func (e *e2eTestEnv) deployForkReturnProcess(processKey string, a1, a2, b, c string) {
 	e.t.Helper()
 	userTask := func(id, name, assignee string) map[string]interface{} {
@@ -58,6 +60,14 @@ func (e *e2eTestEnv) deployForkReturnProcess(processKey string, a1, a2, b, c str
 			"additionalInfo": map[string]interface{}{"actionPermissions": map[string]interface{}{"return": true}},
 		}
 	}
+	conn := func(from, to, typ string) map[string]interface{} {
+		return map[string]interface{}{"fromId": from, "toId": to, "type": typ}
+	}
+	// 分支 A 出边：有 a2 时 a1 → a2 → join，否则 a1 直达 join
+	branchAConns := []map[string]interface{}{
+		conn("task_a1", "join1", "Success"),
+		conn("task_a1", "join1", "Failure"),
+	}
 	nodes := []map[string]interface{}{
 		{"id": "fork1", "type": "fork", "name": "Parallel Fork"},
 		userTask("task_a1", "Branch A Step 1", a1),
@@ -69,34 +79,24 @@ func (e *e2eTestEnv) deployForkReturnProcess(processKey string, a1, a2, b, c str
 		userTask("task_c", "Post Join", c),
 		{"id": "end", "type": "end", "name": "End"},
 	}
-	conns := []map[string]interface{}{
-		{"fromId": "fork1", "toId": "task_a1", "type": "Success"},
-		{"fromId": "fork1", "toId": "task_b", "type": "Success"},
-		{"fromId": "task_a1", "toId": "join1", "type": "Success"},
-		{"fromId": "task_a1", "toId": "join1", "type": "Failure"},
-		{"fromId": "task_b", "toId": "join1", "type": "Success"},
-		{"fromId": "task_b", "toId": "join1", "type": "Failure"},
-		{"fromId": "join1", "toId": "task_c", "type": "Success"},
-		{"fromId": "task_c", "toId": "end", "type": "Success"},
-		{"fromId": "task_c", "toId": "end", "type": "Failure"},
-	}
 	if a2 != "" {
-		nodes = append([]map[string]interface{}{nodes[0], nodes[1],
-			userTask("task_a2", "Branch A Step 2", a2)}, nodes[2:]...)
-		conns = []map[string]interface{}{
-			{"fromId": "fork1", "toId": "task_a1", "type": "Success"},
-			{"fromId": "fork1", "toId": "task_b", "type": "Success"},
-			{"fromId": "task_a1", "toId": "task_a2", "type": "Success"},
-			{"fromId": "task_a1", "toId": "task_a2", "type": "Failure"},
-			{"fromId": "task_a2", "toId": "join1", "type": "Success"},
-			{"fromId": "task_a2", "toId": "join1", "type": "Failure"},
-			{"fromId": "task_b", "toId": "join1", "type": "Success"},
-			{"fromId": "task_b", "toId": "join1", "type": "Failure"},
-			{"fromId": "join1", "toId": "task_c", "type": "Success"},
-			{"fromId": "task_c", "toId": "end", "type": "Success"},
-			{"fromId": "task_c", "toId": "end", "type": "Failure"},
+		nodes = append(nodes, userTask("task_a2", "Branch A Step 2", a2))
+		branchAConns = []map[string]interface{}{
+			conn("task_a1", "task_a2", "Success"),
+			conn("task_a1", "task_a2", "Failure"),
+			conn("task_a2", "join1", "Success"),
+			conn("task_a2", "join1", "Failure"),
 		}
 	}
+	conns := append([]map[string]interface{}{
+		conn("fork1", "task_a1", "Success"),
+		conn("fork1", "task_b", "Success"),
+		conn("task_b", "join1", "Success"),
+		conn("task_b", "join1", "Failure"),
+		conn("join1", "task_c", "Success"),
+		conn("task_c", "end", "Success"),
+		conn("task_c", "end", "Failure"),
+	}, branchAConns...)
 	e.deployReturnDef(processKey, processKey, nodes, conns)
 }
 
@@ -172,6 +172,15 @@ func (e *e2eTestEnv) hiTaskRowsByDefKey(instanceID, defKey string) int {
 	return int(count)
 }
 
+// hiTaskEndReasons 取历史表中某节点全部归档行的 end_reason。
+func (e *e2eTestEnv) hiTaskEndReasons(instanceID, defKey string) []string {
+	e.t.Helper()
+	var reasons []string
+	require.NoError(e.t, e.db.Raw("SELECT end_reason FROM wf_hi_task WHERE process_instance_id = ? AND task_def_key = ?",
+		instanceID, defKey).Scan(&reasons).Error)
+	return reasons
+}
+
 // 回退可直接退到任意已完成的上游节点（跨过中间节点）：中间节点旧票必须清理，
 // 流程重跑经过时不得被旧 Completed 任务静默跳过。
 func TestE2E_Return_MultiHopToFirstNode(t *testing.T) {
@@ -195,10 +204,21 @@ func TestE2E_Return_MultiHopToFirstNode(t *testing.T) {
 	err := env.engine.GetTaskService().Return(env.userCtxAs("user_c"), service.Actor{UserID: "user_c", TenantID: e2eTenantID}, tasksC[0].ID, "node_a", "材料不齐退回发起环节")
 	require.NoError(t, err, "multi-hop return should succeed")
 
-	// B 的旧票已从运行表清理并归档
+	// B 的旧票已从运行表清理并归档，end_reason 带作废标记（原审批结果保留在后）
 	require.Eventually(t, func() bool { return env.taskRowsByDefKey(instanceID, "node_b") == 0 },
 		2*time.Second, 50*time.Millisecond, "node_b stale tasks must be superseded out of runtime table")
 	assert.GreaterOrEqual(t, env.hiTaskRowsByDefKey(instanceID, "node_b"), 1, "node_b old task must be archived")
+	for _, r := range env.hiTaskEndReasons(instanceID, "node_b") {
+		assert.True(t, strings.HasPrefix(r, "审批退回作废"), "node_b archived row should be voided, got %q", r)
+	}
+	// 目标节点上一轮的旧票同样作废
+	for _, r := range env.hiTaskEndReasons(instanceID, "node_a") {
+		assert.True(t, strings.HasPrefix(r, "审批退回作废"), "node_a archived row should be voided, got %q", r)
+	}
+	// 操作人的退回行带退回原因
+	for _, r := range env.hiTaskEndReasons(instanceID, "node_c") {
+		assert.True(t, strings.HasPrefix(r, "returned"), "returned task row should carry end_reason, got %q", r)
+	}
 	require.Eventually(t, func() bool { return len(env.activeTasksFor(instanceID, "user_a")) > 0 },
 		3*time.Second, 50*time.Millisecond, "node_a task must be recreated after multi-hop return")
 
@@ -323,11 +343,18 @@ func TestE2E_Return_SequentialNodeRestartsFromFirstStep(t *testing.T) {
 	tasksB2 := env.activeTasksFor(instanceID, "user_b2")
 	require.Len(t, tasksB2, 1)
 
-	// b2 退回 node_a：此前只能"退回本节点"，现在必须能退到上一外部节点
+	// b2 退回 node_a：退到上一外部节点而非本节点自重启
 	err := env.engine.GetTaskService().Return(env.userCtxAs("user_b2"), service.Actor{UserID: "user_b2", TenantID: e2eTenantID}, tasksB2[0].ID, "node_a", "前置环节材料需修正")
 	require.NoError(t, err, "sequential step2 return to previous external node should succeed")
 	require.Eventually(t, func() bool { return env.taskRowsByDefKey(instanceID, "node_b") == 0 },
 		2*time.Second, 50*time.Millisecond, "sequential node stale rows (b1 completed vote) must be cleaned")
+	voidedCount := 0
+	for _, r := range env.hiTaskEndReasons(instanceID, "node_b") {
+		if strings.HasPrefix(r, "审批退回作废") {
+			voidedCount++
+		}
+	}
+	assert.GreaterOrEqual(t, voidedCount, 1, "b1 的旧票应带作废标记")
 	require.Eventually(t, func() bool { return len(env.activeTasksFor(instanceID, "user_a")) > 0 },
 		3*time.Second, 50*time.Millisecond, "node_a task recreated")
 

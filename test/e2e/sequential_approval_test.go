@@ -1691,14 +1691,15 @@ func TestE2E_RejectToPrev_ThenApproveCompletesRoundTrip(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 测试：supersede 归档保留审计——旧任务的原始审批结果 EndReason 不被覆盖。
+// 测试：supersede 归档保留审计——旧任务 end_reason 改写作废标记，原审批结果跟在
+// 冒号后保留。
 //
-// supersedeNodeTasksInternal 仅在 EndReason 为空时填 superseded 标记；已有审批结果
-// （approved/rejected）的 Completed 任务归档时应保留原 EndReason，供审计区分
-// "A 当初是通过的、被驳回回跳重置"这一历史。
+// supersedeNodeTasksInternal 给归档行统一写「审批退回作废」前缀，原 EndReason
+// （approved/rejected）跟在冒号后：审计仍能区分"A 当初是通过的、被驳回回跳重置"，
+// 时间线不再以绿色「已通过」冒充有效审批。
 // ---------------------------------------------------------------------------
 
-func TestE2E_RejectToPrev_ArchivedTaskPreservesOriginalEndReason(t *testing.T) {
+func TestE2E_RejectToPrev_ArchivedTaskVoidedWithOriginalEndReason(t *testing.T) {
 	env := newE2EEnv(t)
 	env.deployLinearTwoStepProcess("reject_audit_e2e", "Reject Audit", "a_user", "b_user", "toPrev")
 
@@ -1710,15 +1711,15 @@ func TestE2E_RejectToPrev_ArchivedTaskPreservesOriginalEndReason(t *testing.T) {
 	env.approveAs(a1.ID, "a_user", "a 通过")
 	require.Eventually(t, func() bool { return len(env.activeTasksFor(instanceID, "b_user")) > 0 }, 2*time.Second, 50*time.Millisecond)
 
-	// B 驳回 → A 的旧任务应被 supersede 归档，且 EndReason 保持 approved
+	// B 驳回 → A 的旧任务被 supersede 归档，end_reason 改写作废标记并保留原值
 	env.rejectAs(env.activeTasksFor(instanceID, "b_user")[0].ID, "b_user", "b 驳回")
 	require.Eventually(t, func() bool { return len(env.activeTasksFor(instanceID, "a_user")) > 0 }, 2*time.Second, 50*time.Millisecond,
 		"A should regenerate")
 
-	// 查 wf_hi_task：A（first_task）的归档行里，原 A 任务（a1.ID）的 end_reason 应仍是 approved
+	// 查 wf_hi_task：原 A 任务（a1.ID）归档行的 end_reason 应为作废标记+原审批结果
 	var endReason string
 	require.NoError(t, env.db.Raw(
 		"SELECT end_reason FROM wf_hi_task WHERE id = ?", a1.ID).Scan(&endReason).Error)
-	assert.Equal(t, string(enums.ApprovalResultApproved), endReason,
-		"archived A task must preserve original EndReason=approved, not be overwritten by superseded marker")
+	assert.Equal(t, "审批退回作废："+string(enums.ApprovalResultApproved), endReason,
+		"archived A task must carry the voided marker with original EndReason preserved after it")
 }
