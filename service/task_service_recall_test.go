@@ -706,7 +706,7 @@ func TestRecall_NodeTypeClassification(t *testing.T) {
 	}
 }
 
-// ---- 终态收回（已完成实例窗口期内发起人/管理员整单重开） ----
+// ---- 终态收回（已完成实例窗口期内末节点审批人整单重开） ----
 
 // recallSeedHiInstance 造已完成归档实例（终端收回的前置形态：活表无行）。
 func recallSeedHiInstance(t *testing.T, q *query.Query, id, status string, endedAt time.Time) {
@@ -744,9 +744,8 @@ func recallSeedHiTask(t *testing.T, q *query.Query, id, instID, defKey, assignee
 	require.NoError(t, q.WfHiTask.Create(row))
 }
 
-// recallCompletedDirect 绕过 Recall 入口的终态下线闸直驱 recallCompleted：
-// 下线只封入口，重开/资格/窗口逻辑的回归覆盖经此保留，
-// 入口闸本身的行为由 TestRecall_TerminalRecallDisabled 固化。
+// recallCompletedDirect 直驱 recallCompleted：绕过 Recall 入口与总闸，
+// 单元级覆盖重开/资格/窗口逻辑；入口与总闸的行为由 TestRecall_TerminalRecallEntry 固化。
 func recallCompletedDirect(t *testing.T, svc *TaskServiceImpl, eng *recallEngineDouble, actor Actor, instanceID, reason string) error {
 	t.Helper()
 	ctx := SetUserToCtx(context.Background(), &actor)
@@ -756,27 +755,42 @@ func recallCompletedDirect(t *testing.T, svc *TaskServiceImpl, eng *recallEngine
 	return svc.recallCompleted(ctx, actor, inst, instanceID, reason)
 }
 
-// 终态收回下线闸：已完成实例的 Recall 入口一律拒绝（按钮位同闸于
-// GetProcessInstanceDetail 的 terminalRecallEnabled），不再依赖资格与窗口。
-func TestRecall_TerminalRecallDisabled(t *testing.T) {
+// 总闸开启时终态收回经 Recall 入口可达：发起人无资格被拒，末节点审批人整单重开。
+func TestRecall_TerminalRecallEntry(t *testing.T) {
 	q := secFixDB(t)
 	def := recallDefinition(true,
 		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
 		[]string{recallConn("a", "b")})
-	recallSeedHiInstance(t, q, "inst-term-off", string(enums.InstanceStatusCompleted), time.Now().Add(-24*time.Hour))
-	recallSeedHiTask(t, q, "ht-off-b", "inst-term-off", "b", "yi", time.Now().Add(-22*time.Hour))
-	svc, _ := newRecallSvc(q, def, nil)
+	recallSeedHiInstance(t, q, "inst-term-entry", string(enums.InstanceStatusCompleted), time.Now().Add(-24*time.Hour))
+	recallSeedHiTask(t, q, "ht-entry-b", "inst-term-entry", "b", "yi", time.Now().Add(-22*time.Hour))
+	svc, eng := newRecallSvc(q, def, nil)
 
+	// 发起人无终态收回资格：拒绝后实例保持归档态，无任何副作用
 	err := svc.Recall(
 		SetUserToCtx(context.Background(), &Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}),
-		Actor{UserID: "starter", TenantID: "t1"}, "inst-term-off", "")
+		Actor{UserID: "starter", TenantID: "t1"}, "inst-term-entry", "")
 	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrValidation))
-	require.Contains(t, err.Error(), "已完成")
+	require.True(t, errors.Is(err, ErrPermissionDenied))
+	require.Contains(t, err.Error(), "仅末节点审批人")
+	hiLeft, err := q.WfHiInstance.WithContext(context.Background()).Where(q.WfHiInstance.ID.Eq("inst-term-entry")).Count()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, hiLeft, "被拒后归档行应保留")
+	alive, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term-entry")).Count()
+	require.NoError(t, err)
+	require.EqualValues(t, 0, alive, "被拒后不应复活运行行")
+
+	// 末节点审批人经同一入口完成整单重开
+	require.NoError(t, svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}),
+		Actor{UserID: "yi", TenantID: "t1"}, "inst-term-entry", "批快了，取回重审"))
+	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term-entry")).First()
+	require.NoError(t, err, "实例应回插运行表")
+	require.Equal(t, string(enums.InstanceStatusActive), revived.Status)
+	require.Equal(t, "b", eng.internal.execNextNode, "应重入末节点 b")
 }
 
-// 发起人在窗口期内收回已完成实例：实例复活为运行中、归档行移除。
-func TestRecallCompleted_ByStarterReopensInstance(t *testing.T) {
+// 发起人无终态收回资格：窗口期内也被拒，实例保持归档态。
+func TestRecallCompleted_StarterRejected(t *testing.T) {
 	q := secFixDB(t)
 	def := recallDefinition(true,
 		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
@@ -786,27 +800,19 @@ func TestRecallCompleted_ByStarterReopensInstance(t *testing.T) {
 	recallSeedHiTask(t, q, "ht-b", "inst-term", "b", "yi", time.Now().Add(-22*time.Hour))
 	svc, eng := newRecallSvc(q, def, nil)
 
-	require.NoError(t, recallCompletedDirect(t, svc, eng,
-		Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-term", "批错了，整单重开"))
+	err := recallCompletedDirect(t, svc, eng,
+		Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-term", "批错了，整单重开")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrPermissionDenied))
+	require.Contains(t, err.Error(), "仅末节点审批人")
 
-	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term")).First()
-	require.NoError(t, err, "实例应回插运行表")
-	require.Equal(t, string(enums.InstanceStatusActive), revived.Status)
-	require.Nil(t, revived.EndedAt)
-	hiGone, err := q.WfHiInstance.WithContext(context.Background()).Where(q.WfHiInstance.ID.Eq("inst-term")).Count()
+	alive, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term")).Count()
 	require.NoError(t, err)
-	require.EqualValues(t, 0, hiGone, "归档行应移除")
-	require.Equal(t, "b", eng.internal.execNextNode, "应重入末节点 b")
-
-	// 时间轴轨迹：收回落一条 recall 记录行（操作人在节点名，原因在意见）
-	var markers []model.WfHiTask
-	require.NoError(t, q.WfHiTask.WithContext(context.Background()).
-		Where(q.WfHiTask.ProcessInstanceID.Eq("inst-term")).
-		Where(q.WfHiTask.TaskType.Eq(constants.TaskTypeRecall)).Scan(&markers))
-	require.Len(t, markers, 1, "应落一条收回轨迹记录行")
-	require.Contains(t, markers[0].Name, "发起人")
-	require.NotNil(t, markers[0].Comment)
-	require.Equal(t, "批错了，整单重开", *markers[0].Comment)
+	require.EqualValues(t, 0, alive, "实例不应复活")
+	hiLeft, err := q.WfHiInstance.WithContext(context.Background()).Where(q.WfHiInstance.ID.Eq("inst-term")).Count()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, hiLeft, "归档行应保留")
+	require.Empty(t, eng.internal.execNextNode, "不应发生末节点重入")
 }
 
 // 终态收回复活实例剥离上一轮的引擎保留标记，收回次数照常累加。
@@ -833,7 +839,7 @@ func TestRecallCompleted_InstanceVarsStripReservedMarks(t *testing.T) {
 	svc, eng := newRecallSvc(q, def, nil)
 
 	require.NoError(t, recallCompletedDirect(t, svc, eng,
-		Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-term-marks", "批错了，整单重开"))
+		Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}, "inst-term-marks", "批错了，整单重开"))
 
 	revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-term-marks")).First()
 	require.NoError(t, err, "实例应回插运行表")
@@ -858,7 +864,7 @@ func TestRecallCompleted_Guards(t *testing.T) {
 		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
 		[]string{recallConn("a", "b")})
 
-	t.Run("非发起人且非管理员且非末节点审批人", func(t *testing.T) {
+	t.Run("非末节点审批人", func(t *testing.T) {
 		q := secFixDB(t)
 		recallSeedHiInstance(t, q, "inst-g1", string(enums.InstanceStatusCompleted), time.Now().Add(-time.Hour))
 		recallSeedHiTask(t, q, "ht-g1", "inst-g1", "b", "yi", time.Now().Add(-30*time.Minute))
@@ -867,7 +873,7 @@ func TestRecallCompleted_Guards(t *testing.T) {
 			Actor{UserID: "jia", TenantID: "t1", UserName: "甲"}, "inst-g1", "")
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrPermissionDenied))
-		require.Contains(t, err.Error(), "发起人、管理员或末节点审批人")
+		require.Contains(t, err.Error(), "仅末节点审批人")
 	})
 
 	t.Run("超过窗口", func(t *testing.T) {
@@ -876,7 +882,7 @@ func TestRecallCompleted_Guards(t *testing.T) {
 		recallSeedHiTask(t, q, "ht-g2", "inst-g2", "b", "yi", time.Now().Add(-8*24*time.Hour))
 		svc, eng := newRecallSvc(q, def, nil)
 		err := recallCompletedDirect(t, svc, eng,
-			Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-g2", "")
+			Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}, "inst-g2", "")
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrValidation))
 		require.Contains(t, err.Error(), "窗口")
@@ -888,22 +894,25 @@ func TestRecallCompleted_Guards(t *testing.T) {
 		recallSeedHiTask(t, q, "ht-g3", "inst-g3", "b", "yi", time.Now().Add(-30*time.Minute))
 		svc, eng := newRecallSvc(q, defOff, nil)
 		err := recallCompletedDirect(t, svc, eng,
-			Actor{UserID: "starter", TenantID: "t1", UserName: "发起人"}, "inst-g3", "")
+			Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}, "inst-g3", "")
 		require.Error(t, err)
 		require.True(t, errors.Is(err, ErrPermissionDenied))
 	})
 
-	t.Run("管理员可收", func(t *testing.T) {
+	t.Run("管理员无收回资格", func(t *testing.T) {
 		q := secFixDB(t)
 		recallSeedHiInstance(t, q, "inst-g4", string(enums.InstanceStatusCompleted), time.Now().Add(-time.Hour))
 		recallSeedHiTask(t, q, "ht-g4", "inst-g4", "b", "yi", time.Now().Add(-30*time.Minute))
 		svc, eng := newRecallSvc(q, def, nil)
-		require.NoError(t, recallCompletedDirect(t, svc, eng,
-			Actor{UserID: "admin", TenantID: "t1", UserName: "管理员", WorkflowAdmin: true}, "inst-g4", ""))
-		revived, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-g4")).First()
+		err := recallCompletedDirect(t, svc, eng,
+			Actor{UserID: "admin", TenantID: "t1", UserName: "管理员", WorkflowAdmin: true}, "inst-g4", "")
+		require.Error(t, err)
+		require.True(t, errors.Is(err, ErrPermissionDenied))
+		require.Contains(t, err.Error(), "仅末节点审批人")
+		alive, err := q.WfInstance.WithContext(context.Background()).Where(q.WfInstance.ID.Eq("inst-g4")).Count()
 		require.NoError(t, err)
-		require.Equal(t, string(enums.InstanceStatusActive), revived.Status)
-		require.Equal(t, "b", eng.internal.execNextNode, "管理员收回同样重入末节点")
+		require.EqualValues(t, 0, alive, "实例不应复活")
+		require.Empty(t, eng.internal.execNextNode, "不应发生末节点重入")
 	})
 }
 
@@ -1249,7 +1258,7 @@ func TestRecall_Chained_AfterDownstreamRecall_UpstreamStillRecallable(t *testing
 }
 
 // 末节点审批人窗口期内取回自己审完的已完成实例：实例复活、重入末节点、
-// 新待办落回末节点审批人（与发起人触发同一套机制）。
+// 新待办落回末节点审批人。
 func TestRecallCompleted_ByLastNodeVoterReopens(t *testing.T) {
 	q := secFixDB(t)
 	def := recallDefinition(true,
@@ -1267,6 +1276,16 @@ func TestRecallCompleted_ByLastNodeVoterReopens(t *testing.T) {
 	require.NoError(t, err, "实例应回插运行表")
 	require.Equal(t, string(enums.InstanceStatusActive), revived.Status)
 	require.Equal(t, "b", eng.internal.execNextNode, "应重入末节点 b，新待办落回末节点审批人")
+
+	// 时间轴轨迹：收回落一条 recall 记录行（操作人在节点名，原因在意见）
+	var markers []model.WfHiTask
+	require.NoError(t, q.WfHiTask.WithContext(context.Background()).
+		Where(q.WfHiTask.ProcessInstanceID.Eq("inst-term-v")).
+		Where(q.WfHiTask.TaskType.Eq(constants.TaskTypeRecall)).Scan(&markers))
+	require.Len(t, markers, 1, "应落一条收回轨迹记录行")
+	require.Contains(t, markers[0].Name, "乙")
+	require.NotNil(t, markers[0].Comment)
+	require.Equal(t, "批快了，取回重审", *markers[0].Comment)
 }
 
 // 非末节点审批人（只在更早节点投过票）不属于终态收回的资格范围：

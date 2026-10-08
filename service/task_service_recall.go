@@ -38,15 +38,13 @@ var recallTransparentNodeTypes = map[string]bool{
 	"startTask":                     true,
 }
 
-// terminalRecallEnabled 终态收回（已完成实例整单重开）总闸：暂置 false 下线——
-// 已完成单按主流口径保持不可逆，发起人反悔走「重新发起」。下线只封入口：
-// 资格/窗口/重开逻辑原样保留在 recallCompleted 及其用例（直驱绕过本闸），
-// 详情按钮位同闸于 GetProcessInstanceDetail，恢复时改回 true 即全量生效。
-const terminalRecallEnabled = false
+// terminalRecallEnabled 终态收回（已完成实例整单重开）总闸：置 false 时 Recall
+// 入口对已完成实例直接拒绝，详情也不再下发收回按钮位。
+const terminalRecallEnabled = true
 
 // Recall 收回（审批人撤销自己最近一条已通过的审批，重建自己的待审任务）。
-// 已完成(通过)实例原走 recallCompleted（窗口期内发起人/管理员/末节点审批人
-// 整单重开），该通道经 terminalRecallEnabled 下线中。
+// 已完成(通过)实例走 recallCompleted（窗口期内末节点审批人整单重开），
+// 受 terminalRecallEnabled 总闸控制。
 func (s *TaskServiceImpl) Recall(ctx context.Context, actor Actor, instanceID, reason string) error {
 	ctx = bindActor(ctx, actor)
 	if instanceID == "" || actor.UserID == "" {
@@ -77,12 +75,11 @@ func (s *TaskServiceImpl) Recall(ctx context.Context, actor Actor, instanceID, r
 	case string(enums.InstanceStatusSuspended):
 		return fmt.Errorf("%w: 流程已挂起，无法收回", ErrValidation)
 	case string(enums.InstanceStatusCompleted):
-		// 终态收回下线中：已完成实例保持不可逆，与在途停泊校验前的各类
-		// 拒绝同口径直接打回，不进归档表查询
+		// 总闸关闭时已完成实例不可收回，直接拒绝，不进归档表查询
 		if !terminalRecallEnabled {
 			return fmt.Errorf("%w: 已完成的申请不支持收回", ErrValidation)
 		}
-		// 终态收回：实例已归档，窗口期内发起人/管理员/末节点审批人整单重开
+		// 终态收回：实例已归档，窗口期内末节点审批人整单重开
 		return s.recallCompleted(ctx, actor, inst, instanceID, reason)
 	default:
 		return fmt.Errorf("%w: 流程已结束，无法收回", ErrValidation)
@@ -121,12 +118,10 @@ func recallWindowDays(ap map[string]interface{}) int {
 	return defaultRecallWindowDays
 }
 
-// recallCompleted 终态收回：已完成(通过)实例在窗口期内由发起人、管理员或末节点
-// 审批人整单重开——实例复活为运行中，末节点经 ExecuteNext 重入按审批形态重建
-// 任务、整轮重审。发起人触发是"发起人反悔"主场景；末节点审批人触发则是取回
-// 自己审完的单，重开后新待办落回末节点审批人。不做"只撤自己一票"的变体：实例已归档，
-// 逐票回迁的复杂度换不来场景收益，末节点整轮重审语义更直白。
-// 当前经 Recall 入口的通道下线中（terminalRecallEnabled），仅测试直驱可达。
+// recallCompleted 终态收回：已完成(通过)实例在窗口期内由末节点审批人整单
+// 重开——实例复活为运行中，末节点重入按审批形态重建任务、整轮重审，新待办
+// 落回末节点审批人（会签末节点为其全体投票人）；发起人与管理员无资格。
+// 实例已归档，只做整单重开，不做逐票回迁。
 func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *model.WfInstance, instanceID, reason string) error {
 	ap, _, err := resolveProcessActionPermissions(ctx, s.workflowEngine, hi.ProcessID)
 	if err != nil {
@@ -147,12 +142,11 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 		return fmt.Errorf("%w: 实例无可重开的审批节点", ErrValidation)
 	}
 
-	// 资格：发起人/管理员整单重开；末节点审批人在窗口期内可取回自己审完的单，
-	// 重开后的新待办落回末节点审批人（会签末节点为其全体投票人）。放在末节点
-	// 解析之后，资格认定依赖末节点投票人。
+	// 资格：仅末节点审批人（会签末节点为其全体投票人）；发起人与管理员无资格。
+	// 末节点解析在前，资格认定依赖其投票人结果。
 	userID := actor.UserID
-	if hi.StartUserID != userID && !isWorkflowAdmin(&actor) && !slices.Contains(voters, userID) {
-		return fmt.Errorf("%w: 已完成的审批仅发起人、管理员或末节点审批人可收回", ErrPermissionDenied)
+	if !slices.Contains(voters, userID) {
+		return fmt.Errorf("%w: 已完成的审批仅末节点审批人可收回", ErrPermissionDenied)
 	}
 
 	// 重入通道必须先确认可用:复活成功而重入失败会留下 active 但零任务的僵尸实例

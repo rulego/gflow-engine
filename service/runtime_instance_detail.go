@@ -327,9 +327,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		}
 	}
 
-	// 审批人收回:运行中实例=本人存在可收回记录且守卫通过;已完成实例=发起人、
-	// 管理员或末节点审批人在窗口期内可整单重开(末节点重审)。守卫与 Recall
-	// 写路径同口径。
+	// 审批人收回:运行中实例=本人存在可收回记录且守卫通过;已完成实例=末节点
+	// 审批人在窗口期内可整单重开(末节点重审)。守卫与 Recall 写路径同口径。
 	if instance.Status == string(enums.InstanceStatusActive) && !designerDisabled(starterActionPermissions, "recall") {
 		if t := findRecallableCompletedTask(tasks, currentUserId); t != nil {
 			if evaluateRecallGuard(tasks, t, ruleChain) == nil {
@@ -339,8 +338,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 	}
 	// 完成实例的可重开前提：末尾存在已完成的 userTask 节点。末尾完成的是
 	// 系统节点时重入无从谈起，按钮位与写路径同拒，避免可点但必失败。
-	// 终态收回下线中（terminalRecallEnabled）：已完成实例不再下发收回位，
-	// 与 Recall 写路径闸同开同关。
+	// terminalRecallEnabled 总闸关闭时已完成实例不下发收回位，与写路径同开同关。
 	if terminalRecallEnabled {
 		completedInstanceHasUserTask := false
 		for _, t := range tasks {
@@ -351,7 +349,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		}
 		if instance.Status == string(enums.InstanceStatusCompleted) && completedInstanceHasUserTask &&
 			!designerDisabled(starterActionPermissions, "recall") &&
-			(instance.StartUserID == currentUserId || isWorkflowAdmin(&actor) || currentUserIsLastNodeVoter(tasks, currentUserId)) &&
+			currentUserIsLastNodeVoter(tasks, currentUserId) &&
 			withinRecallWindow(starterActionPermissions, instance.EndedAt) {
 			resp.ActionPermissions["recall"] = true
 		}
