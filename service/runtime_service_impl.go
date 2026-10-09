@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1932,14 +1933,54 @@ func (s *RuntimeServiceImpl) GetProcessInstanceUnionList(ctx context.Context, ac
 		return nil, 0, err
 	}
 	request.TenantID = actor.TenantID
+	// 实例（含归档历史行）挂在发起时的版本 ID 上，按 key 过滤须取该 key 全部版本 ID
+	processIDs, noMatch, err := resolveProcessIDFilter(ctx, s.processDAO, actor.TenantID, request.ProcessKey, request.ProcessID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if noMatch {
+		return []*model.WfInstance{}, 0, nil
+	}
 	size := request.GetPageSize()
 	offset := (request.GetPage() - 1) * size
-	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, request.TenantID, request.ProcessID, "", request.Status, request.Keyword, nil, nil, size, offset, request.InstanceID, request.BusinessKey, "")
+	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, request.TenantID, processIDs, "", request.Status, request.Keyword, nil, nil, size, offset, request.InstanceID, request.BusinessKey, "")
 	if err != nil {
 		return nil, 0, err
 	}
 	s.decorateCurrentActivityNames(ctx, instances)
 	return instances, total, nil
+}
+
+// resolveProcessIDFilter 把实例查询条件里的 processKey/processID 归一为
+// processID 集合（IN 语义）。key 非空时取该 key 全部版本 ID；key 与 ID 同时
+// 传入按 AND 处理——ID 不在该 key 的版本集内时 noMatch 为 true，调用方直接
+// 返回空列表。两者都为空时返回 nil，表示查询不按流程定义过滤。
+func resolveProcessIDFilter(ctx context.Context, store ProcessStore, tenantID, processKey, processID string) (ids []string, noMatch bool, err error) {
+	if processKey == "" {
+		if processID == "" {
+			return nil, false, nil
+		}
+		return []string{processID}, false, nil
+	}
+	defs, _, err := store.List(ctx, &dto.ProcessQueryRequest{
+		PageRequest: dto.PageRequest{Page: 1, PageSize: dto.MaxPageSize, TenantID: tenantID},
+		ProcessKey:  processKey,
+		AllVersion:  true,
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to resolve process key '%s': %w", processKey, err)
+	}
+	if len(defs) == 0 {
+		return nil, true, nil
+	}
+	ids = make([]string, 0, len(defs))
+	for _, def := range defs {
+		ids = append(ids, def.ID)
+	}
+	if processID != "" && !slices.Contains(ids, processID) {
+		return nil, true, nil
+	}
+	return ids, false, nil
 }
 
 // UpdateInstanceCurrentActivity 更新 active 实例的当前节点。
@@ -2177,7 +2218,7 @@ func (s *RuntimeServiceImpl) GetMyApplicationsProcessInstanceList(ctx context.Co
 	}
 	// 运行时+历史表合并查询（DAO 支持 tenantID/startUserID 条件）
 	statuses, endReasonPrefix, endReasonNotPrefixes := instanceStatusScope(instanceStatus)
-	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, "", userID, statuses, keyword, nil, nil, pageSize, (page-1)*pageSize, "", "", endReasonPrefix, endReasonNotPrefixes...)
+	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, nil, userID, statuses, keyword, nil, nil, pageSize, (page-1)*pageSize, "", "", endReasonPrefix, endReasonNotPrefixes...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -2196,7 +2237,7 @@ func (s *RuntimeServiceImpl) CountMyApplications(ctx context.Context, actor Acto
 	if err := requireNonEmptyTenantForRealUser(&actor); err != nil {
 		return 0, err
 	}
-	_, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, "", userID, nil, "", from, to, 1, 0, "", "", "")
+	_, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, tenantID, nil, userID, nil, "", from, to, 1, 0, "", "", "")
 	if err != nil {
 		return 0, fmt.Errorf("failed to count my applications: %w", err)
 	}

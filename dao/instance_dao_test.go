@@ -310,7 +310,7 @@ func TestInstanceDAO_UnionPagination_ExcludesDeletedByDefault(t *testing.T) {
 	}
 
 	// 未指定状态：两表的 deleted 行都排除
-	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", "", "u1", nil, "", nil, nil, 10, 0, "", "", "")
+	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", nil, "u1", nil, "", nil, nil, 10, 0, "", "", "")
 	if err != nil {
 		t.Fatalf("union query: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestInstanceDAO_UnionPagination_ExcludesDeletedByDefault(t *testing.T) {
 	}
 
 	// 显式传 deleted：按传入过滤，两表各一条均命中
-	list, total, err = d.GetInstancesUnionPagination(ctx, "t1", "", "u1", []string{"deleted"}, "", nil, nil, 10, 0, "", "", "")
+	list, total, err = d.GetInstancesUnionPagination(ctx, "t1", nil, "u1", []string{"deleted"}, "", nil, nil, 10, 0, "", "", "")
 	if err != nil {
 		t.Fatalf("union query by status: %v", err)
 	}
@@ -337,6 +337,60 @@ func TestInstanceDAO_UnionPagination_ExcludesDeletedByDefault(t *testing.T) {
 	}
 	if !got["i-del"] || !got["hi-del"] {
 		t.Errorf("explicit deleted filter: got %v, want i-del + hi-del", got)
+	}
+}
+
+// 联合查询按流程定义 ID 集合过滤（IN 语义，活表与历史表同时命中）。
+func TestInstanceDAO_UnionPagination_ProcessIDs(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfHiInstance)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	seed := []*model.WfInstance{
+		{ID: "i-v1", ProcessID: "p1", Name: "on v1", Status: "active", TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+		{ID: "i-v2", ProcessID: "p2", Name: "on v2", Status: "active", TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+		{ID: "i-other", ProcessID: "p9", Name: "other def", Status: "active", TenantID: "t1", StartUserID: "u1", CreatedAt: now},
+	}
+	for _, in := range seed {
+		if err := d.Create(ctx, in); err != nil {
+			t.Fatalf("seed instance %s: %v", in.ID, err)
+		}
+	}
+	if err := d.Query.WfHiInstance.WithContext(ctx).Create(&model.WfHiInstance{
+		ID: "hi-v1", ProcessID: "p1", Name: "archived on v1", Status: "terminated", TenantID: "t1", StartUserID: "u1", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed hi instance: %v", err)
+	}
+
+	// 多版本 ID 集合：两版本各一条 + 老版本的历史归档行
+	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", []string{"p1", "p2"}, "u1", nil, "", nil, nil, 10, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("union query by process IDs: %v", err)
+	}
+	if total != 3 || len(list) != 3 {
+		t.Errorf("process IDs filter: total=%d len=%d, want 3/3", total, len(list))
+	}
+	got := map[string]bool{}
+	for _, in := range list {
+		got[in.ID] = true
+	}
+	for _, want := range []string{"i-v1", "i-v2", "hi-v1"} {
+		if !got[want] {
+			t.Errorf("process IDs filter: %s missing, got %v", want, got)
+		}
+	}
+	if got["i-other"] {
+		t.Errorf("process IDs filter: i-other (p9) 不应命中")
+	}
+
+	// 含空串元素的集合跳过空值，等价于不按流程定义过滤（4 条全量）
+	list, total, err = d.GetInstancesUnionPagination(ctx, "t1", []string{""}, "u1", nil, "", nil, nil, 10, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("union query with blank IDs: %v", err)
+	}
+	if total != 4 || len(list) != 4 {
+		t.Errorf("blank process IDs should mean no filter: total=%d, want 4", total)
 	}
 }
 
@@ -360,7 +414,7 @@ func TestInstanceDAO_UnionPagination_EndReasonPrefix(t *testing.T) {
 		}
 	}
 
-	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", "", "u1", []string{"terminated"}, "", nil, nil, 10, 0, "", "", "审批拒绝")
+	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", nil, "u1", []string{"terminated"}, "", nil, nil, 10, 0, "", "", "审批拒绝")
 	if err != nil {
 		t.Fatalf("union query by end_reason prefix: %v", err)
 	}
@@ -701,7 +755,7 @@ func TestInstanceDAO_NullEndReasonCountedInTerminated(t *testing.T) {
 	}
 
 	// 2) 联合查询列表（buildInstanceUnionQuery 的 NOT LIKE）
-	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", "", "u1", []string{"terminated"}, "", nil, nil, 10, 0, "", "", "", "审批拒绝", "申请人撤回")
+	list, total, err := d.GetInstancesUnionPagination(ctx, "t1", nil, "u1", []string{"terminated"}, "", nil, nil, 10, 0, "", "", "", "审批拒绝", "申请人撤回")
 	if err != nil {
 		t.Fatalf("union by not-prefix: %v", err)
 	}
@@ -744,7 +798,7 @@ func TestInstanceDAO_NullEndReasonCountedInTerminated(t *testing.T) {
 // 而 IS NULL OR 在所有方言行为严格一致。
 func TestEndReasonNotLike_UsesIsNullOR(t *testing.T) {
 	tq := buildTaskInstanceQuery(&dto.TaskQuery{EndReasonNotPrefixes: []string{"审批拒绝", "申请人撤回"}})
-	uq := buildInstanceUnionQuery("t1", "", "u1", []string{"terminated"}, "", nil, nil, "", "", "", "审批拒绝", "申请人撤回")
+	uq := buildInstanceUnionQuery("t1", nil, "u1", []string{"terminated"}, "", nil, nil, "", "", "", "审批拒绝", "申请人撤回")
 	bcond, _ := bucketWhere(InstanceStatusBucket{Statuses: []string{"terminated"}, EndReasonNotPrefixes: []string{"审批拒绝", "申请人撤回"}})
 
 	for _, tc := range []struct{ name, sql string }{

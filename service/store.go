@@ -51,7 +51,7 @@ type InstanceStore interface {
 	HasActiveByParentID(ctx context.Context, parentID string) (bool, error)
 	SetCurrentActivity(ctx context.Context, id, activityKey string) error
 	ListByTaskConditions(ctx context.Context, req *dto.TaskQuery) ([]*model.WfInstance, int64, error)
-	GetInstancesUnionPagination(ctx context.Context, tenantID, ProcessID, startUserID string, statuses []string, keyword string, startTimeFrom, startTimeTo *time.Time, limit, offset int, instanceID, businessKey, endReasonPrefix string, endReasonNotPrefixes ...string) ([]*model.WfInstance, int64, error)
+	GetInstancesUnionPagination(ctx context.Context, tenantID string, processIDs []string, startUserID string, statuses []string, keyword string, startTimeFrom, startTimeTo *time.Time, limit, offset int, instanceID, businessKey, endReasonPrefix string, endReasonNotPrefixes ...string) ([]*model.WfInstance, int64, error)
 	CountInstancesUnionByBuckets(ctx context.Context, tenantID, processID, startUserID, keyword string, startTimeFrom, startTimeTo *time.Time, buckets []dao.InstanceStatusBucket) (map[string]int64, error)
 	CountTaskInstancesByBuckets(ctx context.Context, req *dto.TaskQuery, buckets []dao.InstanceStatusBucket) (map[string]int64, error)
 }

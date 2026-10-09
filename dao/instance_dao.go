@@ -569,7 +569,7 @@ type instanceUnionQuery struct {
 
 // buildInstanceUnionQuery 构建实例合并查询的 WHERE 条件（运行时/历史两分支共用同一段条件）。
 // statuses 为空时排除软删除行：deleted 对用户不可见，任何列表不应带出。
-func buildInstanceUnionQuery(tenantID, processID, startUserID string, statuses []string, keyword string, startTimeFrom, startTimeTo *time.Time, instanceID, businessKey, endReasonPrefix string, endReasonNotPrefixes ...string) instanceUnionQuery {
+func buildInstanceUnionQuery(tenantID string, processIDs []string, startUserID string, statuses []string, keyword string, startTimeFrom, startTimeTo *time.Time, instanceID, businessKey, endReasonPrefix string, endReasonNotPrefixes ...string) instanceUnionQuery {
 	uq := instanceUnionQuery{
 		runSQL:  "SELECT * FROM wf_instance WHERE 1=1",
 		histSQL: "SELECT * FROM wf_hi_instance WHERE 1=1",
@@ -579,9 +579,18 @@ func buildInstanceUnionQuery(tenantID, processID, startUserID string, statuses [
 		uq.conditions += " AND tenant_id = ?"
 		uq.args = append(uq.args, tenantID)
 	}
-	if processID != "" {
-		uq.conditions += " AND process_id = ?"
-		uq.args = append(uq.args, processID)
+	if len(processIDs) > 0 {
+		placeholders := make([]string, 0, len(processIDs))
+		for _, id := range processIDs {
+			if id == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			uq.args = append(uq.args, id)
+		}
+		if len(placeholders) > 0 {
+			uq.conditions += " AND process_id IN (" + strings.Join(placeholders, ",") + ")"
+		}
 	}
 	if instanceID != "" {
 		uq.conditions += " AND id = ?"
@@ -640,12 +649,13 @@ func buildInstanceUnionQuery(tenantID, processID, startUserID string, statuses [
 	return uq
 }
 
-// GetInstancesUnionPagination 分页获取流程实例列表（合并运行时和历史表，支持多租户）
-func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID, ProcessID, startUserID string, statuses []string, keyword string, startTimeFrom, startTimeTo *time.Time, limit, offset int, instanceID, businessKey, endReasonPrefix string, endReasonNotPrefixes ...string) ([]*model.WfInstance, int64, error) {
+// GetInstancesUnionPagination 分页获取流程实例列表（合并运行时和历史表，支持多租户）。
+// processIDs 按流程定义 ID 集合过滤（IN 语义）。
+func (d *InstanceDAO) GetInstancesUnionPagination(ctx context.Context, tenantID string, processIDs []string, startUserID string, statuses []string, keyword string, startTimeFrom, startTimeTo *time.Time, limit, offset int, instanceID, businessKey, endReasonPrefix string, endReasonNotPrefixes ...string) ([]*model.WfInstance, int64, error) {
 	if tenantID == "" {
 		return nil, 0, errors.New("tenantID required")
 	}
-	uq := buildInstanceUnionQuery(tenantID, ProcessID, startUserID, statuses, keyword, startTimeFrom, startTimeTo, instanceID, businessKey, endReasonPrefix, endReasonNotPrefixes...)
+	uq := buildInstanceUnionQuery(tenantID, processIDs, startUserID, statuses, keyword, startTimeFrom, startTimeTo, instanceID, businessKey, endReasonPrefix, endReasonNotPrefixes...)
 
 	// Count SQL：归档在单事务内完成（建历史行+删活行同 tx），两表不会有同 ID 双行，
 	// 故用 UNION ALL 免去 UNION 去重的全列比较排序开销。
@@ -776,7 +786,7 @@ func (d *InstanceDAO) CountInstancesUnionByBuckets(ctx context.Context, tenantID
 	if tenantID == "" {
 		return nil, errors.New("tenantID required")
 	}
-	uq := buildInstanceUnionQuery(tenantID, processID, startUserID, nil, keyword, startTimeFrom, startTimeTo, "", "", "")
+	uq := buildInstanceUnionQuery(tenantID, []string{processID}, startUserID, nil, keyword, startTimeFrom, startTimeTo, "", "", "")
 
 	// 参数顺序须与 SQL 文本一致：先外层 SELECT 的桶参数，再两个分支各一份条件参数
 	selects := []string{"COUNT(*) AS total"}
