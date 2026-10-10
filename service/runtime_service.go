@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/rulego/gflow-engine/model"
@@ -33,17 +34,39 @@ func applyStartOptions(opts []StartOption) startOptions {
 	return o
 }
 
+// InstanceBusinessKeyConflictError 活表（draft/active/suspended）已有同租户同
+// businessKey 的实例占用唯一索引 uq_wf_instance_tenant_bizkey。ExistingID/
+// ExistingProcess 为占用者；消费方据此分流：同流程定义重试幂等返回既有实例，
+// 跨流程定义返回 409。errors.Is 判定为 ErrConflict，走既有冲突分类与文案映射。
+type InstanceBusinessKeyConflictError struct {
+	BusinessKey     string
+	ExistingID      string
+	ExistingProcess string
+}
+
+func (e *InstanceBusinessKeyConflictError) Error() string {
+	return fmt.Sprintf("process instance with business key '%s' already exists", e.BusinessKey)
+}
+
+// Is 使 errors.Is(err, ErrConflict) 成立：消费方的 409 分类与哨兵+keyword
+// 文案映射无需感知该类型。
+func (e *InstanceBusinessKeyConflictError) Is(target error) bool {
+	return target == ErrConflict
+}
+
 // RuntimeService 运行时服务接口
 // 提供流程实例的启动、管理、查询等运行时功能
 type RuntimeService interface {
 	// StartProcessInstanceByKey 根据流程定义Key启动流程实例（取该租户下此 Key 的最新版本）
-	//       processDefinitionKey - 流程定义Key, businessKey - 业务Key（可选；同定义下已有同 businessKey
-	//       的 active 实例时返回 ErrConflict）, variables - 启动变量（写入实例变量，驱动网关路由/表单回显）,
+	//       processDefinitionKey - 流程定义Key, businessKey - 业务Key（可选；活表已有同
+	//       businessKey 实例时返回 *InstanceBusinessKeyConflictError，识别为 ErrConflict）,
+	//       variables - 启动变量（写入实例变量，驱动网关路由/表单回显）,
 	//       opts - 可选启动选项（如 WithDraft() 草稿模式）
 	StartProcessInstanceByKey(ctx context.Context, actor Actor, processDefinitionKey, businessKey string, variables map[string]interface{}, opts ...StartOption) (string, error)
 
 	// StartProcessInstanceByID 根据流程定义ID启动流程实例（精确到版本）
-	//       processDefinitionID - 流程定义ID, businessKey - 业务Key（可选；重复时返回 ErrConflict）,
+	//       processDefinitionID - 流程定义ID, businessKey - 业务Key（可选；活表已有同
+	//       businessKey 实例时返回 *InstanceBusinessKeyConflictError，识别为 ErrConflict）,
 	//       variables - 启动变量（写入实例变量）, opts - 可选启动选项（如 WithDraft() 草稿模式）
 	StartProcessInstanceByID(ctx context.Context, actor Actor, processDefinitionID, businessKey string, variables map[string]interface{}, opts ...StartOption) (string, error)
 

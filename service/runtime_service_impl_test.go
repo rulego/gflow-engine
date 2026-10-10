@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -629,4 +630,131 @@ func TestDeleteProcessInstance_ActiveArchivesAsDeleted(t *testing.T) {
 		"inst-del-act", string(enums.InstanceStatusDeleted), "用户手动删除"))
 	require.Equal(t, int64(1), count("wf_hi_task", "process_instance_id = ?", "inst-del-act"))
 	require.Equal(t, int64(0), count("wf_task", "process_instance_id = ?", "inst-del-act"))
+}
+
+// ---------------------------------------------------------------------------
+// StartProcessInstanceByID：businessKey 冲突预检（活表精确等值 + 结构化冲突错误）
+// ---------------------------------------------------------------------------
+
+// seedBizKeyInstance 直接落一条活表实例占位（列口径与 startInstanceCore 写入一致）。
+func seedBizKeyInstance(t *testing.T, db *gorm.DB, id, processID, tenant, businessKey, status string) {
+	t.Helper()
+	require.NoError(t, db.Exec(`INSERT INTO wf_instance (id, process_id, business_key, name, status, tenant_id, created_by, start_user_id) VALUES (?,?,?,?,?,?, 'u1', 'u1')`,
+		id, processID, businessKey, processID, status, tenant).Error)
+}
+
+// startBizKeyConflict 发起并回答"是否被 businessKey 冲突拦下"（命中返回结构化
+// 冲突错误）。裸 RS 在预检之后的引擎装配阶段可能失败或 panic，皆视为预检放行。
+func startBizKeyConflict(t *testing.T, rs *RuntimeServiceImpl, processID, businessKey string) *InstanceBusinessKeyConflictError {
+	t.Helper()
+	var bk *InstanceBusinessKeyConflictError
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				bk = nil
+			}
+		}()
+		_, err := rs.StartProcessInstanceByID(context.Background(), Actor{UserID: "u1", TenantID: "t1"}, processID, businessKey, nil)
+		if !errors.As(err, &bk) {
+			bk = nil
+		}
+	}()
+	return bk
+}
+
+// 同 tenant 同 businessKey 二次发起：预检返回结构化冲突错误，携带占用实例
+// ID 与流程定义 ID（宿主据此对同定义重试幂等返回既有实例）。
+func TestStartByID_BusinessKeyConflictCarriesExistingInstance(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	seedProcess(db, "p_bk", "bk_flow", 1, "t1", "bk_chain")
+	seedBizKeyInstance(t, db, "inst-bk-1", "p_bk", "t1", "BK-001", string(enums.InstanceStatusActive))
+
+	bk := startBizKeyConflict(t, rs, "p_bk", "BK-001")
+	require.NotNil(t, bk, "同 businessKey 二次发起必须被预检拦下")
+	require.Equal(t, "inst-bk-1", bk.ExistingID)
+	require.Equal(t, "p_bk", bk.ExistingProcess)
+	require.Equal(t, "BK-001", bk.BusinessKey)
+	// errors.Is 判定为 ErrConflict：宿主按 409 分类与哨兵+keyword 文案映射消费
+	require.ErrorIs(t, bk, ErrConflict)
+	require.Contains(t, bk.Error(), "with business key")
+}
+
+// 跨流程定义撞 businessKey：同样返回结构化错误，占用者信息取既有实例，
+// 由宿主分流 200/409（引擎不吞语义差异）。
+func TestStartByID_BusinessKeyConflictCrossProcess(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	seedProcess(db, "p_bk_a", "bk_flow_a", 1, "t1", "bka_chain")
+	seedProcess(db, "p_bk_b", "bk_flow_b", 1, "t1", "bkb_chain")
+	seedBizKeyInstance(t, db, "inst-bk-x", "p_bk_a", "t1", "BK-X", string(enums.InstanceStatusActive))
+
+	bk := startBizKeyConflict(t, rs, "p_bk_b", "BK-X")
+	require.NotNil(t, bk, "跨流程定义撞 businessKey 仍是冲突")
+	require.Equal(t, "inst-bk-x", bk.ExistingID)
+	require.Equal(t, "p_bk_a", bk.ExistingProcess, "冲突错误携带占用者的流程定义，供宿主区分幂等/409")
+}
+
+// businessKey 含 LIKE 通配符或为既有键的子串时不得误报冲突（预检为精确等值）。
+func TestStartByID_BusinessKeyExactMatchNoFalsePositive(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	seedProcess(db, "p_exact", "exact_flow", 1, "t1", "exact_chain")
+	seedBizKeyInstance(t, db, "inst-order", "p_exact", "t1", "ORDER-100", string(enums.InstanceStatusActive))
+	seedBizKeyInstance(t, db, "inst-report", "p_exact", "t1", "REPORTXFULL", string(enums.InstanceStatusActive))
+
+	for _, key := range []string{"ORDER-10", "ORDER-1_0", "ORDER%", "REPORT%FULL"} {
+		require.Nil(t, startBizKeyConflict(t, rs, "p_exact", key), "businessKey %q 不应误判为冲突", key)
+	}
+}
+
+// 挂起/草稿实例占用 businessKey 同样在预检被拦下（活表全状态占用唯一索引）。
+func TestStartByID_BusinessKeySuspendedAndDraftOccupants(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	seedProcess(db, "p_sus", "sus_flow", 1, "t1", "sus_chain")
+	seedProcess(db, "p_dft", "dft_flow", 1, "t1", "dft_chain")
+	seedBizKeyInstance(t, db, "inst-sus", "p_sus", "t1", "BK-SUS", string(enums.InstanceStatusSuspended))
+	seedBizKeyInstance(t, db, "inst-dft", "p_dft", "t1", "BK-DFT", string(enums.InstanceStatusDraft))
+
+	bk := startBizKeyConflict(t, rs, "p_sus", "BK-SUS")
+	require.NotNil(t, bk, "挂起实例占用 businessKey 应被预检拦下")
+	require.Equal(t, "inst-sus", bk.ExistingID)
+
+	bk = startBizKeyConflict(t, rs, "p_dft", "BK-DFT")
+	require.NotNil(t, bk, "草稿实例占用 businessKey 应被预检拦下")
+	require.Equal(t, "inst-dft", bk.ExistingID)
+}
+
+// 终态归档后同 businessKey 可重新发起（归档=活表删行，占用释放）。
+func TestStartByID_BusinessKeyReleasedAfterArchive(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	seedProcess(db, "p_arc", "arc_flow", 1, "t1", "arc_chain")
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS wf_hi_instance (
+		id TEXT PRIMARY KEY, process_id TEXT NOT NULL DEFAULT '', business_key TEXT,
+		name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', variables TEXT,
+		current_activity TEXT, priority INTEGER NOT NULL DEFAULT 50, parent_id TEXT,
+		tenant_id TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '',
+		created_at DATETIME, updated_by TEXT, updated_at DATETIME, end_reason TEXT,
+		duration INTEGER, ended_at DATETIME, start_user_id TEXT NOT NULL DEFAULT '')`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO wf_hi_instance (id, process_id, business_key, name, status, tenant_id, created_by, start_user_id)
+		VALUES ('inst-arc', 'p_arc', 'BK-ARC', 'n', ?, 't1', 'u1', 'u1')`, string(enums.InstanceStatusCompleted)).Error)
+
+	require.Nil(t, startBizKeyConflict(t, rs, "p_arc", "BK-ARC"), "终态归档后 businessKey 应可重新发起")
+}
+
+// 并发双发预检双双放行时，后到者由唯一索引兜底：兜底回查占用者回填
+// ExistingID/ExistingProcess，与预检路径同构。
+func TestStartInstanceCore_UniqueViolationBackfillsExisting(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	rs.idGenerator = &testSeqIDGen{}
+	seedProcess(db, "p_race", "race_flow", 1, "t1", "race_chain")
+	seedBizKeyInstance(t, db, "inst-race", "p_race", "t1", "BK-RACE", string(enums.InstanceStatusActive))
+
+	procDef := &model.WfProcess{ID: "p_race", ProcessKey: "race_flow", Name: "race", TenantID: "t1", DefinitionJSON: poolTestChainDef("race_chain")}
+	_, _, _, err := rs.startInstanceCore(context.Background(), procDef,
+		Actor{UserID: "u1", TenantID: "t1"}, "BK-RACE", nil, false, "")
+
+	var bk *InstanceBusinessKeyConflictError
+	require.True(t, errors.As(err, &bk), "撞唯一索引应返回结构化冲突错误，got %v", err)
+	require.Equal(t, "inst-race", bk.ExistingID)
+	require.Equal(t, "p_race", bk.ExistingProcess)
+	require.Equal(t, "BK-RACE", bk.BusinessKey)
+	require.ErrorIs(t, bk, ErrConflict)
 }

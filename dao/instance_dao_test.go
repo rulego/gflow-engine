@@ -814,3 +814,75 @@ func TestEndReasonNotLike_UsesIsNullOR(t *testing.T) {
 		}
 	}
 }
+
+// GetActiveByBusinessKey：活表 businessKey 精确占用查询。
+// 语义约束：仅扫活表（终态归档即活表删行、businessKey 释放），等值匹配
+// 杜绝 LIKE 的子串/通配符越界命中；draft/active/suspended 皆视为占用
+// （三者都落在唯一索引 uq_wf_instance_tenant_bizkey 上）。
+func TestInstanceDAO_GetActiveByBusinessKey(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfHiInstance)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+
+	seed := func(id, tenant, businessKey, status string) {
+		t.Helper()
+		if err := q.WfInstance.WithContext(ctx).Create(&model.WfInstance{
+			ID: id, ProcessID: "proc-" + id, BusinessKey: &businessKey,
+			Name: "n", Status: status, TenantID: tenant, CreatedBy: "u", CreatedAt: time.Now(),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("inst-active", "t1", "ORDER-100", "active")
+	seed("inst-sus", "t1", "BK-SUS", "suspended")
+	seed("inst-draft", "t1", "BK-DRAFT", "draft")
+	seed("inst-other", "t2", "ORDER-100", "active")
+
+	// 精确命中 active 占用者
+	hit, err := d.GetActiveByBusinessKey(ctx, "t1", "ORDER-100")
+	if err != nil {
+		t.Fatalf("GetActiveByBusinessKey: %v", err)
+	}
+	if hit == nil || hit.ID != "inst-active" {
+		t.Fatalf("active occupant: got %+v, want inst-active", hit)
+	}
+
+	// 挂起/草稿同样占用
+	for _, tc := range []struct{ key, wantID string }{{"BK-SUS", "inst-sus"}, {"BK-DRAFT", "inst-draft"}} {
+		hit, err := d.GetActiveByBusinessKey(ctx, "t1", tc.key)
+		if err != nil {
+			t.Fatalf("GetActiveByBusinessKey(%s): %v", tc.key, err)
+		}
+		if hit == nil || hit.ID != tc.wantID {
+			t.Fatalf("%s occupant: got %+v, want %s", tc.key, hit, tc.wantID)
+		}
+	}
+
+	// 子串/通配符请求键不得越界命中（LIKE 语义下的误报源）
+	for _, key := range []string{"ORDER-10", "ORDER-1_0", "ORDER%", "BK-SU"} {
+		hit, err := d.GetActiveByBusinessKey(ctx, "t1", key)
+		if err != nil {
+			t.Fatalf("GetActiveByBusinessKey(%q): %v", key, err)
+		}
+		if hit != nil {
+			t.Fatalf("businessKey %q must not match existing rows, got %+v", key, hit)
+		}
+	}
+
+	// 跨租户同 key 不命中（占用按 tenant 隔离）
+	if hit, _ := d.GetActiveByBusinessKey(ctx, "t3", "ORDER-100"); hit != nil {
+		t.Fatalf("cross-tenant lookup must not hit, got %+v", hit)
+	}
+
+	// 历史表归档行不占用（活表删行后 businessKey 释放）
+	archivedKey := "BK-ARCHIVED"
+	if err := q.WfHiInstance.WithContext(ctx).Create(&model.WfHiInstance{
+		ID: "inst-archived", ProcessID: "proc-x", BusinessKey: &archivedKey,
+		Name: "n", Status: "completed", TenantID: "t1", CreatedBy: "u", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("seed hi instance: %v", err)
+	}
+	if hit, err := d.GetActiveByBusinessKey(ctx, "t1", "BK-ARCHIVED"); err != nil || hit != nil {
+		t.Fatalf("archived businessKey must be released, got (%+v, %v)", hit, err)
+	}
+}

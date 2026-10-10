@@ -169,6 +169,32 @@ func (d *InstanceDAO) Get(ctx context.Context, id string) (*model.WfInstance, er
 	return entity, nil
 }
 
+// GetActiveByBusinessKey 精确等值查询活表中占用该 businessKey 的实例（不限流程定义）。
+// 活表残留状态即 draft/active/suspended（终态归档时活表删行、businessKey 释放），
+// 三者皆占用唯一索引 uq_wf_instance_tenant_bizkey。无占用返回 (nil, nil)。
+func (d *InstanceDAO) GetActiveByBusinessKey(ctx context.Context, tenantID, businessKey string) (*model.WfInstance, error) {
+	if tenantID == "" || businessKey == "" {
+		return nil, fmt.Errorf("tenantID and businessKey cannot be empty")
+	}
+	q := d.Query.WfInstance
+	instance, err := q.WithContext(ctx).
+		Where(q.TenantID.Eq(tenantID)).
+		Where(q.BusinessKey.Eq(businessKey)).
+		Where(q.Status.In(
+			string(enums.InstanceStatusDraft),
+			string(enums.InstanceStatusActive),
+			string(enums.InstanceStatusSuspended),
+		)).
+		First()
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return instance, nil
+}
+
 // Update 更新流程实例
 func (d *InstanceDAO) Update(ctx context.Context, entity *model.WfInstance) error {
 	if entity == nil {

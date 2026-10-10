@@ -145,21 +145,20 @@ func (s *RuntimeServiceImpl) StartProcessInstanceByID(ctx context.Context, actor
 		return "", err
 	}
 
-	// 如果有业务键，检查是否已存在相同业务键的活动实例
+	// businessKey 占用预检：活表精确等值扫全状态（draft/active/suspended 均占用
+	// 唯一索引）。命中返回结构化冲突错误（携带占用者实例 ID/流程定义 ID），
+	// 消费方对同流程定义重试幂等返回既有实例、跨流程定义返回 409。
 	if businessKey != "" {
-		existingInstances, _, err := s.GetProcessInstanceList(ctx, initiator, &dto.ProcessInstanceQueryDTO{
-			ProcessID:   processDefinitionID,
-			BusinessKey: businessKey,
-			PageRequest: dto.PageRequest{
-				Status:   []string{string(enums.ProcessStatusActive)},
-				PageSize: 1,
-			},
-		})
+		existing, err := s.instanceDAO.GetActiveByBusinessKey(ctx, initiator.TenantID, businessKey)
 		if err != nil {
 			return "", fmt.Errorf("failed to check existing instances: %w", err)
 		}
-		if len(existingInstances) > 0 {
-			return "", fmt.Errorf("active process instance with business key '%s' already exists: %w", businessKey, ErrConflict)
+		if existing != nil {
+			return "", &InstanceBusinessKeyConflictError{
+				BusinessKey:     businessKey,
+				ExistingID:      existing.ID,
+				ExistingProcess: existing.ProcessID,
+			}
 		}
 	}
 
@@ -281,11 +280,18 @@ func (s *RuntimeServiceImpl) startInstanceCore(ctx context.Context, processDef *
 
 	// 保存流程实例
 	if err := s.instanceDAO.Create(ctx, instance); err != nil {
-		// 唯一约束兜底：并发同 businessKey 双发起时先查会双双通过，靠数据库
-		// 唯一索引拦下后到者，映射为与先查一致的冲突友好错误
+		// 唯一约束兜底：并发同 businessKey 双发起时预检会双双通过，靠数据库
+		// 唯一索引拦下后到者；回查占用者回填 ExistingID/ExistingProcess，
+		// 与预检路径同构（回查失败退化为不带占用者的冲突错误）。
 		if isUniqueViolation(err) {
-			return "", nil, types.RuleMsg{}, fmt.Errorf(
-				"active process instance with business key '%s' already exists: %w", businessKey, ErrConflict)
+			if existing, qerr := s.instanceDAO.GetActiveByBusinessKey(ctx, processDef.TenantID, businessKey); qerr == nil && existing != nil {
+				return "", nil, types.RuleMsg{}, &InstanceBusinessKeyConflictError{
+					BusinessKey:     businessKey,
+					ExistingID:      existing.ID,
+					ExistingProcess: existing.ProcessID,
+				}
+			}
+			return "", nil, types.RuleMsg{}, &InstanceBusinessKeyConflictError{BusinessKey: businessKey}
 		}
 		return "", nil, types.RuleMsg{}, fmt.Errorf("failed to create process instance: %w", err)
 	}

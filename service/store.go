@@ -47,6 +47,7 @@ type InstanceStore interface {
 	Get(ctx context.Context, id string) (*model.WfInstance, error)
 	Update(ctx context.Context, entity *model.WfInstance) error
 	GetByProcessID(ctx context.Context, ProcessID string, limit, offset int) ([]*model.WfInstance, int64, error)
+	GetActiveByBusinessKey(ctx context.Context, tenantID, businessKey string) (*model.WfInstance, error)
 	CountActiveByProcessID(ctx context.Context, tenantID, processID string) (int64, error)
 	HasActiveByParentID(ctx context.Context, parentID string) (bool, error)
 	SetCurrentActivity(ctx context.Context, id, activityKey string) error
