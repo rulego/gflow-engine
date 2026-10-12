@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/rulego/gflow-engine/model"
@@ -35,17 +36,38 @@ func applyStartOptions(opts []StartOption) startOptions {
 }
 
 // InstanceBusinessKeyConflictError 活表（draft/active/suspended）已有同租户同
-// businessKey 的实例占用唯一索引 uq_wf_instance_tenant_bizkey。ExistingID/
-// ExistingProcess 为占用者；消费方据此分流：同流程定义重试幂等返回既有实例，
-// 跨流程定义返回 409。errors.Is 判定为 ErrConflict，走既有冲突分类与文案映射。
+// businessKey 的实例占用唯一索引 uq_wf_instance_tenant_bizkey，或历史表存在
+// 终态宽限窗口内同 businessKey 的已归档实例。ExistingID/ExistingProcess 为
+// 占用者；消费方据此分流：同流程定义重试幂等返回既有实例，跨流程定义返回
+// 409。ExistingTerminal 标记占用者是终态归档实例（宽限窗口命中：归档后同
+// key 的重试仍幂等命中该实例，不会另开新单）。errors.Is 判定为 ErrConflict，
+// 走既有冲突分类与文案映射。
 type InstanceBusinessKeyConflictError struct {
-	BusinessKey     string
-	ExistingID      string
-	ExistingProcess string
+	BusinessKey      string
+	ExistingID       string
+	ExistingProcess  string
+	ExistingStatus   string
+	ExistingTerminal bool
 }
 
 func (e *InstanceBusinessKeyConflictError) Error() string {
 	return fmt.Sprintf("process instance with business key '%s' already exists", e.BusinessKey)
+}
+
+// businessKeyTerminalGraceNs businessKey 终态幂等宽限窗口（atomic 存 ns）。
+var businessKeyTerminalGraceNs int64 = int64(24 * time.Hour)
+
+// SetBusinessKeyTerminalGrace 设置 businessKey 终态幂等宽限窗口：实例终态
+// 归档后该时长内，同租户同 businessKey 的再次发起仍按冲突处理（宿主对同
+// 流程定义幂等返回既有终态实例）。<=0 关闭（终态即释放，可复用 key 开新单）。
+// 进程启动期由宿主按配置调用一次，运行期并发读。
+func SetBusinessKeyTerminalGrace(d time.Duration) {
+	atomic.StoreInt64(&businessKeyTerminalGraceNs, int64(d))
+}
+
+// BusinessKeyTerminalGrace 读取当前宽限窗口。
+func BusinessKeyTerminalGrace() time.Duration {
+	return time.Duration(atomic.LoadInt64(&businessKeyTerminalGraceNs))
 }
 
 // Is 使 errors.Is(err, ErrConflict) 成立：消费方的 409 分类与哨兵+keyword

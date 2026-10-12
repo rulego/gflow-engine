@@ -723,6 +723,7 @@ func TestStartByID_BusinessKeySuspendedAndDraftOccupants(t *testing.T) {
 }
 
 // 终态归档后同 businessKey 可重新发起（归档=活表删行，占用释放）。
+// 该行 ended_at 为空：结束时刻不可判定，不参与宽限窗口，key 视为已释放。
 func TestStartByID_BusinessKeyReleasedAfterArchive(t *testing.T) {
 	rs, db := newPoolTestRS(t)
 	seedProcess(db, "p_arc", "arc_flow", 1, "t1", "arc_chain")
@@ -737,6 +738,43 @@ func TestStartByID_BusinessKeyReleasedAfterArchive(t *testing.T) {
 		VALUES ('inst-arc', 'p_arc', 'BK-ARC', 'n', ?, 't1', 'u1', 'u1')`, string(enums.InstanceStatusCompleted)).Error)
 
 	require.Nil(t, startBizKeyConflict(t, rs, "p_arc", "BK-ARC"), "终态归档后 businessKey 应可重新发起")
+}
+
+// 终态幂等宽限窗口：归档实例 ended_at 在窗口内时同 key 发起按冲突处理
+// （携带占用者与终态标记），窗口外或窗口关闭（0）则释放可开新单。
+func TestStartByID_BusinessKeyTerminalGraceWindow(t *testing.T) {
+	origGrace := BusinessKeyTerminalGrace()
+	t.Cleanup(func() { SetBusinessKeyTerminalGrace(origGrace) })
+	SetBusinessKeyTerminalGrace(24 * time.Hour)
+
+	rs, db := newPoolTestRS(t)
+	seedProcess(db, "p_grace", "grace_flow", 1, "t1", "grace_chain")
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS wf_hi_instance (
+		id TEXT PRIMARY KEY, process_id TEXT NOT NULL DEFAULT '', business_key TEXT,
+		name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', variables TEXT,
+		current_activity TEXT, priority INTEGER NOT NULL DEFAULT 50, parent_id TEXT,
+		tenant_id TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT '',
+		created_at DATETIME, updated_by TEXT, updated_at DATETIME, end_reason TEXT,
+		duration INTEGER, ended_at DATETIME, start_user_id TEXT NOT NULL DEFAULT '')`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO wf_hi_instance (id, process_id, business_key, name, status, tenant_id, created_by, start_user_id, ended_at)
+		VALUES ('inst-recent', 'p_grace', 'BK-RECENT', 'n', ?, 't1', 'u1', 'u1', ?)`,
+		string(enums.InstanceStatusCompleted), time.Now().Add(-time.Hour)).Error)
+	require.NoError(t, db.Exec(`INSERT INTO wf_hi_instance (id, process_id, business_key, name, status, tenant_id, created_by, start_user_id, ended_at)
+		VALUES ('inst-old', 'p_grace', 'BK-OLD', 'n', ?, 't1', 'u1', 'u1', ?)`,
+		string(enums.InstanceStatusCompleted), time.Now().Add(-72*time.Hour)).Error)
+
+	bk := startBizKeyConflict(t, rs, "p_grace", "BK-RECENT")
+	require.NotNil(t, bk, "宽限窗口内终态实例应按冲突处理")
+	require.Equal(t, "inst-recent", bk.ExistingID)
+	require.Equal(t, "p_grace", bk.ExistingProcess)
+	require.True(t, bk.ExistingTerminal, "占用者为终态归档实例时应带终态标记")
+	require.Equal(t, string(enums.InstanceStatusCompleted), bk.ExistingStatus)
+	require.ErrorIs(t, bk, ErrConflict)
+
+	require.Nil(t, startBizKeyConflict(t, rs, "p_grace", "BK-OLD"), "窗口外终态实例应释放 key")
+
+	SetBusinessKeyTerminalGrace(0)
+	require.Nil(t, startBizKeyConflict(t, rs, "p_grace", "BK-RECENT"), "窗口关闭后终态实例应释放 key")
 }
 
 // 并发双发预检双双放行时，后到者由唯一索引兜底：兜底回查占用者回填

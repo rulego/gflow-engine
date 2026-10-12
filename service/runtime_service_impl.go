@@ -148,6 +148,9 @@ func (s *RuntimeServiceImpl) StartProcessInstanceByID(ctx context.Context, actor
 	// businessKey 占用预检：活表精确等值扫全状态（draft/active/suspended 均占用
 	// 唯一索引）。命中返回结构化冲突错误（携带占用者实例 ID/流程定义 ID），
 	// 消费方对同流程定义重试幂等返回既有实例、跨流程定义返回 409。
+	// 活表未占用时再查历史表终态宽限窗口（默认 24h，可配 0 关闭）：窗口内的
+	// 同 key 归档实例同样按冲突处理，外部延迟重试仍幂等命中原单；窗口外终态
+	// 即释放，key 可复用开新单。
 	if businessKey != "" {
 		existing, err := s.instanceDAO.GetActiveByBusinessKey(ctx, initiator.TenantID, businessKey)
 		if err != nil {
@@ -158,6 +161,23 @@ func (s *RuntimeServiceImpl) StartProcessInstanceByID(ctx context.Context, actor
 				BusinessKey:     businessKey,
 				ExistingID:      existing.ID,
 				ExistingProcess: existing.ProcessID,
+				ExistingStatus:  existing.Status,
+			}
+		}
+		if grace := BusinessKeyTerminalGrace(); grace > 0 {
+			recent, terr := s.hiInstanceDAO.GetRecentTerminalByBusinessKey(ctx, initiator.TenantID, businessKey, time.Now().Add(-grace))
+			if terr != nil {
+				// 宽限预检失败不阻断发起（活表唯一约束仍兜底并发），只告警
+				logrus.WithError(terr).WithField("businessKey", businessKey).
+					Warn("failed to check recent terminal instances by business key")
+			} else if recent != nil {
+				return "", &InstanceBusinessKeyConflictError{
+					BusinessKey:      businessKey,
+					ExistingID:       recent.ID,
+					ExistingProcess:  recent.ProcessID,
+					ExistingStatus:   recent.Status,
+					ExistingTerminal: true,
+				}
 			}
 		}
 	}

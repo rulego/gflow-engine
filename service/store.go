@@ -65,6 +65,7 @@ type HiInstanceStore interface {
 	GetIncludingDeleted(ctx context.Context, id string) (*model.WfInstance, error)
 	HasByParentID(ctx context.Context, parentID string) (bool, error)
 	HasTerminatedByParentID(ctx context.Context, parentID string) (bool, error)
+	GetRecentTerminalByBusinessKey(ctx context.Context, tenantID, businessKey string, endedAfter time.Time) (*model.WfInstance, error)
 	Delete(ctx context.Context, id string) error
 }
 

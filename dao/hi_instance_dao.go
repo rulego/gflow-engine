@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/query"
@@ -193,6 +194,33 @@ func (d *HiInstanceDAO) HasTerminatedByParentID(ctx context.Context, parentID st
 	q := d.Query.WfHiInstance
 	n, err := q.WithContext(ctx).Where(q.ParentID.Eq(parentID), q.Status.Eq(string(enums.InstanceStatusTerminated))).Count()
 	return n > 0, err
+}
+
+// GetRecentTerminalByBusinessKey 精确等值查询历史表中 endedAt 不早于
+// endedAfter 的同租户同 businessKey 归档实例（businessKey 终态幂等宽限窗口
+// 预检用），取最近结束的一行。ended_at 为空的行不参与（结束时刻不可判定，
+// 按窗口外处理，key 可复用）。无命中返回 (nil, nil)。
+func (d *HiInstanceDAO) GetRecentTerminalByBusinessKey(ctx context.Context, tenantID, businessKey string, endedAfter time.Time) (*model.WfInstance, error) {
+	if tenantID == "" || businessKey == "" {
+		return nil, fmt.Errorf("tenantID and businessKey cannot be empty")
+	}
+	q := d.Query.WfHiInstance
+	var entity model.WfInstance
+	err := q.WithContext(ctx).
+		Where(q.TenantID.Eq(tenantID)).
+		Where(q.BusinessKey.Eq(businessKey)).
+		Where(q.Status.Neq(string(enums.InstanceStatusDeleted))).
+		Where(q.EndedAt.Gte(endedAfter)).
+		Order(q.EndedAt.Desc()).
+		Limit(1).
+		Scan(&entity)
+	if err != nil {
+		return nil, err
+	}
+	if entity.ID == "" {
+		return nil, nil
+	}
+	return &entity, nil
 }
 
 // Update 更新HiInstance

@@ -80,9 +80,10 @@ func newPoolTestRS(t *testing.T) (*RuntimeServiceImpl, *gorm.DB) {
 	}
 	q := query.Use(db)
 	rs := &RuntimeServiceImpl{
-		enginePool:  rulego.NewRuleGo(),
-		processDAO:  dao.NewProcessDAOWithQuery(q),
-		instanceDAO: dao.NewInstanceDAOWithQuery(q),
+		enginePool:    rulego.NewRuleGo(),
+		processDAO:    dao.NewProcessDAOWithQuery(q),
+		instanceDAO:   dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO: dao.NewHiInstanceDAOWithQuery(q),
 	}
 	return rs, db
 }
