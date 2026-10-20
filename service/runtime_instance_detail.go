@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
@@ -551,6 +552,17 @@ func Task2ExecutionInfo(task *model.WfTask, tasks []*model.WfTask) dto.Execution
 		if v, ok := m[constants.VarsSignAddedBy].(string); ok {
 			executionInfo.SignAddedBy = v
 		}
+		// 转办留痕：转办后时间线渲染「由 X 转办」。transfer_time 旧数据是
+		// time.Time 的 RFC3339 序列化文本，统一规整为时间线时间格式，解析失败原样透出
+		if v, ok := m[constants.VarsTransferFrom].(string); ok {
+			executionInfo.TransferredFrom = v
+		}
+		if v, ok := m[constants.VarsTransferReason].(string); ok {
+			executionInfo.TransferredReason = v
+		}
+		if v, ok := m[constants.VarsTransferTime].(string); ok {
+			executionInfo.TransferredAt = formatTransferTime(v)
+		}
 	}
 	if task.EndedAt != nil {
 		executionInfo.EndedAt = task.EndedAt.Format(constants.TimeFormatLayout)
@@ -559,6 +571,17 @@ func Task2ExecutionInfo(task *model.WfTask, tasks []*model.WfTask) dto.Execution
 		executionInfo.ClaimedAt = task.ClaimedAt.Format(constants.TimeFormatLayout)
 	}
 	return executionInfo
+}
+
+// formatTransferTime 转办时间规整为时间线时间格式。写入侧现为布局文本，旧数据
+// 是 time.Time 的 RFC3339 序列化文本；按布局与 RFC3339 双格式尝试，都不中则原样返回。
+func formatTransferTime(raw string) string {
+	for _, layout := range []string{constants.TimeFormatLayout, time.RFC3339, time.RFC3339Nano} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.Format(constants.TimeFormatLayout)
+		}
+	}
+	return raw
 }
 
 // GetSubTasks 取 parentTaskId 的全部直接子任务（加签产生的会签子任务），并递归装配其自身子树。

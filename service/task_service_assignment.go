@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
 	utils2 "github.com/rulego/gflow-engine/utils"
 )
@@ -538,9 +539,9 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 	if task.Variables != nil && *task.Variables != "" {
 		_ = utils2.FromJSON(*task.Variables, &vars)
 	}
-	vars["transfer_reason"] = reason
-	vars["transfer_from"] = fromUserID
-	vars["transfer_time"] = now
+	vars[constants.VarsTransferReason] = reason
+	vars[constants.VarsTransferFrom] = fromUserID
+	vars[constants.VarsTransferTime] = now.Format(constants.TimeFormatLayout)
 	varsJSON, err := utils2.ToJSON(vars)
 	if err != nil {
 		return fmt.Errorf("failed to serialize task variables: %w", err)

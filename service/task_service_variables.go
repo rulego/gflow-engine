@@ -259,9 +259,9 @@ func (s *TaskServiceImpl) removeTaskVariableInternal(ctx context.Context, scope 
 }
 
 // isReservedTaskVariableKey 引擎托管的任务变量键：办理人经 SetTaskVariables/
-// RemoveTaskVariable 不得读写改名派溯源、代审标记、兜底留痕、加签留痕与推进
-// 缓存（与审批主路径 stripEngineReservedVars 剥离的键集同源）。前缀保留留给
-// 未来的 reassign_* 家族字段。
+// RemoveTaskVariable 不得读写改名派溯源、代审标记、兜底留痕、加签留痕、转办
+// 留痕与推进缓存（与审批主路径 stripEngineReservedVars 剥离的键集同源）。
+// 前缀保留留给未来的 reassign_* 家族字段。
 func isReservedTaskVariableKey(key string) bool {
 	return key == constants.VarsProxyOperator ||
 		key == constants.VarsProxyTime ||
@@ -270,6 +270,9 @@ func isReservedTaskVariableKey(key string) bool {
 		key == constants.VarsFallbackReason ||
 		key == constants.VarsFallbackTime ||
 		key == constants.VarsSignAddedBy ||
+		key == constants.VarsTransferFrom ||
+		key == constants.VarsTransferReason ||
+		key == constants.VarsTransferTime ||
 		key == constants.KeySequentialAssignees ||
 		strings.HasPrefix(key, "reassign_")
 }

@@ -180,6 +180,14 @@ type ExecutionInfo struct {
 	// 减签候选与 ReduceSign 写路径校验同口径；流程配置的子任务无标记为空
 	SignAddedBy string  `json:"signAddedBy,omitempty"`
 	Comment     *string `json:"comment"`
+	// TransferredFrom 转办前处理人 userId：任务被转办过（transfer_from 任务变量
+	// 非空）时透出，时间线渲染「由 X 转办」；多次转办以最后一次为准（变量覆盖写）
+	TransferredFrom string `json:"transferredFrom,omitempty"`
+	// TransferredReason 转办理由，随 Transfer 请求原文透出
+	TransferredReason string `json:"transferredReason,omitempty"`
+	// TransferredAt 转办时间，格式 "2006-01-02 15:04:05"；旧数据为 RFC3339
+	// 序列化文本时规整为该格式
+	TransferredAt string `json:"transferredAt,omitempty"`
 	// SubExecutions 子任务明细：加签（countersign 父子结构）场景下挂该任务的
 	// 会签子任务，普通审批任务为空
 	SubExecutions []ExecutionInfo `json:"subExecutions"`

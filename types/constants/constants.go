@@ -90,6 +90,14 @@ const (
 	// 只能由加签人本人移除（流程配置的会签子任务无标记，不受此限）。引擎保留键，
 	// 审批提交/变量 API 同名键一律剥离，防伪造标记转嫁加签归属
 	VarsSignAddedBy = "sign_added_by"
+	// VarsTransferFrom 转办前处理人（transferInternal 写入）：时间线据此渲染「由 X 转办」
+	// VarsTransferReason 转办理由，随 Transfer 请求原文存入
+	// VarsTransferTime 转办时间（TimeFormatLayout 文本），与上述两键同次写入。
+	// 三者同属引擎保留键：只随任务行归档存续，不得作为流程变量下传，
+	// 审批提交/变量 API 同名键一律剥离，防伪造转办痕迹
+	VarsTransferFrom   = "transfer_from"
+	VarsTransferReason = "transfer_reason"
+	VarsTransferTime   = "transfer_time"
 	// VarsRecallCount 实例变量里的累计收回次数，达到 MaxRecallCountPerInstance
 	// 后拒绝继续收回，防止收回→重投→再收回循环骚扰后续审批人
 	VarsRecallCount = "_recallCount"

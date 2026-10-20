@@ -638,12 +638,13 @@ func proxyMarkVariables(vars *string, operator string, now time.Time) (*string, 
 	return &out, nil
 }
 
-// engineReservedVarKeys 引擎保留标记键全集：代审与兜底留痕，任务级审计数据。
+// engineReservedVarKeys 引擎保留标记键全集：代审、兜底与转办留痕，任务级审计数据。
 var engineReservedVarKeys = []string{
 	constants.VarsProxyOperator, constants.VarsProxyTime,
 	constants.VarsFallbackPolicy, constants.VarsFallbackFrom,
 	constants.VarsFallbackReason, constants.VarsFallbackTime,
 	constants.VarsSignAddedBy,
+	constants.VarsTransferFrom, constants.VarsTransferReason, constants.VarsTransferTime,
 }
 
 // stripEngineReservedVars 就地剥除审批提交变量里的引擎保留键，防伪造代审
