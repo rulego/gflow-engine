@@ -338,6 +338,50 @@ func TestExecutionInfo_TransferTrace(t *testing.T) {
 	require.Empty(t, empty.TransferredAt)
 }
 
+// 转办落轨迹行：归档表新增 task_type=forward 记录，无办理人（防已办/统计口径
+// 虚增），转办人/接手人进变量、原因进意见；多次转办按创建时间有序且都排在活任务前面。
+func TestTransferWritesForwardTraceRow(t *testing.T) {
+	q := proxyAuditDB(t)
+	proxySeedInstance(t, q, "px-inst-fwd")
+	proxySeedTask(t, q, "t-fwd", "px-inst-fwd", "a", "yi", `{}`)
+
+	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1"})
+	require.NoError(t, svc.Transfer(ctx, Actor{UserID: "yi", TenantID: "t1"}, "t-fwd", "er", "出差在外"))
+
+	live, err := svc.taskDAO.Get(ctx, "t-fwd")
+	require.NoError(t, err)
+	require.Equal(t, "er", *live.Assignee, "任务本体原地换受理人")
+
+	fwdRows := func() []*model.WfHiTask {
+		rows, ferr := q.WfHiTask.WithContext(context.Background()).
+			Where(q.WfHiTask.ProcessInstanceID.Eq("px-inst-fwd"),
+				q.WfHiTask.TaskType.Eq(string(constants.TaskTypeForward))).
+			Order(q.WfHiTask.CreatedAt).
+			Find()
+		require.NoError(t, ferr)
+		return rows
+	}
+	rows := fwdRows()
+	require.Len(t, rows, 1)
+	require.Nil(t, rows[0].Assignee, "轨迹行不设办理人：已办/统计按 assignee+completed 计数")
+	require.Equal(t, string(enums.EndReasonForwarded), *rows[0].EndReason)
+	require.Equal(t, "出差在外", *rows[0].Comment)
+	require.Contains(t, *rows[0].Variables, `"forward_by":"yi"`)
+	require.Contains(t, *rows[0].Variables, `"forward_to":"er"`)
+	require.False(t, rows[0].CreatedAt.After(live.CreatedAt), "轨迹行须排在活任务之前")
+
+	// 第二次转办：轨迹链递增且有序，仍全部早于活任务
+	require.NoError(t, svc.Transfer(ctx, Actor{UserID: "er", TenantID: "t1"}, "t-fwd", "san", "接力处理"))
+	rows = fwdRows()
+	require.Len(t, rows, 2)
+	require.True(t, rows[0].CreatedAt.Before(rows[1].CreatedAt), "多次转办的轨迹行按创建时间有序")
+	live2, err := svc.taskDAO.Get(ctx, "t-fwd")
+	require.NoError(t, err)
+	require.Equal(t, "san", *live2.Assignee)
+	require.True(t, rows[1].CreatedAt.Before(live2.CreatedAt), "轨迹行全部排在活任务之前")
+}
+
 // 代审标记只留在被代审的任务行上：流转下传变量（ExecuteNext 入参）不得携带
 // proxy 键——下游任务的变量快照来自这份 vars，沾上会被误标代审、误拦收回。
 func TestProxyAudit_MarkNotLeakedDownstream(t *testing.T) {

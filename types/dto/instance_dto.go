@@ -188,6 +188,9 @@ type ExecutionInfo struct {
 	// TransferredAt 转办时间，格式 "2006-01-02 15:04:05"；旧数据为 RFC3339
 	// 序列化文本时规整为该格式
 	TransferredAt string `json:"transferredAt,omitempty"`
+	// ForwardBy 转办操作人 userId：仅转办轨迹行（taskType=forward）携带，从
+	// 行变量 forward_by 读出；时间线据此渲染转办节点处理人
+	ForwardBy string `json:"forwardBy,omitempty"`
 	// SubExecutions 子任务明细：加签（countersign 父子结构）场景下挂该任务的
 	// 会签子任务，普通审批任务为空
 	SubExecutions []ExecutionInfo `json:"subExecutions"`

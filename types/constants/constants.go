@@ -98,6 +98,10 @@ const (
 	VarsTransferFrom   = "transfer_from"
 	VarsTransferReason = "transfer_reason"
 	VarsTransferTime   = "transfer_time"
+	// VarsForwardBy/To 转办轨迹行（task_type=forward）记录的转办操作人与接手人：
+	// 时间线据此渲染「已转办」节点的处理人。只随归档行存续，不入活任务变量
+	VarsForwardBy = "forward_by"
+	VarsForwardTo = "forward_to"
 	// VarsRecallCount 实例变量里的累计收回次数，达到 MaxRecallCountPerInstance
 	// 后拒绝继续收回，防止收回→重投→再收回循环骚扰后续审批人
 	VarsRecallCount = "_recallCount"
@@ -126,6 +130,10 @@ const (
 	// TaskTypeRecall 终态收回的轨迹记录行（落归档任务表，非真实任务）：
 	// 时间轴与打印据此在两轮审批之间渲染收回节点，标注操作人与原因
 	TaskTypeRecall = "recall"
+	// TaskTypeForward 转办的轨迹记录行（落归档任务表，非真实任务）：任务本体
+	// 原地换受理人，时间轴与打印据此把转办前处理人渲染成独立节点（对标主流
+	// IM 审批的「已转审」形态）。无办理人、不进按办理人统计的已办/统计口径
+	TaskTypeForward = "forward"
 )
 
 // DSL 节点类型（DefinitionJSON metadata.nodes[].type 取值，与 rulego 注册的

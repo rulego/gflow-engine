@@ -551,6 +551,9 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 	if err := taskDAO.Update(ctx, task); err != nil {
 		return fmt.Errorf("failed to transfer task: %w", err)
 	}
+	if err := s.writeForwardTraceRow(ctx, scope, task, fromUserID, toUserID, reason, now); err != nil {
+		return err
+	}
 	// 触发转办事件（AfterCommit：回滚不产生幽灵事件）
 	if s.workflowEngine.GetTaskEventListener() != nil {
 		instanceID := ""
@@ -582,6 +585,56 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 			DispatchTaskEvent(s.workflowEngine.GetTaskEventListener(), evt, ctx)
 			return nil
 		})
+	}
+	return nil
+}
+
+// writeForwardTraceRow 转办轨迹记录行：任务本体原地换受理人，时间轴与打印据
+// 这条归档行把转办前处理人渲染成独立节点（对标主流 IM 审批的「已转审」形态）。
+// 不设办理人——已办列表与审批统计都按 assignee+completed 口径计数，带办理人
+// 会虚增转办人的已办数字；转办前处理人进 forward_by 变量、原因进意见。
+// 与换受理人同事务：轨迹缺失的转办是不完整审计。CreatedAt 锚在活任务创建
+// 时间之前、按已有轨迹数递增毫秒偏移——时间线按创建时间排序，这样多次转办
+// 的链路始终有序且都排在活任务前面。
+func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *InstanceScope, task *model.WfTask, fromUserID, toUserID, reason string, transferredAt time.Time) error {
+	if task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
+		return nil
+	}
+	instanceID := *task.ProcessInstanceID
+	q := scope.HiTasks().Underlying()
+	existing, err := q.WfHiTask.WithContext(ctx).
+		Where(q.WfHiTask.ProcessInstanceID.Eq(instanceID),
+			q.WfHiTask.TaskType.Eq(string(constants.TaskTypeForward))).
+		Count()
+	if err != nil {
+		return fmt.Errorf("failed to count forward trace rows: %w", err)
+	}
+	traceVars, err := utils2.ToJSON(map[string]interface{}{
+		constants.VarsForwardBy: fromUserID,
+		constants.VarsForwardTo: toUserID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to serialize forward trace variables: %w", err)
+	}
+	forwarded := string(enums.EndReasonForwarded)
+	marker := &model.WfHiTask{
+		ID:                s.idGenerator.GenerateTaskID(),
+		ProcessInstanceID: &instanceID,
+		ProcessID:         task.ProcessID,
+		TaskDefKey:        &task.TaskDefKey,
+		Name:              task.Name,
+		TaskType:          constants.TaskTypeForward,
+		Status:            string(enums.TaskStatusCompleted),
+		EndReason:         &forwarded,
+		Variables:         &traceVars,
+		Comment:           &reason,
+		CreatedBy:         fromUserID,
+		CreatedAt:         task.CreatedAt.Add(-time.Duration(existing+1) * time.Millisecond),
+		EndedAt:           &transferredAt,
+		TenantID:          task.TenantID,
+	}
+	if err := scope.HiTasks().Create(ctx, marker); err != nil {
+		return fmt.Errorf("failed to persist forward trace row: %w", err)
 	}
 	return nil
 }

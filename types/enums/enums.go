@@ -111,6 +111,8 @@ const (
 	EndReasonReturned EndReason = "returned"
 	// EndReasonRecalled 审批人收回（撤销自己已通过的审批，重新待审）
 	EndReasonRecalled EndReason = "recalled"
+	// EndReasonForwarded 转办轨迹记录行（task_type=forward，非真实任务）
+	EndReasonForwarded EndReason = "forwarded"
 )
 
 // ActionType 操作类型枚举

@@ -563,6 +563,10 @@ func Task2ExecutionInfo(task *model.WfTask, tasks []*model.WfTask) dto.Execution
 		if v, ok := m[constants.VarsTransferTime].(string); ok {
 			executionInfo.TransferredAt = formatTransferTime(v)
 		}
+		// 转办轨迹行的操作人：时间线把该行渲染成「已转办」节点，处理人取此值
+		if v, ok := m[constants.VarsForwardBy].(string); ok {
+			executionInfo.ForwardBy = v
+		}
 	}
 	if task.EndedAt != nil {
 		executionInfo.EndedAt = task.EndedAt.Format(constants.TimeFormatLayout)
