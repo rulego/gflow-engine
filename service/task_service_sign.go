@@ -416,6 +416,10 @@ func (s *TaskServiceImpl) reevaluateCountersignAfterReduce(ctx context.Context, 
 	if perr != nil || vars == nil {
 		vars = map[string]interface{}{}
 	}
+	// 流转出口剥离引擎保留键：merge 已把子任务变量并进父任务（含子票上的
+	// 转办/兜底/加签标记），不剥离会误标下游——transfer_from 让下游任务凭空
+	// 显示转办、fallback_policy 骗自动通过钩子。与 complete 通道出口同口径
+	vars = stripReservedTaskVars(vars)
 	// 孤儿任务无实例可驱动，无可注册的流转副作用
 	if inst != nil {
 		scope.AfterCommit(func() error {

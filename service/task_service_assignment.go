@@ -617,12 +617,23 @@ func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *Insta
 		return fmt.Errorf("failed to serialize forward trace variables: %w", err)
 	}
 	forwarded := string(enums.EndReasonForwarded)
+	// 会签子任务的转办轨迹行挂父任务（ParentID）：时间线嵌在该会签节点的子票
+	// 列表里渲染，而不是孤悬顶层；标题取节点名（子任务名含受理人ID不可读）。
+	// 计票与减签都只查活任务表，归档轨迹行不参与，挂 ParentID 无副作用
+	traceParentID := task.ParentID
+	traceName := task.Name
+	if traceParentID != nil && *traceParentID != "" {
+		if parent, perr := scope.Tasks().Get(ctx, *traceParentID); perr == nil && parent != nil && parent.Name != "" {
+			traceName = parent.Name
+		}
+	}
 	marker := &model.WfHiTask{
 		ID:                s.idGenerator.GenerateTaskID(),
 		ProcessInstanceID: &instanceID,
 		ProcessID:         task.ProcessID,
 		TaskDefKey:        &task.TaskDefKey,
-		Name:              task.Name,
+		ParentID:          traceParentID,
+		Name:              traceName,
 		TaskType:          constants.TaskTypeForward,
 		Status:            string(enums.TaskStatusCompleted),
 		EndReason:         &forwarded,

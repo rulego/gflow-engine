@@ -382,6 +382,85 @@ func TestTransferWritesForwardTraceRow(t *testing.T) {
 	require.True(t, rows[1].CreatedAt.Before(live2.CreatedAt), "轨迹行全部排在活任务之前")
 }
 
+// 会签子任务的转办：轨迹行挂父任务（ParentID）且标题取节点名——时间线嵌在
+// 会签节点的子票列表里渲染；计票/减签只查活任务表，归档行挂 ParentID 无副作用。
+func TestTransferSubTaskTraceRowNestsUnderParent(t *testing.T) {
+	q := proxyAuditDB(t)
+	proxySeedInstance(t, q, "px-inst-fwd2")
+	parent := &model.WfTask{
+		ID: "t-fwd2-parent", ProcessInstanceID: secFixStrPtr("px-inst-fwd2"), ProcessID: "proc-px",
+		TaskDefKey: "a", Name: "会签审批", TaskType: constants.TaskTypeUserTask,
+		Status: string(enums.TaskStatusActive), ApprovalType: string(enums.ApprovalTypeCountersign),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now().Add(-time.Hour),
+	}
+	require.NoError(t, q.WfTask.Create(parent))
+	sub := &model.WfTask{
+		ID: "t-fwd2-sub", ProcessInstanceID: secFixStrPtr("px-inst-fwd2"), ProcessID: "proc-px",
+		ParentID: secFixStrPtr("t-fwd2-parent"), TaskDefKey: "a", Name: "会签审批_48001",
+		TaskType: constants.TaskTypeUserTask, Status: string(enums.TaskStatusActive),
+		Assignee: secFixStrPtr("yi"), SequenceOrder: 1, ApprovalType: string(enums.ApprovalTypeCountersign),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now().Add(-time.Hour),
+	}
+	require.NoError(t, q.WfTask.Create(sub))
+
+	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1"})
+	require.NoError(t, svc.Transfer(ctx, Actor{UserID: "yi", TenantID: "t1"}, "t-fwd2-sub", "er", "代审"))
+
+	rows, err := q.WfHiTask.WithContext(context.Background()).
+		Where(q.WfHiTask.ProcessInstanceID.Eq("px-inst-fwd2"),
+			q.WfHiTask.TaskType.Eq(string(constants.TaskTypeForward))).
+		Find()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].ParentID)
+	require.Equal(t, "t-fwd2-parent", *rows[0].ParentID, "轨迹行挂会签父任务，时间线嵌进子票列表")
+	require.Equal(t, "会签审批", rows[0].Name, "标题取节点名，子任务名含受理人ID不可读")
+
+	// 计票不受影响：子任务原地换人，未投票仍是未完成（all 规则 0/1 不定局）
+	isCompleted, _, err := svc.checkCountersignSubTaskCompletionInternal(ctx, bareScope(q), "t-fwd2-parent", `{"type":"all"}`)
+	require.NoError(t, err)
+	require.False(t, isCompleted)
+	live, err := svc.taskDAO.Get(ctx, "t-fwd2-sub")
+	require.NoError(t, err)
+	require.Equal(t, "er", *live.Assignee)
+}
+
+// 会签合并剥离保留键：子票上的转办/兜底/加签标记不合并进父任务变量，
+// 否则父行被时间线误标、流转出口漏剥时会污染下游。
+func TestCountersignMergeStripsReservedVars(t *testing.T) {
+	q := proxyAuditDB(t)
+	parent := &model.WfTask{
+		ID: "t-merge-parent", ProcessInstanceID: secFixStrPtr("px-merge"), ProcessID: "proc-px",
+		TaskDefKey: "a", Name: "会签审批", TaskType: constants.TaskTypeUserTask,
+		Status: string(enums.TaskStatusActive), TenantID: "t1", CreatedBy: "system",
+		Variables: secFixStrPtr(`{"days":1}`), CreatedAt: time.Now(),
+	}
+	require.NoError(t, q.WfTask.Create(parent))
+	approved := "approved"
+	sub := &model.WfTask{
+		ID: "t-merge-sub", ProcessInstanceID: secFixStrPtr("px-merge"), ProcessID: "proc-px",
+		ParentID: secFixStrPtr("t-merge-parent"), TaskDefKey: "a", Name: "会签审批_48001",
+		TaskType: constants.TaskTypeUserTask, Status: string(enums.TaskStatusCompleted),
+		EndReason: &approved, TenantID: "t1", CreatedBy: "system",
+		Variables: secFixStrPtr(`{"approved":true,"transfer_from":"yi","transfer_reason":"出差","sign_added_by":"yi","fallback_policy":"admin","days":2}`),
+		CreatedAt: time.Now(),
+	}
+	require.NoError(t, q.WfTask.Create(sub))
+
+	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
+	svc.mergeCountersignSubTaskVariables(context.Background(), bareScope(q), parent)
+
+	merged, err := ParseVariablesJSON(parent.Variables)
+	require.NoError(t, err)
+	require.Equal(t, float64(2), merged["days"], "业务变量照常合并（子任务覆盖同名键为既有语义）")
+	require.Equal(t, true, merged["approved"])
+	require.NotContains(t, merged, "transfer_from")
+	require.NotContains(t, merged, "transfer_reason")
+	require.NotContains(t, merged, "sign_added_by")
+	require.NotContains(t, merged, "fallback_policy")
+}
+
 // 代审标记只留在被代审的任务行上：流转下传变量（ExecuteNext 入参）不得携带
 // proxy 键——下游任务的变量快照来自这份 vars，沾上会被误标代审、误拦收回。
 func TestProxyAudit_MarkNotLeakedDownstream(t *testing.T) {

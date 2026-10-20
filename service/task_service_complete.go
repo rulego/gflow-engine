@@ -607,13 +607,13 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 			continue
 		}
 		for k, v := range sv {
-			// 代审标记属于子任务自己的票，不合并进父任务
-			if k == constants.VarsProxyOperator || k == constants.VarsProxyTime {
-				continue
-			}
 			merged[k] = v
 		}
 	}
+	// 代审/兜底/加签/转办标记属于子任务自己的票，不合并进父任务：父行沾上
+	// 会被时间线误标（如把子票的转办渲染到会签节点本体），也不再向任何
+	// 流转出口泄漏（出口另有 stripReservedTaskVars 兜底）
+	stripEngineReservedVars(merged)
 	out, err := json.Marshal(merged)
 	if err != nil {
 		return
