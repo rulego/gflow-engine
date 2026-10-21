@@ -593,22 +593,17 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 // 这条归档行把转办前处理人渲染成独立节点（对标主流 IM 审批的「已转审」形态）。
 // 不设办理人——已办列表与审批统计都按 assignee+completed 口径计数，带办理人
 // 会虚增转办人的已办数字；转办前处理人进 forward_by 变量、原因进意见。
-// 与换受理人同事务：轨迹缺失的转办是不完整审计。CreatedAt 锚在活任务创建
-// 时间之前、按已有轨迹数递增毫秒偏移——时间线按创建时间排序，这样多次转办
-// 的链路始终有序且都排在活任务前面。
+// 与换受理人同事务：轨迹缺失的转办是不完整审计。
+// CreatedAt 锚在转办真实时刻（与 recall 轨迹行同口径）：时间线按创建时间升序，
+// 活任务创建时间之前的锚点无法按发生顺序安放多次转办——每条轨迹行落库时
+// 看不到后续转办，可用的偏移总量不可预知。不设 TaskDefKey（同 recall 轨迹
+// 行）：轨迹行不是节点实例，认领节点身份会被按 taskDefKey 聚合节点状态的
+// 时间线消费方误当成已完成的节点本体。
 func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *InstanceScope, task *model.WfTask, fromUserID, toUserID, reason string, transferredAt time.Time) error {
 	if task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
 		return nil
 	}
 	instanceID := *task.ProcessInstanceID
-	q := scope.HiTasks().Underlying()
-	existing, err := q.WfHiTask.WithContext(ctx).
-		Where(q.WfHiTask.ProcessInstanceID.Eq(instanceID),
-			q.WfHiTask.TaskType.Eq(string(constants.TaskTypeForward))).
-		Count()
-	if err != nil {
-		return fmt.Errorf("failed to count forward trace rows: %w", err)
-	}
 	traceVars, err := utils2.ToJSON(map[string]interface{}{
 		constants.VarsForwardBy: fromUserID,
 		constants.VarsForwardTo: toUserID,
@@ -631,7 +626,6 @@ func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *Insta
 		ID:                s.idGenerator.GenerateTaskID(),
 		ProcessInstanceID: &instanceID,
 		ProcessID:         task.ProcessID,
-		TaskDefKey:        &task.TaskDefKey,
 		ParentID:          traceParentID,
 		Name:              traceName,
 		TaskType:          constants.TaskTypeForward,
@@ -640,7 +634,7 @@ func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *Insta
 		Variables:         &traceVars,
 		Comment:           &reason,
 		CreatedBy:         fromUserID,
-		CreatedAt:         task.CreatedAt.Add(-time.Duration(existing+1) * time.Millisecond),
+		CreatedAt:         transferredAt,
 		EndedAt:           &transferredAt,
 		TenantID:          task.TenantID,
 	}

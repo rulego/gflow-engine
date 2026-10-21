@@ -102,6 +102,10 @@ const (
 	// 时间线据此渲染「已转办」节点的处理人。只随归档行存续，不入活任务变量
 	VarsForwardBy = "forward_by"
 	VarsForwardTo = "forward_to"
+	// VarsReassignPrefix 改派（Reassign/交接改派）留痕键前缀：operator/from/to/
+	// reason/time 五件套由 applyReassign 写入任务变量，随行归档；与代审/兜底/
+	// 转办留痕同属引擎保留键，审批提交与流转出口按前缀整体剥离
+	VarsReassignPrefix = "reassign_"
 	// VarsRecallCount 实例变量里的累计收回次数，达到 MaxRecallCountPerInstance
 	// 后拒绝继续收回，防止收回→重投→再收回循环骚扰后续审批人
 	VarsRecallCount = "_recallCount"

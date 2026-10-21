@@ -7,7 +7,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/rulego/gflow-engine/model"
@@ -260,19 +259,9 @@ func (s *TaskServiceImpl) removeTaskVariableInternal(ctx context.Context, scope 
 
 // isReservedTaskVariableKey 引擎托管的任务变量键：办理人经 SetTaskVariables/
 // RemoveTaskVariable 不得读写改名派溯源、代审标记、兜底留痕、加签留痕、转办
-// 留痕与推进缓存（与审批主路径 stripEngineReservedVars 剥离的键集同源）。
-// 前缀保留留给未来的 reassign_* 家族字段。
+// 留痕、改派留痕与推进缓存。剥离键集与审批提交/流转出口共用
+// isEngineReservedVarKey，外加顺序签推进缓存 _sequentialAssignees
+// （推进依赖，剥离集刻意不含它）。
 func isReservedTaskVariableKey(key string) bool {
-	return key == constants.VarsProxyOperator ||
-		key == constants.VarsProxyTime ||
-		key == constants.VarsFallbackPolicy ||
-		key == constants.VarsFallbackFrom ||
-		key == constants.VarsFallbackReason ||
-		key == constants.VarsFallbackTime ||
-		key == constants.VarsSignAddedBy ||
-		key == constants.VarsTransferFrom ||
-		key == constants.VarsTransferReason ||
-		key == constants.VarsTransferTime ||
-		key == constants.KeySequentialAssignees ||
-		strings.HasPrefix(key, "reassign_")
+	return isEngineReservedVarKey(key) || key == constants.KeySequentialAssignees
 }

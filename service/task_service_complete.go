@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -594,6 +595,15 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 	if perr != nil || merged == nil {
 		merged = map[string]interface{}{}
 	}
+	// 父任务自身的留痕键（如审批人为空兜底写入的 fallback_*）是合法归档数据，
+	// 先快照：子票的保留键属于子票自己的票不许合并，但父行自身的留痕要在
+	// 剥离后回填——与单任务节点归档自身变量的口径一致
+	parentOwned := make(map[string]interface{}, len(engineReservedVarKeys))
+	for k, v := range merged {
+		if isEngineReservedVarKey(k) {
+			parentOwned[k] = v
+		}
+	}
 	subTasks, err := scope.Tasks().GetByParentID(ctx, parentTask.ID)
 	if err != nil {
 		return
@@ -610,10 +620,13 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 			merged[k] = v
 		}
 	}
-	// 代审/兜底/加签/转办标记属于子任务自己的票，不合并进父任务：父行沾上
+	// 代审/兜底/加签/转办/改派标记属于子任务自己的票，不合并进父任务：父行沾上
 	// 会被时间线误标（如把子票的转办渲染到会签节点本体），也不再向任何
 	// 流转出口泄漏（出口另有 stripReservedTaskVars 兜底）
 	stripEngineReservedVars(merged)
+	for k, v := range parentOwned {
+		merged[k] = v
+	}
 	out, err := json.Marshal(merged)
 	if err != nil {
 		return
@@ -638,7 +651,9 @@ func proxyMarkVariables(vars *string, operator string, now time.Time) (*string, 
 	return &out, nil
 }
 
-// engineReservedVarKeys 引擎保留标记键全集：代审、兜底与转办留痕，任务级审计数据。
+// engineReservedVarKeys 引擎保留标记键的精确键集：代审、兜底与转办留痕，任务级
+// 审计数据。改派留痕 reassign_* 是键族（前缀匹配），由 isEngineReservedVarKey
+// 一并覆盖。
 var engineReservedVarKeys = []string{
 	constants.VarsProxyOperator, constants.VarsProxyTime,
 	constants.VarsFallbackPolicy, constants.VarsFallbackFrom,
@@ -647,14 +662,29 @@ var engineReservedVarKeys = []string{
 	constants.VarsTransferFrom, constants.VarsTransferReason, constants.VarsTransferTime,
 }
 
+// isEngineReservedVarKey 判断任务变量键是否属于引擎保留集：精确键集加
+// reassign_* 前缀。审批提交剥离（stripEngineReservedVars）、流转出口剥离
+// （stripReservedTaskVars）与变量接口禁写（isReservedTaskVariableKey）
+// 共用本口径，不得各自维护键集。
+func isEngineReservedVarKey(key string) bool {
+	for _, k := range engineReservedVarKeys {
+		if key == k {
+			return true
+		}
+	}
+	return strings.HasPrefix(key, constants.VarsReassignPrefix)
+}
+
 // stripEngineReservedVars 就地剥除审批提交变量里的引擎保留键，防伪造代审
 // 留痕或预埋兜底标记骗过自动通过钩子。
 func stripEngineReservedVars(vars map[string]interface{}) {
 	if vars == nil {
 		return
 	}
-	for _, k := range engineReservedVarKeys {
-		delete(vars, k)
+	for k := range vars {
+		if isEngineReservedVarKey(k) {
+			delete(vars, k)
+		}
 	}
 }
 
@@ -662,13 +692,9 @@ func stripEngineReservedVars(vars map[string]interface{}) {
 // 下传会误标时间线、误拦收回，还会把下游"审批人恰为发起人"的常规任务
 // 骗进兜底自动通过。无标记时原样返回。
 func stripReservedTaskVars(m map[string]interface{}) map[string]interface{} {
-	reserved := make(map[string]bool, len(engineReservedVarKeys))
-	for _, k := range engineReservedVarKeys {
-		reserved[k] = true
-	}
 	found := false
 	for k := range m {
-		if reserved[k] {
+		if isEngineReservedVarKey(k) {
 			found = true
 			break
 		}
@@ -678,7 +704,7 @@ func stripReservedTaskVars(m map[string]interface{}) map[string]interface{} {
 	}
 	out := make(map[string]interface{}, len(m))
 	for k, v := range m {
-		if !reserved[k] {
+		if !isEngineReservedVarKey(k) {
 			out[k] = v
 		}
 	}
@@ -689,9 +715,18 @@ func stripReservedTaskVars(m map[string]interface{}) map[string]interface{} {
 // 把 assignee 还原为 Owner 并清空 Owner，合并 delegatee 的意见到变量供原审批人参考。
 func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *InstanceScope, task *model.WfTask, request *ApprovalRequest) error {
 	taskDAO := scope.Tasks()
+	// 提交变量与审批主路径同口径过滤：API 审批按表单字段权限过滤 + 剥离引擎
+	// 保留键。委派归还在主路径过滤之前提前 return，须自持同一防线，否则被委派
+	// 人可借 variables 伪造 transfer_from/proxy_operator 等留痕（内部调用不携带
+	// 用户变量，不受影响）
+	reqVars := request.Variables
+	if GetCallingMode(ctx) == CallingModeAPI {
+		reqVars = s.filterVariablesByFormPermissions(ctx, scope, task, request.Variables)
+		stripEngineReservedVars(reqVars)
+	}
 	// 变量合并失败必须拒绝归还（fail-closed）：静默吞掉会丢弃被委派人提交的
 	// 审批意见，与审批主路径对损坏变量的口径一致
-	merged, err := s.mergeVariables(task.Variables, request.Variables)
+	merged, err := s.mergeVariables(task.Variables, reqVars)
 	if err != nil {
 		return fmt.Errorf("failed to merge variables: %w", err)
 	}

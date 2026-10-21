@@ -339,7 +339,7 @@ func TestExecutionInfo_TransferTrace(t *testing.T) {
 }
 
 // 转办落轨迹行：归档表新增 task_type=forward 记录，无办理人（防已办/统计口径
-// 虚增），转办人/接手人进变量、原因进意见；多次转办按创建时间有序且都排在活任务前面。
+// 虚增），转办人/接手人进变量、原因进意见；多次转办按发生顺序排列（真实时刻锚）。
 func TestTransferWritesForwardTraceRow(t *testing.T) {
 	q := proxyAuditDB(t)
 	proxySeedInstance(t, q, "px-inst-fwd")
@@ -365,21 +365,22 @@ func TestTransferWritesForwardTraceRow(t *testing.T) {
 	rows := fwdRows()
 	require.Len(t, rows, 1)
 	require.Nil(t, rows[0].Assignee, "轨迹行不设办理人：已办/统计按 assignee+completed 计数")
+	require.Nil(t, rows[0].TaskDefKey, "轨迹行不认领节点身份：按 taskDefKey 聚合节点状态的时间线会把在途节点误判为已完成")
 	require.Equal(t, string(enums.EndReasonForwarded), *rows[0].EndReason)
 	require.Equal(t, "出差在外", *rows[0].Comment)
 	require.Contains(t, *rows[0].Variables, `"forward_by":"yi"`)
 	require.Contains(t, *rows[0].Variables, `"forward_to":"er"`)
-	require.False(t, rows[0].CreatedAt.After(live.CreatedAt), "轨迹行须排在活任务之前")
+	require.False(t, rows[0].CreatedAt.Before(live.CreatedAt), "轨迹行锚在转办真实时刻，不早于活任务创建时间")
 
-	// 第二次转办：轨迹链递增且有序，仍全部早于活任务
+	// 第二次转办：轨迹链按转办发生顺序排列（真实时刻锚，同毫秒时插入序兜底）
 	require.NoError(t, svc.Transfer(ctx, Actor{UserID: "er", TenantID: "t1"}, "t-fwd", "san", "接力处理"))
 	rows = fwdRows()
 	require.Len(t, rows, 2)
-	require.True(t, rows[0].CreatedAt.Before(rows[1].CreatedAt), "多次转办的轨迹行按创建时间有序")
+	require.Equal(t, "出差在外", *rows[0].Comment, "先发生的转办排在前")
+	require.Equal(t, "接力处理", *rows[1].Comment, "后发生的转办排在后")
 	live2, err := svc.taskDAO.Get(ctx, "t-fwd")
 	require.NoError(t, err)
 	require.Equal(t, "san", *live2.Assignee)
-	require.True(t, rows[1].CreatedAt.Before(live2.CreatedAt), "轨迹行全部排在活任务之前")
 }
 
 // 会签子任务的转办：轨迹行挂父任务（ParentID）且标题取节点名——时间线嵌在
@@ -426,15 +427,17 @@ func TestTransferSubTaskTraceRowNestsUnderParent(t *testing.T) {
 	require.Equal(t, "er", *live.Assignee)
 }
 
-// 会签合并剥离保留键：子票上的转办/兜底/加签标记不合并进父任务变量，
-// 否则父行被时间线误标、流转出口漏剥时会污染下游。
+// 会签合并剥离保留键：子票上的转办/兜底/加签/改派标记不合并进父任务变量，
+// 否则父行被时间线误标、流转出口漏剥时会污染下游；父任务自身的留痕键
+// （如兜底 fallback_*）是合法归档数据，剥离后回填。
 func TestCountersignMergeStripsReservedVars(t *testing.T) {
 	q := proxyAuditDB(t)
 	parent := &model.WfTask{
 		ID: "t-merge-parent", ProcessInstanceID: secFixStrPtr("px-merge"), ProcessID: "proc-px",
 		TaskDefKey: "a", Name: "会签审批", TaskType: constants.TaskTypeUserTask,
 		Status: string(enums.TaskStatusActive), TenantID: "t1", CreatedBy: "system",
-		Variables: secFixStrPtr(`{"days":1}`), CreatedAt: time.Now(),
+		Variables: secFixStrPtr(`{"days":1,"fallback_policy":"tenant_admin","fallback_reason":"无审批人"}`),
+		CreatedAt: time.Now(),
 	}
 	require.NoError(t, q.WfTask.Create(parent))
 	approved := "approved"
@@ -443,7 +446,7 @@ func TestCountersignMergeStripsReservedVars(t *testing.T) {
 		ParentID: secFixStrPtr("t-merge-parent"), TaskDefKey: "a", Name: "会签审批_48001",
 		TaskType: constants.TaskTypeUserTask, Status: string(enums.TaskStatusCompleted),
 		EndReason: &approved, TenantID: "t1", CreatedBy: "system",
-		Variables: secFixStrPtr(`{"approved":true,"transfer_from":"yi","transfer_reason":"出差","sign_added_by":"yi","fallback_policy":"admin","days":2}`),
+		Variables: secFixStrPtr(`{"approved":true,"transfer_from":"yi","transfer_reason":"出差","sign_added_by":"yi","fallback_policy":"admin","reassign_from":"yi","reassign_operator":"admin","days":2}`),
 		CreatedAt: time.Now(),
 	}
 	require.NoError(t, q.WfTask.Create(sub))
@@ -458,7 +461,49 @@ func TestCountersignMergeStripsReservedVars(t *testing.T) {
 	require.NotContains(t, merged, "transfer_from")
 	require.NotContains(t, merged, "transfer_reason")
 	require.NotContains(t, merged, "sign_added_by")
-	require.NotContains(t, merged, "fallback_policy")
+	require.NotContains(t, merged, "reassign_from", "改派留痕键族随前缀剥离")
+	require.NotContains(t, merged, "reassign_operator")
+	// 父任务自身的兜底留痕保留：子票的 fallback_policy=admin 不得覆盖父自身的值
+	require.Equal(t, "tenant_admin", merged["fallback_policy"], "父任务自身的留痕键剥离后回填")
+	require.Equal(t, "无审批人", merged["fallback_reason"])
+}
+
+// 委派归还是 CompleteWithApproval 的提前 return 旁路：提交变量与审批主路径
+// 同口径剥离保留键——被委派人借 variables 伪造 transfer_from/proxy_operator
+// 会污染任务留痕（时间线据此渲染假转办、recall 守卫据此误拦）。
+func TestDelegatedResolveStripsReservedVars(t *testing.T) {
+	q := proxyAuditDB(t)
+	proxySeedInstance(t, q, "px-inst-dlg")
+	proxySeedTask(t, q, "t-dlg", "px-inst-dlg", "a", "userB", `{}`)
+	// 委派态：Assignee=被委派人，Owner=原审批人
+	_, err := q.WfTask.WithContext(context.Background()).
+		Where(q.WfTask.ID.Eq("t-dlg")).
+		UpdateSimple(q.WfTask.Owner.Value("userA"))
+	require.NoError(t, err)
+
+	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
+	err = svc.CompleteWithApproval(context.Background(), Actor{UserID: "userB", TenantID: "t1"}, &ApprovalRequest{
+		TaskID:         "t-dlg",
+		ApprovalResult: enums.ApprovalResultApproved,
+		Comment:        "同意",
+		Variables: map[string]interface{}{
+			"amount":         100,
+			"transfer_from":  "someone",
+			"proxy_operator": "admin",
+			"reassign_from":  "someone",
+		},
+	})
+	require.NoError(t, err)
+
+	row, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-dlg")).First()
+	require.NoError(t, err)
+	require.Equal(t, "userA", *row.Assignee, "委派归还：任务回到原审批人名下")
+	vars, err := ParseVariablesJSON(row.Variables)
+	require.NoError(t, err)
+	require.Equal(t, float64(100), vars["amount"], "业务变量照常合并")
+	require.NotContains(t, vars, "transfer_from")
+	require.NotContains(t, vars, "proxy_operator")
+	require.NotContains(t, vars, "reassign_from")
 }
 
 // 代审标记只留在被代审的任务行上：流转下传变量（ExecuteNext 入参）不得携带

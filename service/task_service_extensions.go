@@ -29,17 +29,34 @@ func (s *TaskServiceImpl) ScanOverdueTasks(ctx context.Context, limit int) ([]*m
 		// 都不应在其上触发。
 		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
 		PageRequest: dto.PageRequest{
-			Page:     1,
-			PageSize: limit,
-			OrderBy:  "due_date",
-			Status:   []string{string(enums.TaskStatusActive), string(enums.TaskStatusPending)},
+			OrderBy: "due_date",
+			Status:  []string{string(enums.TaskStatusActive), string(enums.TaskStatusPending)},
 		},
 	}
-	tasks, _, err := s.taskDAO.List(ctx, q)
-	if err != nil {
-		return nil, fmt.Errorf("failed to scan overdue tasks: %w", err)
+	// 翻页取到 limit 条为止：DAO 分页被 MaxPageSize=200 硬截断，单页传大
+	// limit 会被静默削到 200，逾期任务超量时尾部任务始终扫不到。due_date
+	// 同毫秒并列时按任务 ID 去重防跨页重复
+	var all []*model.WfTask
+	seen := make(map[string]bool)
+	for page := 1; len(all) < limit; page++ {
+		pageQuery := *q
+		pageQuery.Page = page
+		pageQuery.PageSize = min(limit-len(all), TaskFetchAllPageSize)
+		tasks, total, err := s.taskDAO.List(ctx, &pageQuery)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan overdue tasks: %w", err)
+		}
+		for _, t := range tasks {
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				all = append(all, t)
+			}
+		}
+		if int64(len(all)) >= total || len(tasks) == 0 {
+			break
+		}
 	}
-	return filterOverdueTasks(tasks, now), nil
+	return filterOverdueTasks(all, now), nil
 }
 
 // GetClaimableInstanceIDs 批量判断哪些实例存在"当前用户可认领"的任务。

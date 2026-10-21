@@ -17,9 +17,26 @@ import (
 	"github.com/rulego/gflow-engine/types/enums"
 )
 
-// statsPageSizeFetchAll 统计聚合需要拉全量任务，分页大小取一个远超单用户
-// 待办量的值，避免聚合结果被截断。
-const statsPageSizeFetchAll = 10000
+// queryAllTasksPaged 统计聚合的翻页取全量：DAO 分页被 MaxPageSize=200 硬截断，
+// 单页传大 PageSize 会被静默削到 200，超量后聚合结果少算。与 listAllTasks
+// 同口径循环翻页，保留 QueryHistory 分流语义。
+func (s *TaskServiceImpl) queryAllTasksPaged(ctx context.Context, query *dto.TaskQuery) ([]*model.WfTask, error) {
+	var all []*model.WfTask
+	q := *query
+	q.Page = 1
+	q.PageSize = TaskFetchAllPageSize
+	for {
+		tasks, total, err := s.QueryTasks(ctx, &q)
+		if err != nil {
+			return all, err
+		}
+		all = append(all, tasks...)
+		if int64(len(all)) >= total || len(tasks) == 0 {
+			return all, nil
+		}
+		q.Page++
+	}
+}
 
 // GetTaskList 获取任务列表（前端API专用）
 func (s *TaskServiceImpl) GetTaskList(ctx context.Context, actor Actor, query *dto.TaskQuery) ([]*model.WfTask, int64, error) {
@@ -220,12 +237,11 @@ func (s *TaskServiceImpl) countTasksBothTables(ctx context.Context, userID, tena
 
 // countOverdueActiveTasks 当前未完成且已过 dueDate 的任务数。
 func (s *TaskServiceImpl) countOverdueActiveTasks(ctx context.Context, userID, tenantID string, now time.Time) (int64, error) {
-	tasks, _, err := s.QueryTasks(ctx, &dto.TaskQuery{
+	tasks, err := s.queryAllTasksPaged(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID,
 		InstanceStatuses: []string{string(enums.InstanceStatusActive)},
 		PageRequest: dto.PageRequest{
-			Status:   []string{string(enums.TaskStatusPending), string(enums.TaskStatusActive)},
-			PageSize: statsPageSizeFetchAll,
+			Status: []string{string(enums.TaskStatusPending), string(enums.TaskStatusActive)},
 		},
 	})
 	if err != nil {
@@ -247,18 +263,17 @@ func countOverdueFromTasks(tasks []*model.WfTask, now time.Time) int64 {
 
 // aggregateMonthCompleted 本月已完成任务切片，派生通过/拒绝/平均耗时。
 func (s *TaskServiceImpl) aggregateMonthCompleted(ctx context.Context, userID, tenantID string, monthStart time.Time) (approved, rejected, total, avgDuration int64) {
-	tasks, _, err := s.QueryTasks(ctx, &dto.TaskQuery{
+	tasks, err := s.queryAllTasksPaged(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID, EndedAfter: &monthStart,
-		PageRequest: dto.PageRequest{Status: []string{string(enums.TaskStatusCompleted)}, PageSize: statsPageSizeFetchAll},
+		PageRequest: dto.PageRequest{Status: []string{string(enums.TaskStatusCompleted)}},
 	})
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to query month completed tasks")
 	}
-	histQuery := dto.TaskQuery{
+	histTasks, histErr := s.queryAllTasksPaged(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID, EndedAfter: &monthStart, QueryHistory: true,
-		PageRequest: dto.PageRequest{Status: []string{string(enums.TaskStatusCompleted)}, PageSize: statsPageSizeFetchAll},
-	}
-	histTasks, _, histErr := s.QueryTasks(ctx, &histQuery)
+		PageRequest: dto.PageRequest{Status: []string{string(enums.TaskStatusCompleted)}},
+	})
 	if histErr != nil {
 		logrus.WithError(histErr).Warn("Failed to query month completed tasks from history")
 	}
@@ -443,8 +458,7 @@ func (s *TaskServiceImpl) GetApprovalStatisticsDetail(ctx context.Context, actor
 		Assignee: userID,
 		TenantID: tenantID,
 		PageRequest: dto.PageRequest{
-			Status:   []string{string(enums.TaskStatusCompleted)},
-			PageSize: statsPageSizeFetchAll,
+			Status: []string{string(enums.TaskStatusCompleted)},
 		},
 	}
 	if startDate != nil {
@@ -454,14 +468,14 @@ func (s *TaskServiceImpl) GetApprovalStatisticsDetail(ctx context.Context, actor
 		filteredQuery.EndedBefore = endDate
 	}
 
-	filteredTasks, _, err := s.QueryTasks(ctx, filteredQuery)
+	filteredTasks, err := s.queryAllTasksPaged(ctx, filteredQuery)
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to query filtered completed tasks")
 		filteredTasks = nil
 	}
 	// 也查询历史表，合并结果
 	filteredQuery.QueryHistory = true
-	filteredTasksHistory, _, histErr := s.QueryTasks(ctx, filteredQuery)
+	filteredTasksHistory, histErr := s.queryAllTasksPaged(ctx, filteredQuery)
 	if histErr != nil {
 		logrus.WithError(histErr).Warn("Failed to query filtered completed tasks from history")
 	} else if len(filteredTasksHistory) > 0 {

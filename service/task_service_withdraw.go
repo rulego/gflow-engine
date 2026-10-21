@@ -99,7 +99,9 @@ func (s *TaskServiceImpl) WithdrawByInstance(ctx context.Context, actor Actor, i
 			ParentIDIsNull: true,
 		}
 		q.Status = []string{string(enums.TaskStatusActive)}
-		tasks, _, err := taskDAO.List(ctx, q)
+		// 翻页取全量：List 未设 PageSize 时按默认 10 截断，并行分支超 10 个
+		// 后第 11+ 个分支的节点级禁用配置漏校验（fail-open）
+		tasks, err := listAllTasks(ctx, taskDAO, q)
 		if err != nil {
 			return fmt.Errorf("failed to list active tasks: %w", err)
 		}
