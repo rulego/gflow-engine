@@ -437,7 +437,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 }
 
 // isInstanceVisibleToUser 判定当前用户对该实例是否有可见性。
-// 可见条件（满足任一）：发起人、该实例任一 task 的 assignee（含历史）、CC 抄送归属。
+// 可见条件（满足任一）：发起人、该实例任一 task 的 assignee（含历史）、
+// 转办轨迹行的转办操作人、CC 抄送归属。
 // 待认领候选成员不在 task.assignee 上，由调用方经 isPendingCandidateVisible 补充判定。
 // currentUserId 由调用方保证非空（空 UserID 在 GetProcessInstanceDetail 已被拒绝）。
 func isInstanceVisibleToUser(instance *model.WfInstance, tasks []*model.WfTask, currentUserId string) bool {
@@ -449,6 +450,12 @@ func isInstanceVisibleToUser(instance *model.WfInstance, tasks []*model.WfTask, 
 			continue
 		}
 		if t.Assignee != nil && *t.Assignee == currentUserId {
+			return true
+		}
+		// 转办后票原地换受理人，转办人在 assignee 口径上不可达；轨迹行的
+		// created_by 记录转办操作人，据此保留转办人对实例的可见性（对齐
+		// 主流审批：转办人转出后仍可查看单据进度，只是不可再操作）
+		if t.TaskType == string(constants.TaskTypeForward) && t.CreatedBy == currentUserId {
 			return true
 		}
 	}

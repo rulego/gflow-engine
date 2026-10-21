@@ -487,3 +487,57 @@ func TestCompleteProcessInstance_VoidsInflightTasks(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, cnt)
 }
+
+// 转办后原审批人保留实例可见性：转办把票原地换受理人，转办人在 assignee
+// 口径上不可达；凭轨迹行的 created_by 仍可读详情（对齐主流审批：转出后
+// 可查看进度，不可再操作），无关用户依旧拒绝。
+func TestGetProcessInstanceDetail_TransferorStaysVisible(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	now := time.Now()
+	forwarded := "forwarded"
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-fwd-vis", ProcessID: "proc-1", Name: "fwd_vis",
+		Status: string(enums.InstanceStatusActive), StartUserID: "starter",
+		TenantID: "t1", CreatedBy: "starter", CreatedAt: now,
+	}))
+	// 转办后的活任务：受理人已换成接手人 er
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-fwd-vis", ProcessInstanceID: secFixStrPtr("inst-fwd-vis"),
+		TaskDefKey: "approve", Name: "审批", TaskType: "user_task",
+		Status: string(enums.TaskStatusActive), Assignee: secFixStrPtr("er"),
+		ApprovalType: string(enums.ApprovalTypeSingle),
+		TenantID:     "t1", CreatedBy: "system", CreatedAt: now,
+	}))
+	// 转办轨迹行：不设 assignee（防统计虚增），转办操作人进 created_by
+	require.NoError(t, q.WfHiTask.Create(&model.WfHiTask{
+		ID: "hi-fwd-vis", ProcessInstanceID: secFixStrPtr("inst-fwd-vis"),
+		ProcessID: "proc-1", Name: "审批",
+		TaskType: constants.TaskTypeForward, Status: string(enums.TaskStatusCompleted),
+		EndReason: &forwarded, CreatedBy: "yi", CreatedAt: now, EndedAt: &now,
+		TenantID: "t1",
+	}))
+
+	taskSvc := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), hiTaskDAO: dao.NewHiTaskDAOWithQuery(q)}
+	engine := &secFixEngine{taskSvc: taskSvc}
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: engine,
+	}
+	engine.runtimeSvc = rs
+
+	// 转办人 yi：凭轨迹行可见
+	yiCtx := SetUserToCtx(ctx, &Actor{UserID: "yi", TenantID: "t1", UserName: "Yi"})
+	resp, err := rs.GetProcessInstanceDetail(yiCtx, Actor{UserID: "yi", TenantID: "t1"}, "inst-fwd-vis")
+	require.NoError(t, err, "转办人转出后仍应可读实例详情")
+	require.NotNil(t, resp)
+
+	// 无关用户 userB：依旧拒绝
+	bCtx := SetUserToCtx(ctx, &Actor{UserID: "userB", TenantID: "t1", UserName: "B"})
+	_, err = rs.GetProcessInstanceDetail(bCtx, Actor{UserID: "userB", TenantID: "t1"}, "inst-fwd-vis")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+}

@@ -76,6 +76,17 @@ func secFixDB(t *testing.T) *query.Query {
 			updated_by TEXT, updated_at DATETIME, end_reason TEXT, duration INTEGER, ended_at DATETIME,
 			start_user_id TEXT NOT NULL DEFAULT ''
 		)`,
+		// 节点级动作开关的事务内校验（requireActionEnabledInScope）经 scope 连接
+		// 读流程定义行
+		`CREATE TABLE IF NOT EXISTS wf_process (
+			id TEXT PRIMARY KEY, process_key TEXT NOT NULL, name TEXT NOT NULL,
+			version INTEGER NOT NULL DEFAULT 1, category TEXT, description TEXT,
+			definition_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+			publish_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, icon TEXT NOT NULL DEFAULT '',
+			process_type TEXT NOT NULL DEFAULT 'main', tenant_id TEXT NOT NULL,
+			created_by TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_by TEXT, updated_at DATETIME, ext TEXT
+		)`,
 	}
 	for _, ddl := range ddls {
 		require.NoError(t, db.Exec(ddl).Error)

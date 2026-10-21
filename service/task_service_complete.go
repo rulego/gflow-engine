@@ -156,11 +156,12 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	if task.Status == string(enums.TaskStatusPending) && GetCallingMode(ctx) == CallingModeAPI {
 		return fmt.Errorf("task is pending, cannot complete until it is activated or claimed: %w", ErrConflict)
 	}
-	// 检查所属实例状态：实例若处于非活跃态，需区分 API vs 内部调用
-	// - API 路径：实例 Suspended/Terminated/Cancelled/Failed 都拒绝（用户操作）
-	// - 内部路径（end-node aspect 推进 Completed 实例的尾任务）：允许，否则会卡住流程归档
-	// 注意：Completed 不在 API 拒绝列表里——某些节点完成时实例恰好刚 Complete，
-	// 内部 aspect 调用 Complete 必须放行，否则 CompleteProcessInstance 后的清理会失败
+	// 检查所属实例状态：API 路径拒绝挂起/终态实例上的用户操作。
+	// WithInstanceTx 的终态闸在进回调前已拒绝全部终态实例，这里的
+	// Terminated/Cancelled/Failed 分支正常不可达，属纵深防御（防未来出现绕过
+	// WithInstanceTx 的直调路径）；Suspended 非终态、能进回调，本分支是 API
+	// 拒绝挂起实例办理的权威位置。Completed 无需列内：end 节点是先完成尾任务
+	// 再由 aspect 落实例终态，回调里见不到已 Completed 的实例
 	if task.ProcessInstanceID != nil && *task.ProcessInstanceID != "" {
 		instance, instErr := scope.Instances().Get(ctx, *task.ProcessInstanceID)
 		if instErr == nil && instance != nil {

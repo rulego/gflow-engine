@@ -300,6 +300,14 @@ func (s *TaskServiceImpl) unclaimInternal(ctx context.Context, scope *InstanceSc
 		return nil
 	}
 
+	// 取消签收只对"签收来的票"成立：claimed_at 为空说明任务是直派口径
+	// （创建指派/转办/改派目标），从未进过候选池——退池等于一次无留痕的
+	// "转给任意同租户人"（池空时任何人可 claim）。与详情页按钮的
+	// claimed_at!=nil 门槛同口径。
+	if task.ClaimedAt == nil {
+		return fmt.Errorf("task was not obtained by claim, cannot return it to the candidate pool: %w", ErrValidation)
+	}
+
 	// 更新 assignee，状态回退为 Pending。
 	// gorm Updates(struct) 忽略 nil 字段，清空 assignee 须用空串指针，残留办理人会挡住后续签收；
 	// claimed_at 是"已签收"的判定字段，回池必须一并置空，用 Select 强制写入 NULL。

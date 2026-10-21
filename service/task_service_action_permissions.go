@@ -198,6 +198,7 @@ func resolveNodeFormPermissions(ctx context.Context, scope *InstanceScope, insta
 
 // requireActionEnabled 校验流程设计器是否在 actionPermissions 中显式禁用了某动作。
 // 解析失败一律 fail-closed 拒绝：解析不出即无法证明设计器未禁用，放行等于绕过显式 disable。
+// 仅供事务外调用（各入口在进锁前的校验段）；事务内调用走 requireActionEnabledInScope。
 func (s *TaskServiceImpl) requireActionEnabled(ctx context.Context, task *model.WfTask, actionKey string) error {
 	if task == nil || task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
 		return nil
@@ -207,6 +208,50 @@ func (s *TaskServiceImpl) requireActionEnabled(ctx context.Context, task *model.
 		return fmt.Errorf("cannot resolve action permissions for action %q: %w", actionKey, ErrPermissionDenied)
 	}
 	if designerDisabled(ap, actionKey) {
+		return fmt.Errorf("action %q disabled by designer on node %s: %w",
+			actionKey, task.TaskDefKey, ErrPermissionDenied)
+	}
+	return nil
+}
+
+// requireActionEnabledInScope 节点级动作开关校验的事务内版本：实例与流程定义
+// 读取走 scope 连接——WithInstanceTx 回调内经默认连接读 wf_instance/wf_process
+// 属于 tx 逃逸（单写库与外层事务互等）。判定口径与 requireActionEnabled 一致：
+// 解析不出即 fail-closed 拒绝，节点未配置 actionPermissions 视为无显式禁用。
+func (s *TaskServiceImpl) requireActionEnabledInScope(ctx context.Context, scope *InstanceScope, task *model.WfTask, actionKey string) error {
+	if task == nil || task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
+		return nil
+	}
+	if scope == nil {
+		return fmt.Errorf("cannot resolve action permissions for action %q: %w", actionKey, ErrPermissionDenied)
+	}
+	instance, err := scope.Instances().Get(ctx, *task.ProcessInstanceID)
+	if err != nil || instance == nil || instance.ProcessID == "" {
+		return fmt.Errorf("cannot resolve action permissions for action %q: %w", actionKey, ErrPermissionDenied)
+	}
+	procDef, err := scope.Processes().Get(ctx, instance.ProcessID)
+	if err != nil || procDef == nil {
+		return fmt.Errorf("cannot resolve action permissions for action %q: %w", actionKey, ErrPermissionDenied)
+	}
+	rc, err := procDef.ToRuleChain()
+	if err != nil || rc == nil {
+		return fmt.Errorf("cannot resolve action permissions for action %q: %w", actionKey, ErrPermissionDenied)
+	}
+	node, ok := rc.GetNode(task.TaskDefKey)
+	if !ok {
+		return fmt.Errorf("cannot resolve action permissions for action %q: node %s not found: %w",
+			actionKey, task.TaskDefKey, ErrPermissionDenied)
+	}
+	ap, ok := node.GetAdditionalInfo("actionPermissions")
+	if !ok {
+		return nil
+	}
+	v, ok := ap.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("cannot resolve action permissions for action %q: actionPermissions has wrong type: %w",
+			actionKey, ErrPermissionDenied)
+	}
+	if designerDisabled(v, actionKey) {
 		return fmt.Errorf("action %q disabled by designer on node %s: %w",
 			actionKey, task.TaskDefKey, ErrPermissionDenied)
 	}

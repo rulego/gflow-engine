@@ -108,9 +108,10 @@ func (s *TaskServiceImpl) WithdrawByInstance(ctx context.Context, actor Actor, i
 		if len(tasks) > 0 {
 			// 设计器显式禁用 withdraw（节点级手工配置）→ 拒绝；流程级开关已在锁外校验。
 			// 逐活跃任务校验：并行分支上任一节点禁用撤回即整体拒绝，只查首个任务
-			// 会漏掉其余分支的禁用配置。
+			// 会漏掉其余分支的禁用配置。校验在事务内，实例/定义读取走 scope 连接
+			// （requireActionEnabledInScope），不得经默认连接形成 tx 逃逸。
 			for _, t := range tasks {
-				if err := s.requireActionEnabled(ctx, t, "withdraw"); err != nil {
+				if err := s.requireActionEnabledInScope(ctx, scope, t, "withdraw"); err != nil {
 					return err
 				}
 			}

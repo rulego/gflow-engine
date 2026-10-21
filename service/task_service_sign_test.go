@@ -146,6 +146,13 @@ func TestWithdraw_CrossNodeTaskArchivedWithWithdrawnReason(t *testing.T) {
 		Status: string(enums.InstanceStatusActive), TenantID: "t1",
 		StartUserID: "starter", CreatedBy: "starter", CreatedAt: now,
 	}))
+	// 节点级撤回开关校验在实例行锁事务内读 wf_process（scope 连接），须落库
+	// 定义行；引擎替身只服务锁外解析路径
+	require.NoError(t, q.WfProcess.Create(&model.WfProcess{
+		ID: "proc-1", ProcessKey: "sign-test", Name: "会签撤回", Version: 1,
+		DefinitionJSON: signTestDef, Status: "active", PublishTime: now,
+		TenantID: "t1", CreatedBy: "tester", CreatedAt: now,
+	}))
 	// 当前节点任务（撤回主目标）与并行分支另一节点任务同时在途
 	for _, spec := range []struct{ id, defKey, assignee string }{
 		{"t-cur", "a", "jia"},

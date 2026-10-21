@@ -234,3 +234,40 @@ func TestClaim_SiblingCleanupBeyondDefaultPage(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, terminated, total-1, "除被认领行外应全部终止")
 }
+
+// 直派任务（从未签收，claimed_at 为空）不得退回候选池：退池后池空状态下
+// 任意同租户人可认领，等于一次无留痕的"转给任何人"。与详情页取消签收按钮
+// 的 claimed_at 门槛同口径。
+func TestUnclaim_RejectsNeverClaimedTask(t *testing.T) {
+	q := candGroupDB(t)
+	ctx := context.Background()
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-unclaim-direct", ProcessInstanceID: secFixStrPtr("inst-unclaim-direct"),
+		TaskDefKey: "approve", Name: "审批", TaskType: "user_task",
+		Status: string(enums.TaskStatusActive), Assignee: secFixStrPtr("userA"),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now(),
+	}))
+	// WithInstanceTx 需要实例行存在（行锁载体）
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-unclaim-direct", ProcessID: "proc-1", Name: "直派单",
+		Status: string(enums.InstanceStatusActive), TenantID: "t1",
+		StartUserID: "starter", CreatedBy: "starter", CreatedAt: time.Now(),
+	}))
+	taskSvc := &TaskServiceImpl{
+		taskDAO:         dao.NewTaskDAOWithQuery(q),
+		hiTaskDAO:       dao.NewHiTaskDAOWithQuery(q),
+		taskAssigneeDAO: dao.NewTaskAssigneeDAOWithQuery(q),
+		idGenerator:     DefaultIDGenerator,
+		workflowEngine:  candGroupEngine{},
+	}
+
+	err := taskSvc.Unclaim(ctx, Actor{UserID: "userA", TenantID: "t1"}, "task-unclaim-direct")
+	require.Error(t, err, "直派任务退池应被拒绝")
+	require.True(t, errors.Is(err, ErrValidation), "期望 ErrValidation，got %v", err)
+
+	persisted, perr := taskSvc.taskDAO.Get(ctx, "task-unclaim-direct")
+	require.NoError(t, perr)
+	require.Equal(t, string(enums.TaskStatusActive), persisted.Status, "任务须保持原状态")
+	require.NotNil(t, persisted.Assignee)
+	require.Equal(t, "userA", *persisted.Assignee)
+}
