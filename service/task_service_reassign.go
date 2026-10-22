@@ -155,7 +155,7 @@ func (s *TaskServiceImpl) reassignInternal(ctx context.Context, scope *InstanceS
 		operatorID, reason, now, map[string]interface{}{
 			constants.VarsTraceOperator: operatorID,
 			constants.VarsTraceTarget:   newAssignee,
-			"reassign_from":             oldAssignee,
+			constants.VarsReassignFrom:  oldAssignee,
 		}); err != nil {
 		return nil, "", err
 	}
@@ -200,11 +200,11 @@ func (s *TaskServiceImpl) applyReassign(task *model.WfTask, operatorID, newAssig
 	if task.Variables != nil && *task.Variables != "" {
 		_ = utils2.FromJSON(*task.Variables, &vars)
 	}
-	vars["reassign_operator"] = operatorID
-	vars["reassign_from"] = oldAssignee
-	vars["reassign_to"] = newAssignee
-	vars["reassign_reason"] = reason
-	vars["reassign_time"] = now
+	vars[constants.VarsReassignOperator] = operatorID
+	vars[constants.VarsReassignFrom] = oldAssignee
+	vars[constants.VarsReassignTo] = newAssignee
+	vars[constants.VarsReassignReason] = reason
+	vars[constants.VarsReassignTime] = now
 	varsJSON, err := utils2.ToJSON(vars)
 	if err != nil {
 		return fmt.Errorf("failed to serialize task variables: %w", err)

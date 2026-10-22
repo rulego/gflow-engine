@@ -290,14 +290,12 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 	}
 	// 委派轨迹行：任务上的 delegate_from/delegate_time 列只保留最近一次委派，
 	// 链式委派（A→B→C）与多次委派/归还的过程留痕靠归档轨迹行
-	if u := GetUserFromCtx(ctx); u != nil {
-		if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonDelegated),
-			u.UserID, reason, now, map[string]interface{}{
-				constants.VarsTraceOperator: u.UserID,
-				constants.VarsTraceTarget:   userID,
-			}); err != nil {
-			return err
-		}
+	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonDelegated),
+		u.UserID, reason, now, map[string]interface{}{
+			constants.VarsTraceOperator: u.UserID,
+			constants.VarsTraceTarget:   userID,
+		}); err != nil {
+		return err
 	}
 	// 触发委托事件（AfterCommit：回滚不产生幽灵事件）
 	if s.workflowEngine.GetTaskEventListener() != nil {

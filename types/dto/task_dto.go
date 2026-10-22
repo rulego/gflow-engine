@@ -59,7 +59,8 @@ type TaskQuery struct {
 	// ForwardByUser 转办轨迹行匹配（实例联合列表专用）：非空时 assignee 匹配扩为
 	// assignee=Assignee OR (task_type=forward AND created_by=ForwardByUser)。已办列表
 	// 据此纳入"我转办出去"的实例——轨迹行不设 assignee（防已办统计虚增），转办人
-	// 在 assignee 口径上不可达，须由本条件补进列表；统计计数不启用本条件。
+	// 在 assignee 口径上不可达，须由本条件补进列表；仅已办列表与已办页签计数
+	// 两处启用（两者必须同口径），其余统计不启用。
 	ForwardByUser string `json:"forwardByUser" form:"forwardByUser"`
 	// TaskTypes 任务类型过滤（如 forward 轨迹行），运行/历史任务查询通用
 	TaskTypes []string `json:"taskTypes" form:"taskTypes"`

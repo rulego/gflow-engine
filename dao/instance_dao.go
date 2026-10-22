@@ -411,7 +411,6 @@ func (d *InstanceDAO) GetInstanceStatisticsByTenant(ctx context.Context, tenantI
 	return d.instanceStatistics(ctx, tenantID, ProcessID, startUserID)
 }
 
-// taskInstanceQuery 预构建的任务维度实例查询：任务表 JOIN 实例表的运行时/历史两分支同构
 // taskInstanceQuery 任务维度实例 UNION 查询的分支材料。条件按所属表拆成
 // 实例条件（i.*）与任务条件（t.*）两段，各分支按需拼装。
 type taskInstanceQuery struct {
@@ -425,6 +424,12 @@ type taskInstanceQuery struct {
 // 活任务）、历史（历史实例⋈历史任务）、转办（活实例⋈历史任务，ForwardByUser
 // 非空时启用）——转办轨迹行转办即落历史表，实例活跃期内只有第三分支能命中。
 func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
+	// ForwardByUser 的 OR 条件挂在下方 Assignee 非空分支内，转办分支却只看
+	// ForwardByUser 自身——只传 ForwardByUser 不传 Assignee 时运行/历史分支会
+	// 失去全部任务条件（返回全量实例），入口归一化兜住调用口径
+	if req.ForwardByUser != "" && req.Assignee == "" {
+		req.Assignee = req.ForwardByUser
+	}
 	tq := taskInstanceQuery{
 		runSQL: `
 			SELECT i.*
