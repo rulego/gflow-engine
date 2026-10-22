@@ -80,7 +80,7 @@ var miDDL = []string{
 		due_date TIMESTAMP, form_key TEXT, variables TEXT, claimed_at TIMESTAMP,
 		approval_type TEXT, approval_rule TEXT, delegate_from TEXT, delegate_reason TEXT,
 		delegate_time TIMESTAMP, ended_at TIMESTAMP, comment TEXT, end_reason TEXT,
-		duration INTEGER, tenant_id TEXT, created_by TEXT, created_at TIMESTAMP,
+		duration INTEGER, tenant_id TEXT, created_by TEXT, prev_assignee TEXT, created_at TIMESTAMP,
 		updated_by TEXT, updated_at TIMESTAMP)`,
 	`CREATE TABLE IF NOT EXISTS wf_task_comment (
 		id TEXT PRIMARY KEY, task_id TEXT NOT NULL, process_instance_id TEXT NOT NULL DEFAULT '',

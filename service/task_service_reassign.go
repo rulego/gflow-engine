@@ -150,9 +150,10 @@ func (s *TaskServiceImpl) reassignInternal(ctx context.Context, scope *InstanceS
 		return nil, "", fmt.Errorf("failed to persist reassign: %w", err)
 	}
 	// 改派轨迹行（生成独立 ID，不与任务本体归档行冲突）：任务变量里的
-	// reassign_* 只保留最近一次改派，交接/代理的连续改投过程留痕靠轨迹行
+	// reassign_* 只保留最近一次改派，交接/代理的连续改投过程留痕靠轨迹行；
+	// prev_assignee 记换手前的原受理人快照（未签收改派为 NULL）
 	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeReassign, string(enums.EndReasonReassigned),
-		operatorID, reason, now, map[string]interface{}{
+		operatorID, oldAssignee, reason, now, map[string]interface{}{
 			constants.VarsTraceOperator: operatorID,
 			constants.VarsTraceTarget:   newAssignee,
 			constants.VarsReassignFrom:  oldAssignee,

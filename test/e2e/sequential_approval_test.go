@@ -330,6 +330,7 @@ func createE2ETables(t *testing.T, db *gorm.DB) {
 			duration INTEGER,
 			tenant_id TEXT,
 			created_by TEXT,
+			prev_assignee TEXT,
 			created_at DATETIME,
 			updated_by TEXT,
 			updated_at DATETIME

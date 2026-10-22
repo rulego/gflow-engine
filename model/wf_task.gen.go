@@ -40,9 +40,13 @@ type WfTask struct {
 	Duration          *int64     `gorm:"column:duration" json:"duration"`
 	TenantID          string     `gorm:"column:tenant_id;not null;comment:租户ID" json:"tenantId"` // 租户ID
 	CreatedBy         string     `gorm:"column:created_by;not null" json:"createdBy"`
-	CreatedAt         time.Time  `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP;comment:创建时间" json:"createdAt"` // 创建时间
-	UpdatedBy         *string    `gorm:"column:updated_by" json:"updatedBy"`
-	UpdatedAt         *time.Time `gorm:"column:updated_at;comment:最后更新时间" json:"updatedAt"` // 最后更新时间
+	// PrevAssignee 只读投影列，仅存在于 wf_hi_task（流转轨迹行的前一任办理人）：
+	// 历史表查询按 WfTask 承接扫描结果时靠它带出该列；运行表 wf_task 无此列，
+	// -> 权限确保不进任何 INSERT/UPDATE
+	PrevAssignee *string    `gorm:"->;column:prev_assignee" json:"prevAssignee"`
+	CreatedAt    time.Time  `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP;comment:创建时间" json:"createdAt"` // 创建时间
+	UpdatedBy    *string    `gorm:"column:updated_by" json:"updatedBy"`
+	UpdatedAt    *time.Time `gorm:"column:updated_at;comment:最后更新时间" json:"updatedAt"` // 最后更新时间
 }
 
 // TableName WfTask's table name

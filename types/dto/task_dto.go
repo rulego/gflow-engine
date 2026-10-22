@@ -56,16 +56,20 @@ type TaskQuery struct {
 	// 配合 CandidateUser，扩展候选匹配到 entity_type='department' AND entity_id IN (CandidateDeptIDs)。
 	// dept 候选任务落库的是部门实体，须按部门匹配才对成员可见。
 	CandidateDeptIDs []string `json:"candidateDeptIDs" form:"candidateDeptIDs"`
-	// ForwardByUser 转办轨迹行匹配（实例联合列表专用）：非空时 assignee 匹配扩为
-	// assignee=Assignee OR (task_type=forward AND created_by=ForwardByUser)。已办列表
-	// 据此纳入"我转办出去"的实例——轨迹行不设 assignee（防已办统计虚增），转办人
-	// 在 assignee 口径上不可达，须由本条件补进列表；仅已办列表与已办页签计数
-	// 两处启用（两者必须同口径），其余统计不启用。
-	ForwardByUser string `json:"forwardByUser" form:"forwardByUser"`
+	// TraceUser 轨迹行当事人过滤（实例联合列表专用）：非空时 assignee 匹配扩为
+	// assignee=Assignee OR (task_type IN (forward,reassign) AND prev_assignee=TraceUser)。
+	// 已办列表据此纳入"我转办/被改派接手前持有过"的实例——轨迹行不设 assignee
+	// （防已办统计虚增），转办人与被改派的原受理人在 assignee 口径上不可达，
+	// 须由本条件补进列表；委派/归还行刻意不进已办（存续窗口内详情可读即可）。
+	// 仅已办列表与已办页签计数两处启用（两者必须同口径），其余统计不启用
+	TraceUser string `json:"traceUser" form:"traceUser"`
 	// TaskTypes 任务类型过滤（如 forward 轨迹行），运行/历史任务查询通用
 	TaskTypes []string `json:"taskTypes" form:"taskTypes"`
 	// CreatedBy 任务创建人过滤：转办轨迹行的 created_by 记录转办操作人
 	CreatedBy string `json:"createdBy" form:"createdBy"`
+	// PrevAssignee 前一任办理人过滤：历史表轨迹行专用（运行表无此列），
+	// 宿主已办行的"被改派"标记查询用
+	PrevAssignee string `json:"prevAssignee" form:"prevAssignee"`
 	// StartUserIDs 发起人 ID 列表：与 Keyword 联动按申请人过滤。引擎不持有姓名，
 	// 由宿主按姓名/用户名解析后传入。
 	StartUserIDs []string `json:"startUserIDs" form:"startUserIDs"`

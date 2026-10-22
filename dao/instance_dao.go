@@ -412,23 +412,28 @@ func (d *InstanceDAO) GetInstanceStatisticsByTenant(ctx context.Context, tenantI
 }
 
 // taskInstanceQuery 任务维度实例 UNION 查询的分支材料。条件按所属表拆成
-// 实例条件（i.*）与任务条件（t.*）两段，各分支按需拼装。
+// 实例条件（i.*）与任务条件（t.*）两段；任务条件再分共享段（两表同构列）
+// 与 run/hist 各自的受理人段——prev_assignee 列仅历史表有，运行分支不得引用。
 type taskInstanceQuery struct {
-	runSQL, histSQL, fwdSQL        string
+	runSQL, histSQL, traceSQL      string
 	instConditions, taskConditions string
-	instArgs, taskArgs             []interface{}
-	forwardByUser                  string
+	// runTaskCond/histTaskCond 是受理人条件在运行/历史分支各自的文本，
+	// 其余任务条件（状态/节点/审批类型）两表同构、进共享段
+	runTaskCond, histTaskCond string
+	runTaskArgs, histTaskArgs []interface{}
+	instArgs, taskArgs        []interface{}
+	traceUser                 string
 }
 
 // buildTaskInstanceQuery 构建任务维度实例查询的条件。三个分支：运行时（活实例⋈
-// 活任务）、历史（历史实例⋈历史任务）、转办（活实例⋈历史任务，ForwardByUser
-// 非空时启用）——转办轨迹行转办即落历史表，实例活跃期内只有第三分支能命中。
+// 活任务）、历史（历史实例⋈历史任务）、轨迹（活实例⋈历史任务，TraceUser
+// 非空时启用）——转办/改派轨迹行落历史表，实例活跃期内只有第三分支能命中。
 func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
-	// ForwardByUser 的 OR 条件挂在下方 Assignee 非空分支内，转办分支却只看
-	// ForwardByUser 自身——只传 ForwardByUser 不传 Assignee 时运行/历史分支会
-	// 失去全部任务条件（返回全量实例），入口归一化兜住调用口径
-	if req.ForwardByUser != "" && req.Assignee == "" {
-		req.Assignee = req.ForwardByUser
+	// TraceUser 的轨迹行 OR 只挂在历史侧任务条件上，运行/历史分支的 assignee
+	// 匹配却以 Assignee 为准——只传 TraceUser 不传 Assignee 时受理人条件会
+	// 缺位（返回全量实例），入口归一化兜住调用口径
+	if req.TraceUser != "" && req.Assignee == "" {
+		req.Assignee = req.TraceUser
 	}
 	tq := taskInstanceQuery{
 		runSQL: `
@@ -443,7 +448,7 @@ func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
 			JOIN wf_hi_task t ON i.id = t.process_instance_id
 			WHERE 1=1
 		`,
-		fwdSQL: `
+		traceSQL: `
 			SELECT i.*
 			FROM wf_instance i
 			JOIN wf_hi_task t ON i.id = t.process_instance_id
@@ -498,6 +503,7 @@ func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
 		// 候选维度：assignee=user OR (Pending 未签收 且 user 在候选人池 wf_task_assignee)。
 		// 候选池匹配 person（entity_id=user）、role（entity_id IN userRoleIDs）与
 		// department（entity_id IN userDeptIDs，dept 候选任务落库的是部门实体）。
+		// 候选池表只有运行侧语义，两分支同条件即可
 		if req.CandidateUser != "" {
 			poolCond := "(ca.entity_type = 'person' AND ca.entity_id = ?)"
 			poolArgs := []interface{}{}
@@ -517,19 +523,25 @@ func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
 			if len(poolArgs) > 0 {
 				poolCond = "(" + poolCond + ")"
 			}
-			tq.taskConditions += " AND (t.assignee = ? OR (t.status = ? AND EXISTS (SELECT 1 FROM wf_task_assignee ca WHERE ca.task_id = t.id AND " + poolCond + ")))"
-			tq.taskArgs = append(tq.taskArgs, req.Assignee, string(enums.TaskStatusPending), req.CandidateUser)
-			tq.taskArgs = append(tq.taskArgs, poolArgs...)
-		} else if req.ForwardByUser != "" {
-			// 已办维度：assignee=user OR 转办轨迹行（task_type=forward 且
-			// created_by=user）。转办是原地换受理人，转办人在 assignee 口径上
-			// 不可达，凭轨迹行进已办列表；终态实例的轨迹行在历史分支命中，
-			// 活跃实例的轨迹行由转办分支命中
-			tq.taskConditions += " AND (t.assignee = ? OR (t.task_type = ? AND t.created_by = ?))"
-			tq.taskArgs = append(tq.taskArgs, req.Assignee, string(constants.TaskTypeForward), req.ForwardByUser)
+			cond := " AND (t.assignee = ? OR (t.status = ? AND EXISTS (SELECT 1 FROM wf_task_assignee ca WHERE ca.task_id = t.id AND " + poolCond + ")))"
+			args := append([]interface{}{req.Assignee, string(enums.TaskStatusPending), req.CandidateUser}, poolArgs...)
+			tq.runTaskCond, tq.histTaskCond = cond, cond
+			tq.runTaskArgs, tq.histTaskArgs = args, args
+		} else if req.TraceUser != "" {
+			// 已办维度：assignee=user OR 流转轨迹行（task_type IN (forward,reassign)
+			// 且 prev_assignee=user）。转办/改派都原地换受理人，转办人与被改派的
+			// 原受理人在 assignee 口径上不可达，凭轨迹行进已办列表；委派/归还行
+			// 刻意不进（存续窗口内详情可读即可）。prev_assignee 仅历史表有——
+			// 运行分支只按 assignee 匹配（轨迹行从不落运行表，语义不变），
+			// 历史分支带轨迹行 OR，活跃实例的轨迹行由第三分支命中
+			tq.runTaskCond = " AND t.assignee = ?"
+			tq.runTaskArgs = []interface{}{req.Assignee}
+			tq.histTaskCond = " AND (t.assignee = ? OR (t.task_type IN (?,?) AND t.prev_assignee = ?))"
+			tq.histTaskArgs = []interface{}{req.Assignee, string(constants.TaskTypeForward), string(constants.TaskTypeReassign), req.TraceUser}
 		} else {
-			tq.taskConditions += " AND t.assignee = ?"
-			tq.taskArgs = append(tq.taskArgs, req.Assignee)
+			cond, args := " AND t.assignee = ?", []interface{}{req.Assignee}
+			tq.runTaskCond, tq.histTaskCond = cond, cond
+			tq.runTaskArgs, tq.histTaskArgs = args, args
 		}
 	}
 	if len(req.Status) > 0 {
@@ -544,23 +556,26 @@ func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
 		tq.taskConditions += " AND t.approval_type = ?"
 		tq.taskArgs = append(tq.taskArgs, req.ApprovalType)
 	}
-	tq.forwardByUser = req.ForwardByUser
+	tq.traceUser = req.TraceUser
 	return tq
 }
 
 // branches 返回 UNION 各分支的完整 SQL 与参数（参数顺序与各自 SQL 文本一致）。
-// 运行时/历史分支拼装全部条件；转办分支只认轨迹行——不带任务条件，避免归档的
-// returned 等常规历史行借"活实例⋈历史任务"组合混入本来进不了的列表。
+// 运行时/历史分支拼装全部条件（受理人条件各用各的）；轨迹分支只认轨迹行——
+// 不带任务条件，避免归档的 returned 等常规历史行借"活实例⋈历史任务"组合
+// 混入本来进不了的列表。
 func (tq taskInstanceQuery) branches() ([]string, [][]interface{}) {
-	cond := tq.instConditions + tq.taskConditions
-	args := append(append([]interface{}{}, tq.instArgs...), tq.taskArgs...)
-	sqls := []string{tq.runSQL + cond, tq.histSQL + cond}
-	argsList := [][]interface{}{args, append([]interface{}{}, args...)}
-	if tq.forwardByUser != "" {
-		fwdCond := tq.instConditions + " AND t.task_type = ? AND t.created_by = ?"
-		fwdArgs := append(append([]interface{}{}, tq.instArgs...), string(constants.TaskTypeForward), tq.forwardByUser)
-		sqls = append(sqls, tq.fwdSQL+fwdCond)
-		argsList = append(argsList, fwdArgs)
+	runCond := tq.instConditions + tq.taskConditions + tq.runTaskCond
+	runArgs := append(append(append([]interface{}{}, tq.instArgs...), tq.taskArgs...), tq.runTaskArgs...)
+	histCond := tq.instConditions + tq.taskConditions + tq.histTaskCond
+	histArgs := append(append(append([]interface{}{}, tq.instArgs...), tq.taskArgs...), tq.histTaskArgs...)
+	sqls := []string{tq.runSQL + runCond, tq.histSQL + histCond}
+	argsList := [][]interface{}{runArgs, histArgs}
+	if tq.traceUser != "" {
+		traceCond := tq.instConditions + " AND t.task_type IN (?,?) AND t.prev_assignee = ?"
+		traceArgs := append(append([]interface{}{}, tq.instArgs...), string(constants.TaskTypeForward), string(constants.TaskTypeReassign), tq.traceUser)
+		sqls = append(sqls, tq.traceSQL+traceCond)
+		argsList = append(argsList, traceArgs)
 	}
 	return sqls, argsList
 }

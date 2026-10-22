@@ -291,7 +291,7 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 	// 委派轨迹行：任务上的 delegate_from/delegate_time 列只保留最近一次委派，
 	// 链式委派（A→B→C）与多次委派/归还的过程留痕靠归档轨迹行
 	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonDelegated),
-		u.UserID, reason, now, map[string]interface{}{
+		u.UserID, derefStr(originalAssignee), reason, now, map[string]interface{}{
 			constants.VarsTraceOperator: u.UserID,
 			constants.VarsTraceTarget:   userID,
 		}); err != nil {
@@ -411,7 +411,9 @@ func (s *TaskServiceImpl) resolveInternal(ctx context.Context, scope *InstanceSc
 		return fmt.Errorf("task is not in active status")
 	}
 
-	// 归还：assignee 恢复为 owner 并清空 owner（空串指针强制清空，gorm 忽略 nil）
+	// 归还：assignee 恢复为 owner 并清空 owner（空串指针强制清空，gorm 忽略 nil）。
+	// 归还前的 assignee（归还人/被委派人）先取快照，轨迹行 prev_assignee 据此落库
+	prevAssignee := derefStr(task.Assignee)
 	task.Assignee = task.Owner
 	emptyOwner := ""
 	task.Owner = &emptyOwner
@@ -430,7 +432,7 @@ func (s *TaskServiceImpl) resolveInternal(ctx context.Context, scope *InstanceSc
 	}
 	// 主动归还的轨迹行：原办理人收回或管理员代收，与委派行成对呈现过程留痕
 	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonResolved),
-		operator, "", now, map[string]interface{}{
+		operator, prevAssignee, "", now, map[string]interface{}{
 			constants.VarsTraceOperator: operator,
 		}); err != nil {
 		return err
@@ -619,7 +621,7 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 // 时间线消费方误当成已完成的节点本体。
 func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *InstanceScope, task *model.WfTask, fromUserID, toUserID, reason string, transferredAt time.Time) error {
 	return s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeForward, string(enums.EndReasonForwarded),
-		fromUserID, reason, transferredAt, map[string]interface{}{
+		fromUserID, fromUserID, reason, transferredAt, map[string]interface{}{
 			constants.VarsForwardBy: fromUserID,
 			constants.VarsForwardTo: toUserID,
 		})
@@ -631,9 +633,11 @@ func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *Insta
 // 实例）、CreatedAt 锚动作真实时刻（时间线按创建时间升序）。会签子票的动作
 // 轨迹行挂父任务（ParentID），时间线嵌在子票列表渲染；标题取节点名。
 // 与动作本体同事务：轨迹缺失的流转动作是不完整审计。操作人进 created_by，
-// 委派/改派的目标人进 trace_target 变量（转办专用 forward_by/forward_to）。
+// prevAssignee 记动作生效前刚持有该任务的人（换手前快照，空串归 NULL）——
+// 已办列表第三分支与详情可见性据此让原受理人可达；委派/改派的目标人进
+// trace_target 变量（转办专用 forward_by/forward_to）。
 func (s *TaskServiceImpl) writeActionTraceRow(ctx context.Context, scope *InstanceScope, task *model.WfTask,
-	taskType, endReason, operatorID, reason string, at time.Time, vars map[string]interface{}) error {
+	taskType, endReason, operatorID, prevAssignee, reason string, at time.Time, vars map[string]interface{}) error {
 	if task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
 		return nil
 	}
@@ -661,6 +665,7 @@ func (s *TaskServiceImpl) writeActionTraceRow(ctx context.Context, scope *Instan
 		Variables:         &traceVars,
 		Comment:           &reason,
 		CreatedBy:         operatorID,
+		PrevAssignee:      nilIfEmpty(prevAssignee),
 		CreatedAt:         at,
 		EndedAt:           &at,
 		TenantID:          task.TenantID,
@@ -669,4 +674,21 @@ func (s *TaskServiceImpl) writeActionTraceRow(ctx context.Context, scope *Instan
 		return fmt.Errorf("failed to persist %s trace row: %w", taskType, err)
 	}
 	return nil
+}
+
+// nilIfEmpty 空串归 nil：未签收被强制改派等场景前一任不存在，prev_assignee
+// 落 NULL 而非空串，查询谓词 prev_assignee = ? 对两者都不命中，语义一致
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// derefStr 指针安全取值，nil 归空串
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }

@@ -368,6 +368,9 @@ func TestTransferWritesForwardTraceRow(t *testing.T) {
 	require.Nil(t, rows[0].TaskDefKey, "轨迹行不认领节点身份：按 taskDefKey 聚合节点状态的时间线会把在途节点误判为已完成")
 	require.Equal(t, string(enums.EndReasonForwarded), *rows[0].EndReason)
 	require.Equal(t, "出差在外", *rows[0].Comment)
+	require.Equal(t, "yi", rows[0].CreatedBy, "转办行的操作人是转办人")
+	require.NotNil(t, rows[0].PrevAssignee, "转办行的 prev_assignee 记录转办人（前一任）")
+	require.Equal(t, "yi", *rows[0].PrevAssignee, "转办人即换手前受理人：已办/详情按 prev_assignee 命中")
 	require.Contains(t, *rows[0].Variables, `"forward_by":"yi"`)
 	require.Contains(t, *rows[0].Variables, `"forward_to":"er"`)
 	require.False(t, rows[0].CreatedAt.Before(live.CreatedAt), "轨迹行锚在转办真实时刻，不早于活任务创建时间")
@@ -378,6 +381,7 @@ func TestTransferWritesForwardTraceRow(t *testing.T) {
 	require.Len(t, rows, 2)
 	require.Equal(t, "出差在外", *rows[0].Comment, "先发生的转办排在前")
 	require.Equal(t, "接力处理", *rows[1].Comment, "后发生的转办排在后")
+	require.Equal(t, "er", *rows[1].PrevAssignee, "第二次转办的 prev_assignee 是第二任受理人")
 	live2, err := svc.taskDAO.Get(ctx, "t-fwd")
 	require.NoError(t, err)
 	require.Equal(t, "san", *live2.Assignee)
@@ -619,6 +623,8 @@ func TestDelegateWritesTraceRows(t *testing.T) {
 	require.Nil(t, rows[0].TaskDefKey, "轨迹行不认领节点身份")
 	require.Equal(t, string(enums.EndReasonDelegated), *rows[0].EndReason)
 	require.Equal(t, "userA", rows[0].CreatedBy, "委派行的 created_by 是委派操作人")
+	require.NotNil(t, rows[0].PrevAssignee, "委派行的 prev_assignee 记录委派人（换手前受理人）")
+	require.Equal(t, "userA", *rows[0].PrevAssignee)
 	require.Equal(t, "出差代审", *rows[0].Comment)
 	require.Contains(t, *rows[0].Variables, `"trace_operator":"userA"`)
 	require.Contains(t, *rows[0].Variables, `"trace_target":"userB"`)
@@ -632,13 +638,16 @@ func TestDelegateWritesTraceRows(t *testing.T) {
 	require.Len(t, rows, 2)
 	require.Equal(t, string(enums.EndReasonResolved), *rows[1].EndReason)
 	require.Equal(t, "userB", rows[1].CreatedBy, "归还行的 created_by 是归还人")
+	require.NotNil(t, rows[1].PrevAssignee, "归还行的 prev_assignee 记录归还人（归还前受理人）")
+	require.Equal(t, "userB", *rows[1].PrevAssignee)
 	live, err := svc.taskDAO.Get(ctx, "t-dlg2")
 	require.NoError(t, err)
 	require.Equal(t, "userA", *live.Assignee, "审结归还原办理人")
 }
 
 // 改派落轨迹行：操作人进 created_by，原受理人/新受理人进变量；活任务变量里的
-// reassign_* 只留最近一次，连续改投（交接/代理）过程靠轨迹行。
+// reassign_* 只留最近一次，连续改投（交接/代理）过程靠轨迹行。prev_assignee 记
+// 换手前的原受理人（被改派人凭它进已办/详情）；未签收任务无前一任，落 NULL。
 func TestReassignWritesTraceRow(t *testing.T) {
 	q := proxyAuditDB(t)
 	proxySeedInstance(t, q, "px-inst-rag")
@@ -649,17 +658,38 @@ func TestReassignWritesTraceRow(t *testing.T) {
 	_, err := svc.Reassign(ctx, Actor{UserID: "admin1", TenantID: "t1", WorkflowAdmin: true}, "t-rag", "userB", "负载调整")
 	require.NoError(t, err)
 
-	rows, rerr := q.WfHiTask.WithContext(context.Background()).
-		Where(q.WfHiTask.ProcessInstanceID.Eq("px-inst-rag"),
-			q.WfHiTask.TaskType.Eq(string(constants.TaskTypeReassign))).
-		Find()
-	require.NoError(t, rerr)
+	ragRows := func() []*model.WfHiTask {
+		rows, ferr := q.WfHiTask.WithContext(context.Background()).
+			Where(q.WfHiTask.ProcessInstanceID.Eq("px-inst-rag"),
+				q.WfHiTask.TaskType.Eq(string(constants.TaskTypeReassign))).
+			Find()
+		require.NoError(t, ferr)
+		return rows
+	}
+	rows := ragRows()
 	require.Len(t, rows, 1)
 	require.Nil(t, rows[0].Assignee)
 	require.Nil(t, rows[0].TaskDefKey)
 	require.Equal(t, string(enums.EndReasonReassigned), *rows[0].EndReason)
 	require.Equal(t, "admin1", rows[0].CreatedBy, "改派行的 created_by 是改派操作人")
+	require.NotNil(t, rows[0].PrevAssignee, "改派行的 prev_assignee 记被换下的原受理人")
+	require.Equal(t, "userA", *rows[0].PrevAssignee)
 	require.Contains(t, *rows[0].Variables, `"trace_operator":"admin1"`)
 	require.Contains(t, *rows[0].Variables, `"trace_target":"userB"`)
 	require.Contains(t, *rows[0].Variables, `"reassign_from":"userA"`)
+
+	// 未签收（无 assignee）被强制改派：无前一任，prev_assignee 落 NULL
+	proxySeedInstance(t, q, "px-inst-rag2")
+	proxySeedTask(t, q, "t-rag2", "px-inst-rag2", "a", "", `{}`)
+	_, err = svc.Reassign(ctx, Actor{UserID: "admin1", TenantID: "t1", WorkflowAdmin: true}, "t-rag2", "userB", "认领前改派")
+	require.NoError(t, err)
+	rows = ragRows()
+	// ragRows 按 process_instance_id 过滤的是 px-inst-rag，重查第二实例
+	rows2, rerr := q.WfHiTask.WithContext(context.Background()).
+		Where(q.WfHiTask.ProcessInstanceID.Eq("px-inst-rag2"),
+			q.WfHiTask.TaskType.Eq(string(constants.TaskTypeReassign))).
+		Find()
+	require.NoError(t, rerr)
+	require.Len(t, rows2, 1)
+	require.Nil(t, rows2[0].PrevAssignee, "未签收被改派无前一任，prev_assignee 为 NULL")
 }

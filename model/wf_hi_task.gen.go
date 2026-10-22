@@ -40,9 +40,13 @@ type WfHiTask struct {
 	Duration          *int64     `gorm:"column:duration;comment:任务耗时（毫秒）" json:"duration"`   // 任务耗时（毫秒）
 	TenantID          string     `gorm:"column:tenant_id;not null" json:"tenantId"`
 	CreatedBy         string     `gorm:"column:created_by;not null" json:"createdBy"`
-	CreatedAt         time.Time  `gorm:"column:created_at;not null" json:"createdAt"`
-	UpdatedBy         *string    `gorm:"column:updated_by" json:"updatedBy"`
-	UpdatedAt         *time.Time `gorm:"column:updated_at" json:"updatedAt"`
+	// PrevAssignee 前一任办理人：流转轨迹行（转办/委派/归还/改派）动作生效前刚
+	// 持有该任务的人；未签收被强制改派时为 NULL。仅轨迹行写入，任务本体归档行
+	// 不携带（保持 NULL），运行表 wf_task 无此列
+	PrevAssignee *string    `gorm:"column:prev_assignee;comment:前一任办理人（仅流转轨迹行写入）" json:"prevAssignee"`
+	CreatedAt    time.Time  `gorm:"column:created_at;not null" json:"createdAt"`
+	UpdatedBy    *string    `gorm:"column:updated_by" json:"updatedBy"`
+	UpdatedAt    *time.Time `gorm:"column:updated_at" json:"updatedAt"`
 }
 
 // TableName WfHiTask's table name

@@ -50,7 +50,7 @@ func explicitAuthzDB(t *testing.T) *query.Query {
 			variables TEXT, claimed_at DATETIME, sequence_order INTEGER, approval_type TEXT,
 			approval_rule TEXT, delegate_from TEXT, delegate_reason TEXT, delegate_time DATETIME,
 			ended_at DATETIME, comment TEXT, end_reason TEXT, duration INTEGER,
-			tenant_id TEXT, created_by TEXT, created_at DATETIME, updated_by TEXT, updated_at DATETIME
+			tenant_id TEXT, created_by TEXT, prev_assignee TEXT, created_at DATETIME, updated_by TEXT, updated_at DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS wf_hi_task (
 			id TEXT PRIMARY KEY, process_instance_id TEXT, process_id TEXT, parent_id TEXT,
@@ -59,7 +59,7 @@ func explicitAuthzDB(t *testing.T) *query.Query {
 			variables TEXT, claimed_at DATETIME, sequence_order INTEGER, approval_type TEXT,
 			approval_rule TEXT, delegate_from TEXT, delegate_reason TEXT, delegate_time DATETIME,
 			ended_at DATETIME, comment TEXT, end_reason TEXT, duration INTEGER,
-			tenant_id TEXT, created_by TEXT, created_at DATETIME, updated_by TEXT, updated_at DATETIME
+			tenant_id TEXT, created_by TEXT, prev_assignee TEXT, created_at DATETIME, updated_by TEXT, updated_at DATETIME
 		)`,
 		`CREATE TABLE IF NOT EXISTS wf_task_comment (
 			id TEXT PRIMARY KEY, task_id TEXT NOT NULL, process_instance_id TEXT NOT NULL DEFAULT '',

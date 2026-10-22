@@ -198,6 +198,7 @@ CREATE TABLE IF NOT EXISTS wf_hi_task (
     duration BIGINT COMMENT '耗时（毫秒）',
     tenant_id VARCHAR(64) NOT NULL DEFAULT '' COMMENT '租户ID',
     created_by VARCHAR(64) NOT NULL DEFAULT '' COMMENT '创建人',
+    prev_assignee VARCHAR(64) NULL COMMENT '前一任办理人：流转轨迹行（转办/委派/归还/改派）动作生效前刚持有该任务的人，仅轨迹行写入、本体归档行保持 NULL',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
     updated_by VARCHAR(64) COMMENT '更新人',
     updated_at DATETIME(3) COMMENT '最后更新时间',
@@ -210,7 +211,10 @@ CREATE TABLE IF NOT EXISTS wf_hi_task (
     KEY idx_hi_task_duration (duration),
     -- 流转动作轨迹行（转办/委派/归还/改派）按类型+操作人检索：已办列表的
     -- 转办人分支与详情可见性判定经此索引命中，轨迹行占比极小、选择性高
-    KEY idx_hi_task_trace (task_type, created_by)
+    KEY idx_hi_task_trace (task_type, created_by),
+    -- 流转轨迹行按类型+前一任办理人检索：已办列表第三分支与改派后原受理人的
+    -- 详情可见性经此索引命中（未签收改派行为 NULL，不参与该检索）
+    KEY idx_hi_task_trace_prev (task_type, prev_assignee)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='历史任务实例表（已结束）';
 
 -- 6. 任务审批意见表（任务归档后仍可读写）

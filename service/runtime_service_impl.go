@@ -2111,11 +2111,12 @@ func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, act
 		TenantID:     tenantID,
 		Keyword:      keyword,
 		StartUserIDs: startUserIDs,
-		// 已办口径含"我转办出去"的实例：转办原地换受理人，转办人凭轨迹行
-		// （created_by）命中；待办列表与任务量统计不启用（转出的票不回流待办），
-		// 已办页签计数与本列表同口径启用（见 CountDoneByBuckets），链式转办
-		// A→B→C 各转办人各自命中，UNION 去重
-		ForwardByUser: userID,
+		// 已办口径含"我转办出去"与"我被改派换下"的实例：转办/改派都原地换
+		// 受理人，转办人与原受理人凭轨迹行（prev_assignee）命中；委派/归还行
+		// 不进已办（存续窗口内详情可读即可）。待办列表与任务量统计不启用
+		// （转出/被换下的票不回流待办），已办页签计数与本列表同口径启用
+		// （见 CountDoneByBuckets），链式转办 A→B→C 各转办人各自命中，UNION 去重
+		TraceUser: userID,
 		PageRequest: dto.PageRequest{
 			Page:      page,
 			PageSize:  pageSize,
@@ -2198,9 +2199,9 @@ func (s *RuntimeServiceImpl) CountDoneByBuckets(ctx context.Context, actor Actor
 		TenantID:     actor.TenantID,
 		Keyword:      keyword,
 		StartUserIDs: startUserIDs,
-		// 与 GetDoneProcessInstanceList 同口径（含转办轨迹行命中），页签计数
-		// 不得与列表条数分叉
-		ForwardByUser: actor.UserID,
+		// 与 GetDoneProcessInstanceList 同口径（含转办/改派轨迹行命中），页签
+		// 计数不得与列表条数分叉
+		TraceUser: actor.UserID,
 		PageRequest: dto.PageRequest{
 			Status: []string{string(enums.TaskStatusCompleted), string(enums.TaskStatusReturned)},
 		},

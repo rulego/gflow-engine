@@ -591,3 +591,65 @@ func TestGetProcessInstanceDetail_DelegatorStaysVisible(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
 }
+
+// 改派后被换下的原受理人保留实例可见性：操作人是管理员，created_by 与
+// assignee 都指不到原受理人，凭 reassign 轨迹行的 prev_assignee 可读详情；
+// 改派管理员凭 created_by 依旧可读（既有锚点不动）；无关用户依旧拒绝。
+func TestGetProcessInstanceDetail_ReassignedPrevAssigneeStaysVisible(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	now := time.Now()
+	reassigned := "reassigned"
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-rag-vis", ProcessID: "proc-1", Name: "rag_vis",
+		Status: string(enums.InstanceStatusActive), StartUserID: "starter",
+		TenantID: "t1", CreatedBy: "starter", CreatedAt: now,
+	}))
+	// 改派后的活任务：受理人已换成新办理人 userB
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-rag-vis", ProcessInstanceID: secFixStrPtr("inst-rag-vis"),
+		TaskDefKey: "approve", Name: "审批", TaskType: "user_task",
+		Status: string(enums.TaskStatusActive), Assignee: secFixStrPtr("userB"),
+		ApprovalType: string(enums.ApprovalTypeSingle),
+		TenantID:     "t1", CreatedBy: "system", CreatedAt: now,
+	}))
+	// 改派轨迹行：created_by=管理员，prev_assignee=被换下的原受理人
+	require.NoError(t, q.WfHiTask.Create(&model.WfHiTask{
+		ID: "hi-rag-vis", ProcessInstanceID: secFixStrPtr("inst-rag-vis"),
+		ProcessID: "proc-1", Name: "审批",
+		TaskType: constants.TaskTypeReassign, Status: string(enums.TaskStatusCompleted),
+		EndReason: &reassigned, CreatedBy: "admin1",
+		PrevAssignee: secFixStrPtr("userA"),
+		CreatedAt:    now, EndedAt: &now,
+		TenantID: "t1",
+	}))
+
+	taskSvc := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), hiTaskDAO: dao.NewHiTaskDAOWithQuery(q)}
+	engine := &secFixEngine{taskSvc: taskSvc}
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: engine,
+	}
+	engine.runtimeSvc = rs
+
+	// 被改派的原受理人 userA：凭轨迹行 prev_assignee 可见
+	aCtx := SetUserToCtx(ctx, &Actor{UserID: "userA", TenantID: "t1", UserName: "A"})
+	resp, err := rs.GetProcessInstanceDetail(aCtx, Actor{UserID: "userA", TenantID: "t1"}, "inst-rag-vis")
+	require.NoError(t, err, "被改派的原受理人应可读实例详情")
+	require.NotNil(t, resp)
+
+	// 改派管理员 admin1：凭 created_by 依旧可见（不动既有锚点）
+	adminCtx := SetUserToCtx(ctx, &Actor{UserID: "admin1", TenantID: "t1", UserName: "Admin"})
+	resp, err = rs.GetProcessInstanceDetail(adminCtx, Actor{UserID: "admin1", TenantID: "t1"}, "inst-rag-vis")
+	require.NoError(t, err, "改派管理员凭 created_by 应可读实例详情")
+	require.NotNil(t, resp)
+
+	// 无关用户 userC：依旧拒绝
+	cCtx := SetUserToCtx(ctx, &Actor{UserID: "userC", TenantID: "t1", UserName: "C"})
+	_, err = rs.GetProcessInstanceDetail(cCtx, Actor{UserID: "userC", TenantID: "t1"}, "inst-rag-vis")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+}

@@ -319,6 +319,9 @@ CREATE TABLE IF NOT EXISTS wf_hi_task
     /* 审计 */
     tenant_id           VARCHAR(64) NOT NULL DEFAULT '',
     created_by          VARCHAR(64) NOT NULL DEFAULT '',
+    -- 前一任办理人：流转轨迹行（转办/委派/归还/改派）动作生效前刚持有该任务的人。
+    -- 仅轨迹行写入，任务本体归档行保持 NULL；运行表 wf_task 无此列
+    prev_assignee       VARCHAR(64),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_by          VARCHAR(64),
     updated_at          TIMESTAMPTZ
@@ -335,6 +338,9 @@ CREATE INDEX IF NOT EXISTS idx_hi_task_duration   ON wf_hi_task (duration);
 -- 流转动作轨迹行（转办/委派/归还/改派）按类型+操作人检索：已办列表的转办人
 -- 分支与详情可见性判定经此索引命中，轨迹行占比极小、选择性高
 CREATE INDEX IF NOT EXISTS idx_hi_task_trace      ON wf_hi_task (task_type, created_by);
+-- 流转轨迹行按类型+前一任办理人检索：已办列表第三分支与改派后原受理人的详情
+-- 可见性经此索引命中（未签收改派行为 NULL，不参与该检索）
+CREATE INDEX IF NOT EXISTS idx_hi_task_trace_prev ON wf_hi_task (task_type, prev_assignee);
 
 /* ------------ 注释 ------------ */
 COMMENT ON TABLE wf_hi_task IS '历史任务实例表（已结束）';

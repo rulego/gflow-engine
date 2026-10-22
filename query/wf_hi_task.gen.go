@@ -56,6 +56,7 @@ func newWfHiTask(db *gorm.DB, opts ...gen.DOOption) wfHiTask {
 	_wfHiTask.Duration = field.NewInt64(tableName, "duration")
 	_wfHiTask.TenantID = field.NewString(tableName, "tenant_id")
 	_wfHiTask.CreatedBy = field.NewString(tableName, "created_by")
+	_wfHiTask.PrevAssignee = field.NewString(tableName, "prev_assignee")
 	_wfHiTask.CreatedAt = field.NewTime(tableName, "created_at")
 	_wfHiTask.UpdatedBy = field.NewString(tableName, "updated_by")
 	_wfHiTask.UpdatedAt = field.NewTime(tableName, "updated_at")
@@ -97,6 +98,7 @@ type wfHiTask struct {
 	Duration          field.Int64  // 任务耗时（毫秒）
 	TenantID          field.String
 	CreatedBy         field.String
+	PrevAssignee      field.String // 前一任办理人（仅流转轨迹行写入）
 	CreatedAt         field.Time
 	UpdatedBy         field.String
 	UpdatedAt         field.Time
@@ -144,6 +146,7 @@ func (w *wfHiTask) updateTableName(table string) *wfHiTask {
 	w.Duration = field.NewInt64(table, "duration")
 	w.TenantID = field.NewString(table, "tenant_id")
 	w.CreatedBy = field.NewString(table, "created_by")
+	w.PrevAssignee = field.NewString(table, "prev_assignee")
 	w.CreatedAt = field.NewTime(table, "created_at")
 	w.UpdatedBy = field.NewString(table, "updated_by")
 	w.UpdatedAt = field.NewTime(table, "updated_at")
@@ -163,7 +166,7 @@ func (w *wfHiTask) GetFieldByName(fieldName string) (field.OrderExpr, bool) {
 }
 
 func (w *wfHiTask) fillFieldMap() {
-	w.fieldMap = make(map[string]field.Expr, 31)
+	w.fieldMap = make(map[string]field.Expr, 32)
 	w.fieldMap["id"] = w.ID
 	w.fieldMap["process_instance_id"] = w.ProcessInstanceID
 	w.fieldMap["process_id"] = w.ProcessID
@@ -192,6 +195,7 @@ func (w *wfHiTask) fillFieldMap() {
 	w.fieldMap["duration"] = w.Duration
 	w.fieldMap["tenant_id"] = w.TenantID
 	w.fieldMap["created_by"] = w.CreatedBy
+	w.fieldMap["prev_assignee"] = w.PrevAssignee
 	w.fieldMap["created_at"] = w.CreatedAt
 	w.fieldMap["updated_by"] = w.UpdatedBy
 	w.fieldMap["updated_at"] = w.UpdatedAt

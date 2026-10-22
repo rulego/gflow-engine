@@ -887,10 +887,10 @@ func TestInstanceDAO_GetActiveByBusinessKey(t *testing.T) {
 	}
 }
 
-// 已办列表的转办人匹配：转办原地换受理人，转办人凭历史表 forward 轨迹行
-// （created_by）命中已办列表；接手人按 assignee 命中不重复；链式转办各自
-// 命中一次；不启用 ForwardByUser 的查询（待办/统计）不命中。
-func TestInstanceDAO_ListByTaskConditions_ForwardByUser(t *testing.T) {
+// 已办列表的轨迹行当事人匹配：转办/改派原地换受理人，转办人与被改派的原
+// 受理人凭历史表轨迹行（prev_assignee）命中已办列表；接手人按 assignee 命中
+// 不重复；链式转办各自命中一次；不启用 TraceUser 的查询（待办/统计）不命中。
+func TestInstanceDAO_ListByTaskConditions_TraceUser(t *testing.T) {
 	q := newTestQuery(t, ddlWfInstance, ddlWfTask, ddlWfTaskAssignee, ddlWfHiInstance, ddlWfHiTask)
 	d := NewInstanceDAOWithQuery(q)
 	ctx := context.Background()
@@ -911,7 +911,8 @@ func TestInstanceDAO_ListByTaskConditions_ForwardByUser(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed task: %v", err)
 	}
-	// 两次转办的轨迹行：yi→er、er→san（created_by 各自记录转办操作人）
+	// 两次转办的轨迹行：yi→er、er→san（prev_assignee 各自记录转办人，与
+	// 存量库回填 prev_assignee=created_by 后的形态一致）
 	forwarded := "forwarded"
 	for _, row := range []struct {
 		id, by string
@@ -919,7 +920,7 @@ func TestInstanceDAO_ListByTaskConditions_ForwardByUser(t *testing.T) {
 		if err := q.WfHiTask.Create(&model.WfHiTask{
 			ID: row.id, ProcessInstanceID: &instID, ProcessID: "proc-1", Name: "审批",
 			TaskType: "forward", Status: "completed", EndReason: &forwarded,
-			CreatedBy: row.by, CreatedAt: now, EndedAt: &now, TenantID: "t1",
+			CreatedBy: row.by, PrevAssignee: &row.by, CreatedAt: now, EndedAt: &now, TenantID: "t1",
 		}); err != nil {
 			t.Fatalf("seed forward row: %v", err)
 		}
@@ -928,7 +929,7 @@ func TestInstanceDAO_ListByTaskConditions_ForwardByUser(t *testing.T) {
 	doneIDs := func(userID string) map[string]bool {
 		t.Helper()
 		instances, total, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
-			Assignee: userID, ForwardByUser: userID, TenantID: "t1",
+			Assignee: userID, TraceUser: userID, TenantID: "t1",
 			PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
 		})
 		if err != nil {
@@ -957,7 +958,7 @@ func TestInstanceDAO_ListByTaskConditions_ForwardByUser(t *testing.T) {
 	}
 	// 页签计数与列表同口径：转办人命中时桶计数带出同一条实例
 	counts, err := d.CountTaskInstancesByBuckets(ctx, &dto.TaskQuery{
-		Assignee: "yi", ForwardByUser: "yi", TenantID: "t1",
+		Assignee: "yi", TraceUser: "yi", TenantID: "t1",
 		PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
 	}, []InstanceStatusBucket{{Name: "total"}, {Name: "active", Statuses: []string{"active"}}})
 	if err != nil {
@@ -969,17 +970,109 @@ func TestInstanceDAO_ListByTaskConditions_ForwardByUser(t *testing.T) {
 	if counts["active"] != 1 {
 		t.Errorf("转办单实例为 active，active 桶应恰为 1，got %d", counts["active"])
 	}
-	// 不启用 ForwardByUser（待办/统计口径）：任务 active，已办状态过滤下不命中
+	// 不启用 TraceUser（待办/统计口径）：任务 active，已办状态过滤下不命中
 	instances, _, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
 		Assignee: "yi", TenantID: "t1",
 		PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
 	})
 	if err != nil {
-		t.Fatalf("ListByTaskConditions without ForwardByUser: %v", err)
+		t.Fatalf("ListByTaskConditions without TraceUser: %v", err)
 	}
 	for _, in := range instances {
 		if in.ID == "i-fwd" {
-			t.Error("不启用 ForwardByUser 时转办轨迹行不得命中（统计口径防虚增）")
+			t.Error("不启用 TraceUser 时转办轨迹行不得命中（统计口径防虚增）")
+		}
+	}
+}
+
+// 已办第三分支的改派命中与委派排除：被改派的原受理人凭 reassign 轨迹行的
+// prev_assignee 命中（改派管理员不得因 created_by 命中）；delegate 轨迹行
+// （委派/归还）刻意不进已办——存续窗口内详情可读即可，口径收敛。
+func TestInstanceDAO_ListByTaskConditions_ReassignPrevAndDelegateExcluded(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfTask, ddlWfTaskAssignee, ddlWfHiInstance, ddlWfHiTask)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := q.WfInstance.Create(&model.WfInstance{
+		ID: "i-rag", ProcessID: "proc-1", Name: "改派单", Status: "active",
+		TenantID: "t1", CreatedBy: "starter", StartUserID: "starter", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed instance: %v", err)
+	}
+	instID := "i-rag"
+	if err := q.WfTask.Create(&model.WfTask{
+		ID: "task-rag", ProcessInstanceID: &instID, TaskDefKey: "n1", Name: "审批",
+		TaskType: "user_task", Status: "active", Assignee: &[]string{"userB"}[0],
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	reassigned := "reassigned"
+	if err := q.WfHiTask.Create(&model.WfHiTask{
+		ID: "hi-rag-1", ProcessInstanceID: &instID, ProcessID: "proc-1", Name: "审批",
+		TaskType: "reassign", Status: "completed", EndReason: &reassigned,
+		CreatedBy: "admin1", PrevAssignee: &[]string{"userA"}[0],
+		CreatedAt: now, EndedAt: &now, TenantID: "t1",
+	}); err != nil {
+		t.Fatalf("seed reassign row: %v", err)
+	}
+	delegated := "delegated"
+	if err := q.WfHiTask.Create(&model.WfHiTask{
+		ID: "hi-dlg-1", ProcessInstanceID: &instID, ProcessID: "proc-1", Name: "审批",
+		TaskType: "delegate", Status: "completed", EndReason: &delegated,
+		CreatedBy: "userC", PrevAssignee: &[]string{"userC"}[0],
+		CreatedAt: now, EndedAt: &now, TenantID: "t1",
+	}); err != nil {
+		t.Fatalf("seed delegate row: %v", err)
+	}
+
+	doneIDs := func(userID string) map[string]bool {
+		t.Helper()
+		instances, total, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
+			Assignee: userID, TraceUser: userID, TenantID: "t1",
+			PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
+		})
+		if err != nil {
+			t.Fatalf("ListByTaskConditions: %v", err)
+		}
+		if total != int64(len(instances)) {
+			t.Fatalf("total(%d) 与条数(%d) 不一致", total, len(instances))
+		}
+		got := map[string]bool{}
+		for _, in := range instances {
+			got[in.ID] = true
+		}
+		return got
+	}
+
+	// 被改派的原受理人：凭 reassign 轨迹行 prev_assignee 命中已办第三分支
+	if !doneIDs("userA")["i-rag"] {
+		t.Error("被改派的原受理人应凭 reassign 轨迹行 prev_assignee 命中已办列表")
+	}
+	// 改派管理员：轨迹行 created_by 是他，但谓词只认 prev_assignee，不得命中
+	if doneIDs("admin1")["i-rag"] {
+		t.Error("改派管理员不得因改派动作进已办列表（委托行 delegate 也进不来）")
+	}
+	// 委派人：delegate 轨迹行刻意不进已办
+	if doneIDs("userC")["i-rag"] {
+		t.Error("委派/归还行不进已办列表（存续窗口内详情可读即可）")
+	}
+	// 桶计数与列表同口径：原受理人命中，管理员/委派人两个口径都不命中
+	for _, tc := range []struct {
+		user  string
+		want  bool
+		label string
+	}{{"userA", true, "原受理人桶计数应含改派单"}, {"admin1", false, "管理员桶计数不得含改派单"}, {"userC", false, "委派人桶计数不得含改派单"}} {
+		counts, err := d.CountTaskInstancesByBuckets(ctx, &dto.TaskQuery{
+			Assignee: tc.user, TraceUser: tc.user, TenantID: "t1",
+			PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
+		}, []InstanceStatusBucket{{Name: "total"}})
+		if err != nil {
+			t.Fatalf("CountTaskInstancesByBuckets(%s): %v", tc.user, err)
+		}
+		if got := counts["total"] >= 1; got != tc.want {
+			t.Errorf("%s：got total=%d", tc.label, counts["total"])
 		}
 	}
 }

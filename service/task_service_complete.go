@@ -732,6 +732,8 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 		return fmt.Errorf("failed to merge variables: %w", err)
 	}
 	task.Variables = merged
+	// 归还前的 assignee（被委派人）先取快照，轨迹行 prev_assignee 据此落库
+	prevAssignee := derefStr(task.Assignee)
 	task.Assignee = task.Owner
 	// gorm Updates(struct) 忽略 nil 字段,用空串指针强制清空 owner。owner=="" 语义等同无 owner:
 	// resolve 触发条件 *Owner != "" 见空串即不再重触发。否则 owner 永不清 → 每次 approve 重走
@@ -755,7 +757,7 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 	}
 	// 归还轨迹行：被委派人审结把任务归还原办理人，与委派行成对呈现过程留痕
 	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonResolved),
-		operator, request.Comment, now, map[string]interface{}{
+		operator, prevAssignee, request.Comment, now, map[string]interface{}{
 			constants.VarsTraceOperator: operator,
 		}); err != nil {
 		return err
