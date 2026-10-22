@@ -102,6 +102,11 @@ const (
 	// 时间线据此渲染「已转办」节点的处理人。只随归档行存续，不入活任务变量
 	VarsForwardBy = "forward_by"
 	VarsForwardTo = "forward_to"
+	// VarsTraceOperator/VarsTraceTarget 委派/归还/改派轨迹行（task_type=
+	// delegate/reassign）记录的操作人与目标人：委派行操作人=委派人、归还行
+	// 操作人=归还人、改派行操作人=改派发起人；只随归档行存续，不入活任务变量
+	VarsTraceOperator = "trace_operator"
+	VarsTraceTarget   = "trace_target"
 	// VarsReassignPrefix 改派（Reassign/交接改派）留痕键前缀：operator/from/to/
 	// reason/time 五件套由 applyReassign 写入任务变量，随行归档；与代审/兜底/
 	// 转办留痕同属引擎保留键，审批提交与流转出口按前缀整体剥离
@@ -138,7 +143,20 @@ const (
 	// 原地换受理人，时间轴与打印据此把转办前处理人渲染成独立节点（对标主流
 	// IM 审批的「已转审」形态）。无办理人、不进按办理人统计的已办/统计口径
 	TaskTypeForward = "forward"
+	// TaskTypeDelegate 委派/归还的轨迹记录行（非真实任务）：委派是临时移交，
+	// 归还后任务回到原办理人；轨迹行记录每次委派与归还，时间轴渲染过程留痕
+	TaskTypeDelegate = "delegate"
+	// TaskTypeReassign 改派的轨迹记录行（非真实任务）：管理员改派/交接改投/
+	// 代理改投原地换受理人，轨迹行记录操作人与去向，时间轴渲染改派留痕
+	TaskTypeReassign = "reassign"
 )
+
+// IsTransitionTraceType 判断任务类型是否为流转动作轨迹行（转办/委派/归还/改派，
+// recall 行为独立形态另判）：这类行不是节点实例，消费方按 assignee 统计、按
+// taskDefKey 聚合节点状态时都须跳过。
+func IsTransitionTraceType(taskType string) bool {
+	return taskType == TaskTypeForward || taskType == TaskTypeDelegate || taskType == TaskTypeReassign
+}
 
 // DSL 节点类型（DefinitionJSON metadata.nodes[].type 取值，与 rulego 注册的
 // 节点类型一致）。userTask/delay 与任务类型（TaskType*）同值，别名为单一来源。

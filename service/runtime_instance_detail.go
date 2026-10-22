@@ -438,7 +438,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 
 // isInstanceVisibleToUser 判定当前用户对该实例是否有可见性。
 // 可见条件（满足任一）：发起人、该实例任一 task 的 assignee（含历史）、
-// 转办轨迹行的转办操作人、CC 抄送归属。
+// 流转动作轨迹行的操作人（转办/委派/归还/改派）、CC 抄送归属。
 // 待认领候选成员不在 task.assignee 上，由调用方经 isPendingCandidateVisible 补充判定。
 // currentUserId 由调用方保证非空（空 UserID 在 GetProcessInstanceDetail 已被拒绝）。
 func isInstanceVisibleToUser(instance *model.WfInstance, tasks []*model.WfTask, currentUserId string) bool {
@@ -452,10 +452,10 @@ func isInstanceVisibleToUser(instance *model.WfInstance, tasks []*model.WfTask, 
 		if t.Assignee != nil && *t.Assignee == currentUserId {
 			return true
 		}
-		// 转办后票原地换受理人，转办人在 assignee 口径上不可达；轨迹行的
-		// created_by 记录转办操作人，据此保留转办人对实例的可见性（对齐
-		// 主流审批：转办人转出后仍可查看单据进度，只是不可再操作）
-		if t.TaskType == string(constants.TaskTypeForward) && t.CreatedBy == currentUserId {
+		// 流转动作后票原地换受理人，操作人在 assignee 口径上不可达：委派存续
+		// 窗口内原办理人、转办后的转办人凭轨迹行 created_by 保留实例可见性
+		// （对齐主流审批：转出/委出后仍可查看单据进度，只是不可再操作）
+		if constants.IsTransitionTraceType(t.TaskType) && t.CreatedBy == currentUserId {
 			return true
 		}
 	}
@@ -573,6 +573,14 @@ func Task2ExecutionInfo(task *model.WfTask, tasks []*model.WfTask) dto.Execution
 		// 转办轨迹行的操作人：时间线把该行渲染成「已转办」节点，处理人取此值
 		if v, ok := m[constants.VarsForwardBy].(string); ok {
 			executionInfo.ForwardBy = v
+		}
+		// 委派/归还/改派轨迹行的操作人与目标人：时间线把该行渲染成对应动作
+		// 节点，处理人取操作人
+		if v, ok := m[constants.VarsTraceOperator].(string); ok {
+			executionInfo.TraceOperator = v
+		}
+		if v, ok := m[constants.VarsTraceTarget].(string); ok {
+			executionInfo.TraceTarget = v
 		}
 	}
 	if task.EndedAt != nil {

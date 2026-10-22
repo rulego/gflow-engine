@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
 	utils2 "github.com/rulego/gflow-engine/utils"
 )
@@ -148,9 +149,20 @@ func (s *TaskServiceImpl) reassignInternal(ctx context.Context, scope *InstanceS
 	if err := taskDAO.Update(ctx, task); err != nil {
 		return nil, "", fmt.Errorf("failed to persist reassign: %w", err)
 	}
+	// 改派轨迹行（生成独立 ID，不与任务本体归档行冲突）：任务变量里的
+	// reassign_* 只保留最近一次改派，交接/代理的连续改投过程留痕靠轨迹行
+	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeReassign, string(enums.EndReasonReassigned),
+		operatorID, reason, now, map[string]interface{}{
+			constants.VarsTraceOperator: operatorID,
+			constants.VarsTraceTarget:   newAssignee,
+			"reassign_from":             oldAssignee,
+		}); err != nil {
+		return nil, "", err
+	}
 	// 强制改派以系统评论留痕，随审批记录天然可见（操作人=改派管理员）。与改派同
-	// 事务原子落库。不写 hi_task：任务此刻仍 active，插历史行会在实例归档时产生
-	// 重复行/主键冲突。
+	// 事务原子落库。不写任务本体行进 hi_task：任务此刻仍 active，本体行须等实例
+	// 归档时迁移，提前插入会在归档时产生重复行/主键冲突（上方轨迹行是独立生成
+	// ID 的动作留痕，不受此限）。
 	comment := fmt.Sprintf("强制改派：原办理人 %s → 新办理人 %s", displayAssignee(oldAssignee), newAssignee)
 	if reason != "" {
 		comment += "；原因：" + reason

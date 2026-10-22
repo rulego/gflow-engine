@@ -113,6 +113,13 @@ const (
 	EndReasonRecalled EndReason = "recalled"
 	// EndReasonForwarded 转办轨迹记录行（task_type=forward，非真实任务）
 	EndReasonForwarded EndReason = "forwarded"
+	// EndReasonDelegated 委派轨迹记录行（task_type=delegate，非真实任务）
+	EndReasonDelegated EndReason = "delegated"
+	// EndReasonResolved 委派归还轨迹记录行（task_type=delegate，被委派人审结
+	// 或原办理人主动收回，任务回到原办理人名下）
+	EndReasonResolved EndReason = "resolved"
+	// EndReasonReassigned 改派轨迹记录行（task_type=reassign，非真实任务）
+	EndReasonReassigned EndReason = "reassigned"
 )
 
 // ActionType 操作类型枚举

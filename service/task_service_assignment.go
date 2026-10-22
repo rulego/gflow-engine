@@ -288,6 +288,17 @@ func (s *TaskServiceImpl) delegateInternal(ctx context.Context, scope *InstanceS
 	if err := taskDAO.Update(ctx, task); err != nil {
 		return fmt.Errorf("failed to delegate task: %w", err)
 	}
+	// 委派轨迹行：任务上的 delegate_from/delegate_time 列只保留最近一次委派，
+	// 链式委派（A→B→C）与多次委派/归还的过程留痕靠归档轨迹行
+	if u := GetUserFromCtx(ctx); u != nil {
+		if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonDelegated),
+			u.UserID, reason, now, map[string]interface{}{
+				constants.VarsTraceOperator: u.UserID,
+				constants.VarsTraceTarget:   userID,
+			}); err != nil {
+			return err
+		}
+	}
 	// 触发委托事件（AfterCommit：回滚不产生幽灵事件）
 	if s.workflowEngine.GetTaskEventListener() != nil {
 		instanceID := ""
@@ -407,8 +418,10 @@ func (s *TaskServiceImpl) resolveInternal(ctx context.Context, scope *InstanceSc
 	emptyOwner := ""
 	task.Owner = &emptyOwner
 	username := ""
+	operator := ""
 	if u := GetUserFromCtx(ctx); u != nil {
 		username = u.UserName
+		operator = u.UserID
 	}
 	now := time.Now()
 	task.UpdatedBy = &username
@@ -416,6 +429,13 @@ func (s *TaskServiceImpl) resolveInternal(ctx context.Context, scope *InstanceSc
 
 	if err := taskDAO.Update(ctx, task); err != nil {
 		return fmt.Errorf("failed to resolve task: %w", err)
+	}
+	// 主动归还的轨迹行：原办理人收回或管理员代收，与委派行成对呈现过程留痕
+	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonResolved),
+		operator, "", now, map[string]interface{}{
+			constants.VarsTraceOperator: operator,
+		}); err != nil {
+		return err
 	}
 
 	// 委派归还事件：通知原 owner 任务已回到其名下
@@ -600,21 +620,30 @@ func (s *TaskServiceImpl) transferInternal(ctx context.Context, scope *InstanceS
 // 行）：轨迹行不是节点实例，认领节点身份会被按 taskDefKey 聚合节点状态的
 // 时间线消费方误当成已完成的节点本体。
 func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *InstanceScope, task *model.WfTask, fromUserID, toUserID, reason string, transferredAt time.Time) error {
+	return s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeForward, string(enums.EndReasonForwarded),
+		fromUserID, reason, transferredAt, map[string]interface{}{
+			constants.VarsForwardBy: fromUserID,
+			constants.VarsForwardTo: toUserID,
+		})
+}
+
+// writeActionTraceRow 流转动作轨迹行的通用写入器（委派/归还/改派与转办共用）。
+// 行形态与转办轨迹行同构，消费方约束一致：不设 assignee（统计按 assignee+
+// completed 计数，带了会虚增操作人已办数）、不设 TaskDefKey（轨迹行不是节点
+// 实例）、CreatedAt 锚动作真实时刻（时间线按创建时间升序）。会签子票的动作
+// 轨迹行挂父任务（ParentID），时间线嵌在子票列表渲染；标题取节点名。
+// 与动作本体同事务：轨迹缺失的流转动作是不完整审计。操作人进 created_by，
+// 委派/改派的目标人进 trace_target 变量（转办专用 forward_by/forward_to）。
+func (s *TaskServiceImpl) writeActionTraceRow(ctx context.Context, scope *InstanceScope, task *model.WfTask,
+	taskType, endReason, operatorID, reason string, at time.Time, vars map[string]interface{}) error {
 	if task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {
 		return nil
 	}
 	instanceID := *task.ProcessInstanceID
-	traceVars, err := utils2.ToJSON(map[string]interface{}{
-		constants.VarsForwardBy: fromUserID,
-		constants.VarsForwardTo: toUserID,
-	})
+	traceVars, err := utils2.ToJSON(vars)
 	if err != nil {
-		return fmt.Errorf("failed to serialize forward trace variables: %w", err)
+		return fmt.Errorf("failed to serialize %s trace variables: %w", taskType, err)
 	}
-	forwarded := string(enums.EndReasonForwarded)
-	// 会签子任务的转办轨迹行挂父任务（ParentID）：时间线嵌在该会签节点的子票
-	// 列表里渲染，而不是孤悬顶层；标题取节点名（子任务名含受理人ID不可读）。
-	// 计票与减签都只查活任务表，归档轨迹行不参与，挂 ParentID 无副作用
 	traceParentID := task.ParentID
 	traceName := task.Name
 	if traceParentID != nil && *traceParentID != "" {
@@ -628,18 +657,18 @@ func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *Insta
 		ProcessID:         task.ProcessID,
 		ParentID:          traceParentID,
 		Name:              traceName,
-		TaskType:          constants.TaskTypeForward,
+		TaskType:          taskType,
 		Status:            string(enums.TaskStatusCompleted),
-		EndReason:         &forwarded,
+		EndReason:         &endReason,
 		Variables:         &traceVars,
 		Comment:           &reason,
-		CreatedBy:         fromUserID,
-		CreatedAt:         transferredAt,
-		EndedAt:           &transferredAt,
+		CreatedBy:         operatorID,
+		CreatedAt:         at,
+		EndedAt:           &at,
 		TenantID:          task.TenantID,
 	}
 	if err := scope.HiTasks().Create(ctx, marker); err != nil {
-		return fmt.Errorf("failed to persist forward trace row: %w", err)
+		return fmt.Errorf("failed to persist %s trace row: %w", taskType, err)
 	}
 	return nil
 }

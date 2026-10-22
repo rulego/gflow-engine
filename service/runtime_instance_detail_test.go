@@ -541,3 +541,53 @@ func TestGetProcessInstanceDetail_TransferorStaysVisible(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
 }
+
+// 委派存续窗口内原办理人保留实例可见性：任务 assignee 已是被委派人，原办理人
+// 凭 delegate 轨迹行的 created_by 可读详情；无关用户依旧拒绝。
+func TestGetProcessInstanceDetail_DelegatorStaysVisible(t *testing.T) {
+	q := secFixDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-dlg-vis", ProcessID: "proc-1", Name: "dlg_vis",
+		Status: string(enums.InstanceStatusActive), StartUserID: "starter",
+		TenantID: "t1", CreatedBy: "starter", CreatedAt: now,
+	}))
+	// 委派中的活任务：assignee=被委派人，owner=原办理人
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "task-dlg-vis", ProcessInstanceID: secFixStrPtr("inst-dlg-vis"),
+		TaskDefKey: "approve", Name: "审批", TaskType: "user_task",
+		Status: string(enums.TaskStatusActive), Assignee: secFixStrPtr("userB"),
+		Owner:    secFixStrPtr("userA"),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+	}))
+	delegated := "delegated"
+	require.NoError(t, q.WfHiTask.Create(&model.WfHiTask{
+		ID: "hi-dlg-vis", ProcessInstanceID: secFixStrPtr("inst-dlg-vis"),
+		ProcessID: "proc-1", Name: "审批",
+		TaskType: constants.TaskTypeDelegate, Status: string(enums.TaskStatusCompleted),
+		EndReason: &delegated, CreatedBy: "userA", CreatedAt: now, EndedAt: &now,
+		TenantID: "t1",
+	}))
+
+	taskSvc := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), hiTaskDAO: dao.NewHiTaskDAOWithQuery(q)}
+	engine := &secFixEngine{taskSvc: taskSvc}
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: engine,
+	}
+	engine.runtimeSvc = rs
+
+	aCtx := SetUserToCtx(ctx, &Actor{UserID: "userA", TenantID: "t1", UserName: "A"})
+	resp, err := rs.GetProcessInstanceDetail(aCtx, Actor{UserID: "userA", TenantID: "t1"}, "inst-dlg-vis")
+	require.NoError(t, err, "委派存续窗口内原办理人应可读实例详情")
+	require.NotNil(t, resp)
+
+	bCtx := SetUserToCtx(ctx, &Actor{UserID: "userC", TenantID: "t1", UserName: "C"})
+	_, err = rs.GetProcessInstanceDetail(bCtx, Actor{UserID: "userC", TenantID: "t1"}, "inst-dlg-vis")
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrPermissionDenied), "期望 ErrPermissionDenied，got %v", err)
+}

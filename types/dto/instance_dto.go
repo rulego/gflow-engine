@@ -191,6 +191,12 @@ type ExecutionInfo struct {
 	// ForwardBy 转办操作人 userId：仅转办轨迹行（taskType=forward）携带，从
 	// 行变量 forward_by 读出；时间线据此渲染转办节点处理人
 	ForwardBy string `json:"forwardBy,omitempty"`
+	// TraceOperator 流转动作轨迹行（taskType=delegate/reassign）的操作人：
+	// 委派行=委派人、归还行=归还人、改派行=改派发起人；时间线据此渲染动作
+	// 行处理人（转办行仍用 ForwardBy，语义同源）
+	TraceOperator string `json:"traceOperator,omitempty"`
+	// TraceTarget 动作目标人：委派行=被委派人、改派行=新受理人
+	TraceTarget string `json:"traceTarget,omitempty"`
 	// SubExecutions 子任务明细：加签（countersign 父子结构）场景下挂该任务的
 	// 会签子任务，普通审批任务为空
 	SubExecutions []ExecutionInfo `json:"subExecutions"`

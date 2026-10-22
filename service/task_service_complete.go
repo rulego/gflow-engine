@@ -753,6 +753,13 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 	if err := taskDAO.Update(ctx, task); err != nil {
 		return err
 	}
+	// 归还轨迹行：被委派人审结把任务归还原办理人，与委派行成对呈现过程留痕
+	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonResolved),
+		operator, request.Comment, now, map[string]interface{}{
+			constants.VarsTraceOperator: operator,
+		}); err != nil {
+		return err
+	}
 	if err := s.recordApprovalComment(ctx, scope, task, operator, request.Comment); err != nil {
 		return err
 	}

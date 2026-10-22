@@ -592,3 +592,74 @@ func TestProxyAudit_CountersignParentNotMarked(t *testing.T) {
 	require.NotNil(t, eng.internal.execNextVars)
 	require.NotContains(t, eng.internal.execNextVars, constants.VarsProxyOperator)
 }
+
+// 委派与归还成对落轨迹行：委派行记委派人与被委派人，归还行记归还人（被委
+// 派人审结）；活任务的 delegate_* 列只留最近一次，过程链靠归档轨迹行。
+func TestDelegateWritesTraceRows(t *testing.T) {
+	q := proxyAuditDB(t)
+	proxySeedInstance(t, q, "px-inst-dlg2")
+	proxySeedTask(t, q, "t-dlg2", "px-inst-dlg2", "a", "userA", `{}`)
+
+	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "userA", TenantID: "t1"})
+	require.NoError(t, svc.Delegate(ctx, Actor{UserID: "userA", TenantID: "t1"}, "t-dlg2", "userB", "出差代审"))
+
+	dlgRows := func() []*model.WfHiTask {
+		rows, ferr := q.WfHiTask.WithContext(context.Background()).
+			Where(q.WfHiTask.ProcessInstanceID.Eq("px-inst-dlg2"),
+				q.WfHiTask.TaskType.Eq(string(constants.TaskTypeDelegate))).
+			Order(q.WfHiTask.CreatedAt).
+			Find()
+		require.NoError(t, ferr)
+		return rows
+	}
+	rows := dlgRows()
+	require.Len(t, rows, 1)
+	require.Nil(t, rows[0].Assignee, "轨迹行不设办理人：统计按 assignee+completed 计数")
+	require.Nil(t, rows[0].TaskDefKey, "轨迹行不认领节点身份")
+	require.Equal(t, string(enums.EndReasonDelegated), *rows[0].EndReason)
+	require.Equal(t, "userA", rows[0].CreatedBy, "委派行的 created_by 是委派操作人")
+	require.Equal(t, "出差代审", *rows[0].Comment)
+	require.Contains(t, *rows[0].Variables, `"trace_operator":"userA"`)
+	require.Contains(t, *rows[0].Variables, `"trace_target":"userB"`)
+
+	// 被委派人审结 → 任务归还原办理人，落归还轨迹行
+	bCtx := SetUserToCtx(context.Background(), &Actor{UserID: "userB", TenantID: "t1"})
+	require.NoError(t, svc.CompleteWithApproval(bCtx, Actor{UserID: "userB", TenantID: "t1"}, &ApprovalRequest{
+		TaskID: "t-dlg2", ApprovalResult: enums.ApprovalResultApproved, Comment: "同意",
+	}))
+	rows = dlgRows()
+	require.Len(t, rows, 2)
+	require.Equal(t, string(enums.EndReasonResolved), *rows[1].EndReason)
+	require.Equal(t, "userB", rows[1].CreatedBy, "归还行的 created_by 是归还人")
+	live, err := svc.taskDAO.Get(ctx, "t-dlg2")
+	require.NoError(t, err)
+	require.Equal(t, "userA", *live.Assignee, "审结归还原办理人")
+}
+
+// 改派落轨迹行：操作人进 created_by，原受理人/新受理人进变量；活任务变量里的
+// reassign_* 只留最近一次，连续改投（交接/代理）过程靠轨迹行。
+func TestReassignWritesTraceRow(t *testing.T) {
+	q := proxyAuditDB(t)
+	proxySeedInstance(t, q, "px-inst-rag")
+	proxySeedTask(t, q, "t-rag", "px-inst-rag", "a", "userA", `{}`)
+
+	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin1", TenantID: "t1", WorkflowAdmin: true})
+	_, err := svc.Reassign(ctx, Actor{UserID: "admin1", TenantID: "t1", WorkflowAdmin: true}, "t-rag", "userB", "负载调整")
+	require.NoError(t, err)
+
+	rows, rerr := q.WfHiTask.WithContext(context.Background()).
+		Where(q.WfHiTask.ProcessInstanceID.Eq("px-inst-rag"),
+			q.WfHiTask.TaskType.Eq(string(constants.TaskTypeReassign))).
+		Find()
+	require.NoError(t, rerr)
+	require.Len(t, rows, 1)
+	require.Nil(t, rows[0].Assignee)
+	require.Nil(t, rows[0].TaskDefKey)
+	require.Equal(t, string(enums.EndReasonReassigned), *rows[0].EndReason)
+	require.Equal(t, "admin1", rows[0].CreatedBy, "改派行的 created_by 是改派操作人")
+	require.Contains(t, *rows[0].Variables, `"trace_operator":"admin1"`)
+	require.Contains(t, *rows[0].Variables, `"trace_target":"userB"`)
+	require.Contains(t, *rows[0].Variables, `"reassign_from":"userA"`)
+}
