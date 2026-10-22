@@ -207,7 +207,10 @@ CREATE TABLE IF NOT EXISTS wf_hi_task (
     KEY idx_hi_task_asg_status (tenant_id, assignee, status),
     KEY idx_hi_task_completed (ended_at DESC),
     KEY idx_hi_task_tenant (tenant_id),
-    KEY idx_hi_task_duration (duration)
+    KEY idx_hi_task_duration (duration),
+    -- 流转动作轨迹行（转办/委派/归还/改派）按类型+操作人检索：已办列表的
+    -- 转办人分支与详情可见性判定经此索引命中，轨迹行占比极小、选择性高
+    KEY idx_hi_task_trace (task_type, created_by)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='历史任务实例表（已结束）';
 
 -- 6. 任务审批意见表（任务归档后仍可读写）

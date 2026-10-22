@@ -332,6 +332,9 @@ CREATE INDEX IF NOT EXISTS idx_hi_task_asg_status ON wf_hi_task (tenant_id, assi
 CREATE INDEX IF NOT EXISTS idx_hi_task_completed  ON wf_hi_task (ended_at DESC);
 CREATE INDEX IF NOT EXISTS idx_hi_task_tenant     ON wf_hi_task (tenant_id);
 CREATE INDEX IF NOT EXISTS idx_hi_task_duration   ON wf_hi_task (duration);
+-- 流转动作轨迹行（转办/委派/归还/改派）按类型+操作人检索：已办列表的转办人
+-- 分支与详情可见性判定经此索引命中，轨迹行占比极小、选择性高
+CREATE INDEX IF NOT EXISTS idx_hi_task_trace      ON wf_hi_task (task_type, created_by);
 
 /* ------------ 注释 ------------ */
 COMMENT ON TABLE wf_hi_task IS '历史任务实例表（已结束）';
