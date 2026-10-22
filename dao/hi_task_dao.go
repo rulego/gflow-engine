@@ -131,6 +131,12 @@ func (d *HiTaskDAO) List(ctx context.Context, query *dto.TaskQuery) ([]*model.Wf
 	if len(query.Status) > 0 {
 		queryBuilder = queryBuilder.Where(q.Status.In(query.Status...))
 	}
+	if len(query.TaskTypes) > 0 {
+		queryBuilder = queryBuilder.Where(q.TaskType.In(query.TaskTypes...))
+	}
+	if query.CreatedBy != "" {
+		queryBuilder = queryBuilder.Where(q.CreatedBy.Eq(query.CreatedBy))
+	}
 	if query.ApprovalType != "" {
 		queryBuilder = queryBuilder.Where(q.ApprovalType.Eq(query.ApprovalType))
 	}

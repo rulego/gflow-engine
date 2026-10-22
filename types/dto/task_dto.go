@@ -56,6 +56,15 @@ type TaskQuery struct {
 	// 配合 CandidateUser，扩展候选匹配到 entity_type='department' AND entity_id IN (CandidateDeptIDs)。
 	// dept 候选任务落库的是部门实体，须按部门匹配才对成员可见。
 	CandidateDeptIDs []string `json:"candidateDeptIDs" form:"candidateDeptIDs"`
+	// ForwardByUser 转办轨迹行匹配（实例联合列表专用）：非空时 assignee 匹配扩为
+	// assignee=Assignee OR (task_type=forward AND created_by=ForwardByUser)。已办列表
+	// 据此纳入"我转办出去"的实例——轨迹行不设 assignee（防已办统计虚增），转办人
+	// 在 assignee 口径上不可达，须由本条件补进列表；统计计数不启用本条件。
+	ForwardByUser string `json:"forwardByUser" form:"forwardByUser"`
+	// TaskTypes 任务类型过滤（如 forward 轨迹行），运行/历史任务查询通用
+	TaskTypes []string `json:"taskTypes" form:"taskTypes"`
+	// CreatedBy 任务创建人过滤：转办轨迹行的 created_by 记录转办操作人
+	CreatedBy string `json:"createdBy" form:"createdBy"`
 	// StartUserIDs 发起人 ID 列表：与 Keyword 联动按申请人过滤。引擎不持有姓名，
 	// 由宿主按姓名/用户名解析后传入。
 	StartUserIDs []string `json:"startUserIDs" form:"startUserIDs"`

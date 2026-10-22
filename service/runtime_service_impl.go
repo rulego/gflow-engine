@@ -2111,6 +2111,10 @@ func (s *RuntimeServiceImpl) GetDoneProcessInstanceList(ctx context.Context, act
 		TenantID:     tenantID,
 		Keyword:      keyword,
 		StartUserIDs: startUserIDs,
+		// 已办口径含"我转办出去"的实例：转办原地换受理人，转办人凭轨迹行
+		// （created_by）命中；待办与已办统计不启用（转出的票不回流待办、
+		// 不计入已办量），链式转办 A→B→C 各转办人各自命中，UNION 去重
+		ForwardByUser: userID,
 		PageRequest: dto.PageRequest{
 			Page:      page,
 			PageSize:  pageSize,
@@ -2193,6 +2197,9 @@ func (s *RuntimeServiceImpl) CountDoneByBuckets(ctx context.Context, actor Actor
 		TenantID:     actor.TenantID,
 		Keyword:      keyword,
 		StartUserIDs: startUserIDs,
+		// 与 GetDoneProcessInstanceList 同口径（含转办轨迹行命中），页签计数
+		// 不得与列表条数分叉
+		ForwardByUser: actor.UserID,
 		PageRequest: dto.PageRequest{
 			Status: []string{string(enums.TaskStatusCompleted), string(enums.TaskStatusReturned)},
 		},

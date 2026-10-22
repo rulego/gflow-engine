@@ -802,7 +802,7 @@ func TestEndReasonNotLike_UsesIsNullOR(t *testing.T) {
 	bcond, _ := bucketWhere(InstanceStatusBucket{Statuses: []string{"terminated"}, EndReasonNotPrefixes: []string{"审批拒绝", "申请人撤回"}})
 
 	for _, tc := range []struct{ name, sql string }{
-		{"buildTaskInstanceQuery", tq.conditions},
+		{"buildTaskInstanceQuery", tq.instConditions},
 		{"buildInstanceUnionQuery", uq.conditions},
 		{"bucketWhere", bcond},
 	} {
@@ -884,5 +884,102 @@ func TestInstanceDAO_GetActiveByBusinessKey(t *testing.T) {
 	}
 	if hit, err := d.GetActiveByBusinessKey(ctx, "t1", "BK-ARCHIVED"); err != nil || hit != nil {
 		t.Fatalf("archived businessKey must be released, got (%+v, %v)", hit, err)
+	}
+}
+
+// 已办列表的转办人匹配：转办原地换受理人，转办人凭历史表 forward 轨迹行
+// （created_by）命中已办列表；接手人按 assignee 命中不重复；链式转办各自
+// 命中一次；不启用 ForwardByUser 的查询（待办/统计）不命中。
+func TestInstanceDAO_ListByTaskConditions_ForwardByUser(t *testing.T) {
+	q := newTestQuery(t, ddlWfInstance, ddlWfTask, ddlWfTaskAssignee, ddlWfHiInstance, ddlWfHiTask)
+	d := NewInstanceDAOWithQuery(q)
+	ctx := context.Background()
+	now := time.Now()
+
+	if err := q.WfInstance.Create(&model.WfInstance{
+		ID: "i-fwd", ProcessID: "proc-1", Name: "转办单", Status: "active",
+		TenantID: "t1", CreatedBy: "starter", StartUserID: "starter", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed instance: %v", err)
+	}
+	instID := "i-fwd"
+	// 转办后的活任务：受理人=接手人 er
+	if err := q.WfTask.Create(&model.WfTask{
+		ID: "task-fwd", ProcessInstanceID: &instID, TaskDefKey: "n1", Name: "审批",
+		TaskType: "user_task", Status: "active", Assignee: &[]string{"er"}[0],
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed task: %v", err)
+	}
+	// 两次转办的轨迹行：yi→er、er→san（created_by 各自记录转办操作人）
+	forwarded := "forwarded"
+	for _, row := range []struct {
+		id, by string
+	}{{"hi-fwd-1", "yi"}, {"hi-fwd-2", "er"}} {
+		if err := q.WfHiTask.Create(&model.WfHiTask{
+			ID: row.id, ProcessInstanceID: &instID, ProcessID: "proc-1", Name: "审批",
+			TaskType: "forward", Status: "completed", EndReason: &forwarded,
+			CreatedBy: row.by, CreatedAt: now, EndedAt: &now, TenantID: "t1",
+		}); err != nil {
+			t.Fatalf("seed forward row: %v", err)
+		}
+	}
+
+	doneIDs := func(userID string) map[string]bool {
+		t.Helper()
+		instances, total, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
+			Assignee: userID, ForwardByUser: userID, TenantID: "t1",
+			PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
+		})
+		if err != nil {
+			t.Fatalf("ListByTaskConditions: %v", err)
+		}
+		if total != int64(len(instances)) {
+			t.Fatalf("total(%d) 与条数(%d) 不一致", total, len(instances))
+		}
+		got := map[string]bool{}
+		for _, in := range instances {
+			got[in.ID] = true
+		}
+		return got
+	}
+
+	// 两次转办的两位转办人都命中（链式 A→B→C：yi、er 各一次）
+	if !doneIDs("yi")["i-fwd"] {
+		t.Error("首次转办人应凭 forward 轨迹行进已办列表")
+	}
+	if !doneIDs("er")["i-fwd"] {
+		t.Error("链式转办中第二位转办人应凭自己的 forward 轨迹行进已办列表")
+	}
+	// 未参与转办的无关用户不命中
+	if doneIDs("outsider")["i-fwd"] {
+		t.Error("无关用户不应命中转办单")
+	}
+	// 页签计数与列表同口径：转办人命中时桶计数带出同一条实例
+	counts, err := d.CountTaskInstancesByBuckets(ctx, &dto.TaskQuery{
+		Assignee: "yi", ForwardByUser: "yi", TenantID: "t1",
+		PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
+	}, []InstanceStatusBucket{{Name: "total"}, {Name: "active", Statuses: []string{"active"}}})
+	if err != nil {
+		t.Fatalf("CountTaskInstancesByBuckets: %v", err)
+	}
+	if counts["total"] < 1 {
+		t.Errorf("转办人的已办桶计数应含转办单，got total=%d", counts["total"])
+	}
+	if counts["active"] != 1 {
+		t.Errorf("转办单实例为 active，active 桶应恰为 1，got %d", counts["active"])
+	}
+	// 不启用 ForwardByUser（待办/统计口径）：任务 active，已办状态过滤下不命中
+	instances, _, err := d.ListByTaskConditions(ctx, &dto.TaskQuery{
+		Assignee: "yi", TenantID: "t1",
+		PageRequest: dto.PageRequest{Status: []string{"completed", "returned"}},
+	})
+	if err != nil {
+		t.Fatalf("ListByTaskConditions without ForwardByUser: %v", err)
+	}
+	for _, in := range instances {
+		if in.ID == "i-fwd" {
+			t.Error("不启用 ForwardByUser 时转办轨迹行不得命中（统计口径防虚增）")
+		}
 	}
 }

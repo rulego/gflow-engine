@@ -162,6 +162,12 @@ func (d *TaskDAO) List(ctx context.Context, query *dto.TaskQuery) ([]*model.WfTa
 	if len(query.Status) > 0 {
 		queryBuilder = queryBuilder.Where(q.Status.In(query.Status...))
 	}
+	if len(query.TaskTypes) > 0 {
+		queryBuilder = queryBuilder.Where(q.TaskType.In(query.TaskTypes...))
+	}
+	if query.CreatedBy != "" {
+		queryBuilder = queryBuilder.Where(q.CreatedBy.Eq(query.CreatedBy))
+	}
 	// 实例状态过滤（i.status 层，区别于任务状态）：子查询圈定实例集合，
 	// 待办统计用它与待办列表同口径。
 	if len(query.InstanceStatuses) > 0 {

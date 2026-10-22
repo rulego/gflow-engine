@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 
@@ -411,12 +412,18 @@ func (d *InstanceDAO) GetInstanceStatisticsByTenant(ctx context.Context, tenantI
 }
 
 // taskInstanceQuery 预构建的任务维度实例查询：任务表 JOIN 实例表的运行时/历史两分支同构
+// taskInstanceQuery 任务维度实例 UNION 查询的分支材料。条件按所属表拆成
+// 实例条件（i.*）与任务条件（t.*）两段，各分支按需拼装。
 type taskInstanceQuery struct {
-	runSQL, histSQL, conditions string
-	args                        []interface{}
+	runSQL, histSQL, fwdSQL        string
+	instConditions, taskConditions string
+	instArgs, taskArgs             []interface{}
+	forwardByUser                  string
 }
 
-// buildTaskInstanceQuery 构建任务维度实例查询的 WHERE 条件（运行时/历史两分支共用同一段条件）
+// buildTaskInstanceQuery 构建任务维度实例查询的条件。三个分支：运行时（活实例⋈
+// 活任务）、历史（历史实例⋈历史任务）、转办（活实例⋈历史任务，ForwardByUser
+// 非空时启用）——转办轨迹行转办即落历史表，实例活跃期内只有第三分支能命中。
 func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
 	tq := taskInstanceQuery{
 		runSQL: `
@@ -431,13 +438,57 @@ func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
 			JOIN wf_hi_task t ON i.id = t.process_instance_id
 			WHERE 1=1
 		`,
+		fwdSQL: `
+			SELECT i.*
+			FROM wf_instance i
+			JOIN wf_hi_task t ON i.id = t.process_instance_id
+			WHERE 1=1
+		`,
 	}
 
 	// 构建条件
-	if req.TenantID != "" {
-		tq.conditions += " AND i.tenant_id = ?"
-		tq.args = append(tq.args, req.TenantID)
+	if req == nil {
+		req = &dto.TaskQuery{}
 	}
+	// —— 实例条件（i.*）——
+	if req.TenantID != "" {
+		tq.instConditions += " AND i.tenant_id = ?"
+		tq.instArgs = append(tq.instArgs, req.TenantID)
+	}
+	// 已删实例（删除时历史行标记 deleted）不进任何任务维度列表：
+	// 本条件由全部分支共用，任一分支命中都被排除
+	tq.instConditions += " AND i.status <> ?"
+	tq.instArgs = append(tq.instArgs, string(enums.InstanceStatusDeleted))
+	if len(req.InstanceStatuses) > 0 {
+		tq.instConditions += " AND i.status IN (?)"
+		tq.instArgs = append(tq.instArgs, req.InstanceStatuses)
+	}
+	if req.EndReasonPrefix != "" {
+		tq.instConditions += " AND i.end_reason LIKE ?"
+		tq.instArgs = append(tq.instArgs, req.EndReasonPrefix+"%")
+	}
+	for _, p := range req.EndReasonNotPrefixes {
+		if p == "" {
+			continue
+		}
+		tq.instConditions += " AND (i.end_reason IS NULL OR i.end_reason NOT LIKE ?)"
+		tq.instArgs = append(tq.instArgs, p+"%")
+	}
+	if req.Keyword != "" {
+		// keyword 命中申请标题 / 业务键 / 编号（实例ID）/ 申请人（StartUserIDs，宿主按姓名解析）
+		tq.instConditions += " AND (i.name LIKE ? OR i.business_key LIKE ? OR i.id LIKE ?"
+		kw := likeContains(req.Keyword)
+		tq.instArgs = append(tq.instArgs, kw, kw, kw)
+		if len(req.StartUserIDs) > 0 {
+			ph := strings.TrimSuffix(strings.Repeat("?,", len(req.StartUserIDs)), ",")
+			tq.instConditions += " OR i.start_user_id IN (" + ph + ")"
+			for _, id := range req.StartUserIDs {
+				tq.instArgs = append(tq.instArgs, id)
+			}
+		}
+		tq.instConditions += ")"
+	}
+	// —— 任务条件（t.*）——
 	if req.Assignee != "" {
 		// 候选维度：assignee=user OR (Pending 未签收 且 user 在候选人池 wf_task_assignee)。
 		// 候选池匹配 person（entity_id=user）、role（entity_id IN userRoleIDs）与
@@ -461,60 +512,52 @@ func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
 			if len(poolArgs) > 0 {
 				poolCond = "(" + poolCond + ")"
 			}
-			tq.conditions += " AND (t.assignee = ? OR (t.status = ? AND EXISTS (SELECT 1 FROM wf_task_assignee ca WHERE ca.task_id = t.id AND " + poolCond + ")))"
-			tq.args = append(tq.args, req.Assignee, string(enums.TaskStatusPending), req.CandidateUser)
-			tq.args = append(tq.args, poolArgs...)
+			tq.taskConditions += " AND (t.assignee = ? OR (t.status = ? AND EXISTS (SELECT 1 FROM wf_task_assignee ca WHERE ca.task_id = t.id AND " + poolCond + ")))"
+			tq.taskArgs = append(tq.taskArgs, req.Assignee, string(enums.TaskStatusPending), req.CandidateUser)
+			tq.taskArgs = append(tq.taskArgs, poolArgs...)
+		} else if req.ForwardByUser != "" {
+			// 已办维度：assignee=user OR 转办轨迹行（task_type=forward 且
+			// created_by=user）。转办是原地换受理人，转办人在 assignee 口径上
+			// 不可达，凭轨迹行进已办列表；终态实例的轨迹行在历史分支命中，
+			// 活跃实例的轨迹行由转办分支命中
+			tq.taskConditions += " AND (t.assignee = ? OR (t.task_type = ? AND t.created_by = ?))"
+			tq.taskArgs = append(tq.taskArgs, req.Assignee, string(constants.TaskTypeForward), req.ForwardByUser)
 		} else {
-			tq.conditions += " AND t.assignee = ?"
-			tq.args = append(tq.args, req.Assignee)
+			tq.taskConditions += " AND t.assignee = ?"
+			tq.taskArgs = append(tq.taskArgs, req.Assignee)
 		}
 	}
 	if len(req.Status) > 0 {
-		tq.conditions += " AND t.status IN (?)"
-		tq.args = append(tq.args, req.Status)
-	}
-	// 已删实例（删除时历史行标记 deleted）不进任何任务维度列表：
-	// 本条件由运行时/历史两分支共用，任一分支命中都被排除
-	tq.conditions += " AND i.status <> ?"
-	tq.args = append(tq.args, string(enums.InstanceStatusDeleted))
-	if len(req.InstanceStatuses) > 0 {
-		tq.conditions += " AND i.status IN (?)"
-		tq.args = append(tq.args, req.InstanceStatuses)
-	}
-	if req.EndReasonPrefix != "" {
-		tq.conditions += " AND i.end_reason LIKE ?"
-		tq.args = append(tq.args, req.EndReasonPrefix+"%")
-	}
-	for _, p := range req.EndReasonNotPrefixes {
-		if p == "" {
-			continue
-		}
-		tq.conditions += " AND (i.end_reason IS NULL OR i.end_reason NOT LIKE ?)"
-		tq.args = append(tq.args, p+"%")
+		tq.taskConditions += " AND t.status IN (?)"
+		tq.taskArgs = append(tq.taskArgs, req.Status)
 	}
 	if req.TaskDefKey != "" {
-		tq.conditions += " AND t.task_def_key = ?"
-		tq.args = append(tq.args, req.TaskDefKey)
+		tq.taskConditions += " AND t.task_def_key = ?"
+		tq.taskArgs = append(tq.taskArgs, req.TaskDefKey)
 	}
 	if req.ApprovalType != "" {
-		tq.conditions += " AND t.approval_type = ?"
-		tq.args = append(tq.args, req.ApprovalType)
+		tq.taskConditions += " AND t.approval_type = ?"
+		tq.taskArgs = append(tq.taskArgs, req.ApprovalType)
 	}
-	if req.Keyword != "" {
-		// keyword 命中申请标题 / 业务键 / 编号（实例ID）/ 申请人（StartUserIDs，宿主按姓名解析）
-		tq.conditions += " AND (i.name LIKE ? OR i.business_key LIKE ? OR i.id LIKE ?"
-		kw := likeContains(req.Keyword)
-		tq.args = append(tq.args, kw, kw, kw)
-		if len(req.StartUserIDs) > 0 {
-			ph := strings.TrimSuffix(strings.Repeat("?,", len(req.StartUserIDs)), ",")
-			tq.conditions += " OR i.start_user_id IN (" + ph + ")"
-			for _, id := range req.StartUserIDs {
-				tq.args = append(tq.args, id)
-			}
-		}
-		tq.conditions += ")"
-	}
+	tq.forwardByUser = req.ForwardByUser
 	return tq
+}
+
+// branches 返回 UNION 各分支的完整 SQL 与参数（参数顺序与各自 SQL 文本一致）。
+// 运行时/历史分支拼装全部条件；转办分支只认轨迹行——不带任务条件，避免归档的
+// returned 等常规历史行借"活实例⋈历史任务"组合混入本来进不了的列表。
+func (tq taskInstanceQuery) branches() ([]string, [][]interface{}) {
+	cond := tq.instConditions + tq.taskConditions
+	args := append(append([]interface{}{}, tq.instArgs...), tq.taskArgs...)
+	sqls := []string{tq.runSQL + cond, tq.histSQL + cond}
+	argsList := [][]interface{}{args, append([]interface{}{}, args...)}
+	if tq.forwardByUser != "" {
+		fwdCond := tq.instConditions + " AND t.task_type = ? AND t.created_by = ?"
+		fwdArgs := append(append([]interface{}{}, tq.instArgs...), string(constants.TaskTypeForward), tq.forwardByUser)
+		sqls = append(sqls, tq.fwdSQL+fwdCond)
+		argsList = append(argsList, fwdArgs)
+	}
+	return sqls, argsList
 }
 
 // ListByTaskConditions 根据任务条件关联查询流程实例列表（并关联流程定义）
@@ -526,26 +569,22 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 		return nil, 0, errors.New("tenantID required")
 	}
 	tq := buildTaskInstanceQuery(req)
-	runSQL, histSQL, conditions, args := tq.runSQL, tq.histSQL, tq.conditions, tq.args
+	branchSQLs, branchArgs := tq.branches()
 
-	// 合并运行时与历史两个来源。一个实例可能命中多个任务、甚至同时出现在
-	// 两个子查询里，用 UNION + COUNT(DISTINCT id) 去重，保证分页总数准确。
+	// 合并各来源分支。一个实例可能命中多个任务、甚至同时出现在多个子查询里，
+	// 用 UNION + COUNT(DISTINCT id) 去重，保证分页总数准确。
+	unionSQL := strings.Join(branchSQLs, "\n UNION \n")
+	unionArgs := make([]interface{}, 0, 8)
+	for _, ba := range branchArgs {
+		unionArgs = append(unionArgs, ba...)
+	}
 
 	// 构建 Count SQL。内联视图别名不带 AS，部分方言不允许。
-	countSQL := fmt.Sprintf(`
-		SELECT COUNT(DISTINCT id) FROM (
-			%s %s
-			UNION
-			%s %s
-		) combined
-	`, runSQL, conditions, histSQL, conditions)
-
-	// 复制参数用于 Count 查询 (因为 UNION 用了两次条件，参数也需要两份)
-	countArgs := append(args, args...)
+	countSQL := fmt.Sprintf("SELECT COUNT(DISTINCT id) FROM (%s) combined", unionSQL)
 
 	var total int64
 	db := d.Query.WfInstance.UnderlyingDB().WithContext(ctx)
-	if err := db.Raw(countSQL, countArgs...).Scan(&total).Error; err != nil {
+	if err := db.Raw(countSQL, unionArgs...).Scan(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -565,19 +604,10 @@ func (d *InstanceDAO) ListByTaskConditions(ctx context.Context, req *dto.TaskQue
 		orderDir = "ASC"
 	}
 
-	listSQL := fmt.Sprintf(`
-		SELECT * FROM (
-			%s %s
-			UNION
-			%s %s
-		) combined
-		ORDER BY %s %s
-		LIMIT ? OFFSET ?
-	`, runSQL, conditions, histSQL, conditions, orderBy, orderDir)
+	listSQL := fmt.Sprintf("SELECT * FROM (%s) combined ORDER BY %s %s LIMIT ? OFFSET ?",
+		unionSQL, orderBy, orderDir)
 
-	// 列表查询参数：两份条件参数 + 分页参数
-	listArgs := append(args, args...)
-	listArgs = append(listArgs, size, offset)
+	listArgs := append(append([]interface{}{}, unionArgs...), size, offset)
 
 	var list []*model.WfInstance
 	if err := db.Raw(listSQL, listArgs...).Scan(&list).Error; err != nil {
@@ -845,9 +875,10 @@ func (d *InstanceDAO) CountTaskInstancesByBuckets(ctx context.Context, req *dto.
 	}
 	tq := buildTaskInstanceQuery(req)
 
-	// 参数顺序须与 SQL 文本一致：先外层 SELECT 的桶参数，再两个分支各一份条件参数
+	// 参数顺序须与 SQL 文本一致：先外层 SELECT 的桶参数，再各分支的条件参数
+	branchSQLs, branchArgs := tq.branches()
 	selects := []string{"COUNT(DISTINCT id) AS total"}
-	args := make([]interface{}, 0, len(tq.args)*2+len(buckets)*2)
+	args := make([]interface{}, 0, 16)
 	for _, b := range buckets {
 		alias, err := bucketAlias(b.Name)
 		if err != nil {
@@ -857,10 +888,11 @@ func (d *InstanceDAO) CountTaskInstancesByBuckets(ctx context.Context, req *dto.
 		selects = append(selects, fmt.Sprintf("COUNT(DISTINCT CASE WHEN %s THEN id END) AS %s", cond, alias))
 		args = append(args, condArgs...)
 	}
-	args = append(args, tq.args...)
-	args = append(args, tq.args...)
+	for _, ba := range branchArgs {
+		args = append(args, ba...)
+	}
 
-	sql := fmt.Sprintf(`SELECT %s FROM (%s %s UNION %s %s) combined`,
-		strings.Join(selects, ", "), tq.runSQL, tq.conditions, tq.histSQL, tq.conditions)
+	sql := fmt.Sprintf("SELECT %s FROM (%s) combined",
+		strings.Join(selects, ", "), strings.Join(branchSQLs, "\n UNION \n"))
 	return scanBucketCounts(ctx, d.Query.WfInstance.UnderlyingDB().WithContext(ctx), sql, args)
 }
