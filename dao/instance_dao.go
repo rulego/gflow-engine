@@ -503,7 +503,7 @@ func buildTaskInstanceQuery(req *dto.TaskQuery) taskInstanceQuery {
 		// 候选维度：assignee=user OR (Pending 未签收 且 user 在候选人池 wf_task_assignee)。
 		// 候选池匹配 person（entity_id=user）、role（entity_id IN userRoleIDs）与
 		// department（entity_id IN userDeptIDs，dept 候选任务落库的是部门实体）。
-		// 候选池表只有运行侧语义，两分支同条件即可
+		// 条件不含历史表专属列，运行/历史分支共用同一份
 		if req.CandidateUser != "" {
 			poolCond := "(ca.entity_type = 'person' AND ca.entity_id = ?)"
 			poolArgs := []interface{}{}

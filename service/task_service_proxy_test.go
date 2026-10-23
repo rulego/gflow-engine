@@ -683,8 +683,6 @@ func TestReassignWritesTraceRow(t *testing.T) {
 	proxySeedTask(t, q, "t-rag2", "px-inst-rag2", "a", "", `{}`)
 	_, err = svc.Reassign(ctx, Actor{UserID: "admin1", TenantID: "t1", WorkflowAdmin: true}, "t-rag2", "userB", "认领前改派")
 	require.NoError(t, err)
-	rows = ragRows()
-	// ragRows 按 process_instance_id 过滤的是 px-inst-rag，重查第二实例
 	rows2, rerr := q.WfHiTask.WithContext(context.Background()).
 		Where(q.WfHiTask.ProcessInstanceID.Eq("px-inst-rag2"),
 			q.WfHiTask.TaskType.Eq(string(constants.TaskTypeReassign))).
