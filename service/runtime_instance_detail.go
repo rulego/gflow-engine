@@ -114,6 +114,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 			approvalList = append(approvalList, Task2ExecutionInfo(task, timelineTasks))
 		}
 	}
+	markFormModified(timelineTasks, approvalList)
 
 	// 3. 当前用户在该实例上的待审批任务 - 查找 active/suspended/pending 状态的任务
 	var currentUserTask *model.WfTask
@@ -173,13 +174,27 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 			definitionJSON = procDef.DefinitionJSON
 			processName = procDef.Name
 
-			// 从 definitionJson 中提取 form schema
+			// 从 definitionJson 中提取 form schema：标准位 ruleChain.additionalInfo.form，
+			// 旧格式顶层 form 兜底（与前端 parseDefinitionJson 同口径）
 			var defData map[string]interface{}
 			if err := json.Unmarshal([]byte(definitionJSON), &defData); err == nil {
-				if form, ok := defData["form"]; ok {
-					if formBytes, err := json.Marshal(form); err == nil {
-						formSchemaJSON = string(formBytes)
+				extractForm := func(v interface{}) bool {
+					if v == nil {
+						return false
 					}
+					if formBytes, merr := json.Marshal(v); merr == nil {
+						formSchemaJSON = string(formBytes)
+						return true
+					}
+					return false
+				}
+				if rc, ok := defData["ruleChain"].(map[string]interface{}); ok {
+					if ai, ok := rc["additionalInfo"].(map[string]interface{}); ok {
+						extractForm(ai["form"])
+					}
+				}
+				if formSchemaJSON == "" {
+					extractForm(defData["form"])
 				}
 			}
 			if formSchemaJSON == "" {
@@ -629,4 +644,144 @@ func parseTaskVariables(raw *string) map[string]interface{} {
 		return nil
 	}
 	return m
+}
+
+// formSnapshotMaxBytes 单份任务变量参与行级修改标记的体积上限：病态大表单
+// （base64 附件误入变量等）逐键序列化比对会拖慢详情组装，超限的快照退出
+// 比对链（该行不标记，弹窗仍可单独查看）。
+const formSnapshotMaxBytes = 256 * 1024
+
+// taskVariablesSnapshot 任务变量快照的对外口径：剥引擎保留标记键、审批约定
+// 键（approved/comment——只在快照层剥，全局保留键集不含它们，Complete 内部
+// 还要消费审批意图）、改派留痕与下划线前缀的引擎内部键（_sequentialAssignees
+// 顺序审批缓存、_ai 智能体输出等），只余表单字段。历史任务查询透出与行级
+// 修改标记共用，两边不得各自维护剥离口径。
+func taskVariablesSnapshot(task *model.WfTask) map[string]interface{} {
+	m := parseTaskVariables(task.Variables)
+	if m == nil {
+		return nil
+	}
+	for k := range m {
+		if k == constants.VarsApproved || k == constants.VarsComment ||
+			isEngineReservedVarKey(k) || strings.HasPrefix(k, "_") {
+			delete(m, k)
+		}
+	}
+	return m
+}
+
+// snapshotValueBytes 变量值序列化：map 键序由 encoding/json 排序保证确定性，
+// 数组/对象整体序列化后比较（不递归出条目级差异）。
+func snapshotValueBytes(v interface{}) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// diffSnapshotKeys 相邻两份快照的 key 级差异计数：新增/删除/值变化各算一处。
+func diffSnapshotKeys(prev, cur map[string]interface{}) int {
+	changed := 0
+	for k, v := range cur {
+		pv, ok := prev[k]
+		if !ok {
+			changed++
+			continue
+		}
+		if string(snapshotValueBytes(pv)) != string(snapshotValueBytes(v)) {
+			changed++
+		}
+	}
+	for k := range prev {
+		if _, ok := cur[k]; !ok {
+			changed++
+		}
+	}
+	return changed
+}
+
+// markFormModified 给审批时间线行打表单修改标记：按完成时间序对已完成任务
+// （startTask/userTask）的变量快照做相邻比对，与上一份快照有差异的行标记
+// formModified 并记差异字段数；行上同时下发 FormPrevTaskID（前一份快照的
+// 任务 ID），快照弹窗的修改痕迹据此对齐，宿主不自行重建比对链。发起行的
+// 快照即发起初版表单（行上冻结，后续修改不回写），作为链首参与比对，第一
+// 个审批节点改表单因此可检测；发起行自身是链首，永不标记。轨迹行/系统节点/
+// 超限/解析失败的快照退出比对链。
+func markFormModified(tasks []*model.WfTask, approvals []dto.ExecutionInfo) {
+	// 比对链按完成时间排序：会签子任务先于父任务完成，创建序与完成序相反，
+	// 修改痕迹的先后语义跟随快照冻结时刻
+	chain := make([]*model.WfTask, 0, len(tasks))
+	for _, t := range tasks {
+		if t == nil || t.Status != string(enums.TaskStatusCompleted) {
+			continue
+		}
+		if t.TaskType != constants.TaskTypeUserTask && t.TaskType != constants.TaskTypeStartTask {
+			continue
+		}
+		if t.Variables == nil || *t.Variables == "" || len(*t.Variables) > formSnapshotMaxBytes {
+			continue
+		}
+		chain = append(chain, t)
+	}
+	sort.SliceStable(chain, func(i, j int) bool {
+		a, b := chain[i], chain[j]
+		at, bt := a.CreatedAt, b.CreatedAt
+		if a.EndedAt != nil {
+			at = *a.EndedAt
+		}
+		if b.EndedAt != nil {
+			bt = *b.EndedAt
+		}
+		if !at.Equal(bt) {
+			return at.Before(bt)
+		}
+		return a.CreatedAt.Before(b.CreatedAt)
+	})
+
+	type chainSnapshot struct {
+		taskID string
+		raw    string
+		fields map[string]interface{}
+	}
+	marks := make(map[string]int, len(chain))
+	prevOf := make(map[string]string, len(chain))
+	var prev *chainSnapshot
+	for _, t := range chain {
+		snap := taskVariablesSnapshot(t)
+		// 解析失败的损坏数据退出链：nil 快照若进链会毒化后续所有比对（假阴性）
+		if snap == nil {
+			continue
+		}
+		if prev != nil {
+			// 相邻快照原文相等（审批人未改表的常见情形）时跳过逐值序列化比对
+			if prev.raw != *t.Variables {
+				if n := diffSnapshotKeys(prev.fields, snap); n > 0 {
+					marks[t.ID] = n
+				}
+			}
+			prevOf[t.ID] = prev.taskID
+		}
+		prev = &chainSnapshot{taskID: t.ID, raw: *t.Variables, fields: snap}
+	}
+	if len(marks) == 0 && len(prevOf) == 0 {
+		return
+	}
+	applyFormModifiedMarks(approvals, marks, prevOf)
+}
+
+// applyFormModifiedMarks 递归下发行级标记：加签子任务在 SubExecutions 子树里。
+func applyFormModifiedMarks(approvals []dto.ExecutionInfo, marks map[string]int, prevOf map[string]string) {
+	for i := range approvals {
+		if n, ok := marks[approvals[i].TaskID]; ok {
+			approvals[i].FormModified = true
+			approvals[i].FormChangedCount = n
+		}
+		if id, ok := prevOf[approvals[i].TaskID]; ok {
+			approvals[i].FormPrevTaskID = id
+		}
+		if len(approvals[i].SubExecutions) > 0 {
+			applyFormModifiedMarks(approvals[i].SubExecutions, marks, prevOf)
+		}
+	}
 }

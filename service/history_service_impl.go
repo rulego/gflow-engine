@@ -21,6 +21,9 @@ type HistoryServiceImpl struct {
 	hiInstanceDAO HiInstanceStore
 	hiTaskDAO     HiTaskStore
 	processDAO    ProcessStore
+	// taskDAO 运行任务表：归档发生在实例终态批量拷贝，运行中实例的已完成
+	// 任务只在活表，单实例查询据此回落（formSnapshotTask）
+	taskDAO TaskStore
 }
 
 // NewHistoryService 创建HistoryService实例
@@ -29,6 +32,7 @@ func NewHistoryService() HistoryService {
 		hiInstanceDAO: dao.NewHiInstanceDAO(),
 		hiTaskDAO:     dao.NewHiTaskDAO(),
 		processDAO:    dao.NewProcessDAO(),
+		taskDAO:       dao.NewTaskDAO(),
 	}
 }
 
@@ -38,6 +42,7 @@ func NewHistoryServiceWithQuery(q *query.Query) HistoryService {
 		hiInstanceDAO: dao.NewHiInstanceDAOWithQuery(q),
 		hiTaskDAO:     dao.NewHiTaskDAOWithQuery(q),
 		processDAO:    dao.NewProcessDAOWithQuery(q),
+		taskDAO:       dao.NewTaskDAOWithQuery(q),
 	}
 }
 
@@ -181,8 +186,14 @@ func (s *HistoryServiceImpl) GetHistoricTaskInstances(ctx context.Context, actor
 
 	// 转换为历史任务实例
 	historicTasks := make([]*HistoricTaskInstance, len(tasks))
+	// 列表默认不带变量：快照可达 MB 级，仅显式要求（includeTaskLocalVariables）
+	// 时填充，接口位声明与实现对齐
+	withVariables := query.IncludeTaskLocalVariables != nil && *query.IncludeTaskLocalVariables
 	for i, task := range tasks {
 		historicTasks[i] = s.convertToHistoricTaskInstance(task)
+		if withVariables {
+			historicTasks[i].Variables = taskVariablesSnapshot(task)
+		}
 	}
 
 	return historicTasks, total, nil
@@ -199,16 +210,29 @@ func (s *HistoryServiceImpl) GetHistoricTaskInstance(ctx context.Context, actor 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get historic task instance: %w", err)
 	}
-
 	if task == nil {
-		return nil, fmt.Errorf("%w: historic task instance", ErrNotFound)
+		// 活表回落：归档发生在实例终态而非任务完成，运行中实例的已完成任务
+		// 只存在于活表（variables 列即结束瞬间快照）。只回落已完成任务，
+		// 在途任务不属于历史查询语义。
+		if s.taskDAO == nil {
+			return nil, fmt.Errorf("%w: historic task instance", ErrNotFound)
+		}
+		task, err = s.taskDAO.Get(ctx, taskID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get historic task instance: %w", err)
+		}
+		if task == nil || task.Status != string(enums.TaskStatusCompleted) {
+			return nil, fmt.Errorf("%w: historic task instance", ErrNotFound)
+		}
 	}
 
 	if err := ensureTenantAccess(ctx, "historic task instance", task.TenantID); err != nil {
 		return nil, err
 	}
 
-	return s.convertToHistoricTaskInstance(task), nil
+	historic := s.convertToHistoricTaskInstance(task)
+	historic.Variables = taskVariablesSnapshot(task)
+	return historic, nil
 }
 
 // DeleteHistoricProcessInstance 删除历史流程实例（actor 租户非空时校验归属）。

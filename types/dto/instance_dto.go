@@ -204,4 +204,15 @@ type ExecutionInfo struct {
 	IsCandidate bool `json:"isCandidate"`
 	// Delegated 委派中（Owner 在位）：V1 代审不支持该状态的任务
 	Delegated bool `json:"delegated,omitempty"`
+	// FormModified 该行提交时的表单快照与上一份快照存在字段差异（详情组装时
+	// 由服务端对已完成任务的变量快照做相邻 diff 得出）：时间轴据此渲染
+	// 「修改了表单」入口，未修改行不渲染，常驻按钮只会是噪音
+	FormModified bool `json:"formModified,omitempty"`
+	// FormChangedCount 变更字段数（FormModified=true 时大于 0），表单区顶部
+	// 汇总提示按各行聚合
+	FormChangedCount int `json:"formChangedCount,omitempty"`
+	// FormPrevTaskID 上一份快照所在任务 ID（比对链中紧邻的前一行）：表单快照
+	// 弹窗的修改痕迹（changes）以它为前份，由引擎统一定序下发，宿主不得
+	// 自行重建比对链（排序并列时口径会漂移）；链首行为空
+	FormPrevTaskID string `json:"formPrevTaskId,omitempty"`
 }

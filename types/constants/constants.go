@@ -141,6 +141,9 @@ const (
 	TaskTypeUserTask = "userTask"
 	TaskTypeDelay    = "delay"
 	TaskTypeCCTask   = "ccTask"
+	// TaskTypeStartTask 发起人（开始）节点任务行：仅作流程起点标记，其变量
+	// 快照冻结发起初版表单（后续审批修改不回写），是表单修改比对的链首
+	TaskTypeStartTask = "startTask"
 	// TaskTypeRecall 终态收回的轨迹记录行（落归档任务表，非真实任务）：
 	// 时间轴与打印据此在两轮审批之间渲染收回节点，标注操作人与原因
 	TaskTypeRecall = "recall"

@@ -71,6 +71,10 @@ type HistoricTaskInstance struct {
 	ParentTaskID        string     `json:"parentTaskId"`
 	Category            string     `json:"category"`
 	TenantID            string     `json:"tenantId"`
+	// Variables 任务变量快照（剥引擎保留标记键后的表单字段状态，即任务完成
+	// 瞬间该提交人视角的表单全量）。单实例查询始终带出；列表查询仅在
+	// IncludeTaskLocalVariables=true 时填充，避免列表响应无谓膨胀。
+	Variables map[string]interface{} `json:"variables,omitempty"`
 }
 
 // HistoricProcessInstanceQuery 历史流程实例查询条件
