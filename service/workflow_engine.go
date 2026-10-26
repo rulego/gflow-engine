@@ -9,7 +9,7 @@ import (
 
 // Version 引擎版本号（单一来源：builder 与 GetVersion 均引用此常量，
 // 发布时与 docs/CHANGELOG.md 同步更新）。
-const Version = "1.4.0"
+const Version = "1.4.1"
 
 // WorkflowEngine 工作流引擎主接口
 // 整合所有核心服务，提供统一的工作流引擎访问入口
