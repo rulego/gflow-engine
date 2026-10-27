@@ -22,7 +22,7 @@ type HistoryServiceImpl struct {
 	hiTaskDAO     HiTaskStore
 	processDAO    ProcessStore
 	// taskDAO 运行任务表：归档发生在实例终态批量拷贝，运行中实例的已完成
-	// 任务只在活表，单实例查询据此回落（formSnapshotTask）
+	// 任务只在活表；GetHistoricTaskInstance 查不到归档行时据此回落
 	taskDAO TaskStore
 }
 
@@ -187,7 +187,7 @@ func (s *HistoryServiceImpl) GetHistoricTaskInstances(ctx context.Context, actor
 	// 转换为历史任务实例
 	historicTasks := make([]*HistoricTaskInstance, len(tasks))
 	// 列表默认不带变量：快照可达 MB 级，仅显式要求（includeTaskLocalVariables）
-	// 时填充，接口位声明与实现对齐
+	// 时填充；字段口径见 HistoricTaskInstance.Variables
 	withVariables := query.IncludeTaskLocalVariables != nil && *query.IncludeTaskLocalVariables
 	for i, task := range tasks {
 		historicTasks[i] = s.convertToHistoricTaskInstance(task)
