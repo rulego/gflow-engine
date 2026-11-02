@@ -83,7 +83,7 @@ psql -d gflow -f scripts/00.init_bpm_pg.sql
 
 ```bash
 mysql -u root -p -e "CREATE DATABASE gflow DEFAULT CHARACTER SET utf8mb4"
-mysql -u root -p gflow < scripts/00.init_bpm_mysql.sql
+mysql --default-character-set=utf8mb4 -u root -p gflow < scripts/00.init_bpm_mysql.sql
 ```
 
 引擎共 7 张 `wf_` 前缀表：流程定义、实例与任务（各含运行时/历史两张）、候选人池、审批意见，字段说明见 [docs/migration.md](docs/migration.md)。

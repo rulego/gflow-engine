@@ -83,7 +83,7 @@ psql -d gflow -f scripts/00.init_bpm_pg.sql
 
 ```bash
 mysql -u root -p -e "CREATE DATABASE gflow DEFAULT CHARACTER SET utf8mb4"
-mysql -u root -p gflow < scripts/00.init_bpm_mysql.sql
+mysql --default-character-set=utf8mb4 -u root -p gflow < scripts/00.init_bpm_mysql.sql
 ```
 
 The engine owns 7 `wf_`-prefixed tables: process definitions, instances and tasks (runtime + history each), the candidate pool, and approval comments — see [docs/migration.md](docs/migration.md) for column details.

@@ -18,8 +18,8 @@ Go API 层面的破坏性变更不在本文展开，见 [CHANGELOG.md](CHANGELOG
 # PostgreSQL
 psql -d gflow -f scripts/00.init_bpm_pg.sql
 
-# MySQL
-mysql -u root -p gflow < scripts/00.init_bpm_mysql.sql
+# MySQL（--default-character-set=utf8mb4，与脚本内 SET NAMES 保持一致）
+mysql --default-character-set=utf8mb4 -u root -p gflow < scripts/00.init_bpm_mysql.sql
 ```
 
 > ✅ 两个脚本均为幂等（`CREATE TABLE/INDEX IF NOT EXISTS`），在已有库上重跑不会

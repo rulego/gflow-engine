@@ -6,7 +6,7 @@
 -- 仅包含工作流引擎自身的表；用户/角色/部门等系统表由宿主应用负责。
 --
 -- 用法：
---   mysql -u root -p gflow < scripts/00.init_bpm_mysql.sql
+--   mysql --default-character-set=utf8mb4 -u root -p gflow < scripts/00.init_bpm_mysql.sql
 --   （或 bash scripts/init-db.sh）
 --
 -- 说明：
@@ -19,6 +19,9 @@
 --   - 修改表结构时：同步更新两个方言脚本，存量库差异补丁落 gflow 仓库
 --     scripts/patch/，并重新同步 gflow 仓库的 scripts/engine/ 快照。
 -- ============================================================
+
+-- 统一导入会话字符集为 utf8mb4，防止表注释等中文按 latin1 转码成乱码。
+SET NAMES utf8mb4;
 
 -- 1. 流程定义表（同一租户内 process_key 按 version 递增，保留多个发布版本）
 CREATE TABLE IF NOT EXISTS wf_process (
