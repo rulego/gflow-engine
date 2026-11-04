@@ -123,6 +123,59 @@ func (d *HiInstanceDAO) List(ctx context.Context, request *dto.ProcessInstanceQu
 	return list, total, nil
 }
 
+// ListAfterID keyset 流式拉取：按 id 升序返回 id 大于 afterID 的前 limit 条，
+// 供需要全量遍历过滤集的场景（表单统计）逐批消费。过滤口径与 List 的租
+// 户/流程Key/状态/时间窗一致，但不执行 COUNT、不走 OFFSET；limit 由调用
+// 方按流式批大小给定，不受列表页 MaxPageSize 约束（该上限防的是前端一页
+// 拉全表）。statuses/时间窗必填。
+func (d *HiInstanceDAO) ListAfterID(ctx context.Context, tenantID, processKey string, statuses []string,
+	createdAfter, createdBefore *time.Time, afterID string, limit int) ([]*model.WfInstance, error) {
+	if tenantID == "" || len(statuses) == 0 || createdAfter == nil || createdBefore == nil {
+		return nil, fmt.Errorf("tenantID, statuses and time range are required")
+	}
+	if limit < 1 {
+		limit = 1
+	}
+	q := d.Query.WfHiInstance
+	query := q.WithContext(ctx).
+		Where(q.TenantID.Eq(tenantID)).
+		Where(q.Status.In(statuses...)).
+		Where(q.CreatedAt.Gte(*createdAfter)).
+		Where(q.CreatedAt.Lte(*createdBefore))
+	if processKey != "" {
+		p := d.Query.WfProcess
+		query = query.Join(p, q.ProcessID.EqCol(p.ID), p.ProcessKey.Eq(processKey))
+	}
+	if afterID != "" {
+		query = query.Where(q.ID.Gt(afterID))
+	}
+	var list []*model.WfInstance
+	err := query.Order(q.ID.Asc()).Limit(limit).Scan(&list)
+	if err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// CountInRange 统计时间窗 [lo, hi] 内匹配过滤口径的行数。ListAfterID 的
+// 计数伴侣：同一过滤集、无游标，供流式遍历做分片规划。
+func (d *HiInstanceDAO) CountInRange(ctx context.Context, tenantID, processKey string, statuses []string, lo, hi time.Time) (int64, error) {
+	if tenantID == "" || len(statuses) == 0 {
+		return 0, fmt.Errorf("tenantID and statuses are required")
+	}
+	q := d.Query.WfHiInstance
+	query := q.WithContext(ctx).
+		Where(q.TenantID.Eq(tenantID)).
+		Where(q.Status.In(statuses...)).
+		Where(q.CreatedAt.Gte(lo)).
+		Where(q.CreatedAt.Lte(hi))
+	if processKey != "" {
+		p := d.Query.WfProcess
+		query = query.Join(p, q.ProcessID.EqCol(p.ID), p.ProcessKey.Eq(processKey))
+	}
+	return query.Count()
+}
+
 // Create 创建单个HiInstance
 func (d *HiInstanceDAO) Create(ctx context.Context, entity *model.WfHiInstance) error {
 	if entity == nil {
