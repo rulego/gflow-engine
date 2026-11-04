@@ -356,7 +356,9 @@ func TestAggregateFullPipeline(t *testing.T) {
 	seedHiInstance(t, q, "i1", "t1", "completed", `{"days":3,"leaveType":"年假"}`, "u1", now)
 	seedHiInstance(t, q, "i2", "t1", "completed", `{"days":5,"leaveType":"病假"}`, "u2", now)
 	seedHiInstance(t, q, "i3", "t1", "terminated", `{"days":2}`, "u1", now)
-	seedHiInstance(t, q, "i4", "t1", "active", `{"days":99}`, "u1", now) // 运行中：默认口径不含
+	seedHiInstance(t, q, "i4", "t1", "active", `{"days":99}`, "u1", now)    // 运行中：默认口径不含
+	seedHiInstance(t, q, "i6", "t1", "cancelled", `{"days":50}`, "u1", now) // 撤回作废：不计入
+	seedHiInstance(t, q, "i7", "t1", "failed", `{"days":60}`, "u1", now)    // 执行失败：不计入
 	seedHiInstance(t, q, "i5", "other", "completed", `{"days":7}`, "u9", now)
 
 	res, err := svc.Aggregate(ctx, Actor{UserID: "admin", TenantID: "t1"}, &FormStatsQuery{
@@ -372,8 +374,9 @@ func TestAggregateFullPipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("aggregate: %v", err)
 	}
-	if res.Total != 3 {
-		t.Fatalf("total want 3 (terminal + same tenant), got %d", res.Total)
+	// cancelled/failed 单（50/60 天）必须被排除，sum 保持 10
+	if res.Total != 3 || res.Metrics[0].Value != 10 {
+		t.Fatalf("total want 3 sum want 10 (cancelled/failed excluded), got total %d sum %v", res.Total, res.Metrics[0].Value)
 	}
 	if res.Metrics[0].Value != 10 || res.Metrics[0].Skipped != 0 {
 		t.Fatalf("sum want 10, got %+v", res.Metrics[0])

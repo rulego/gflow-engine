@@ -75,7 +75,7 @@ func (s *formStatisticsServiceImpl) Aggregate(ctx context.Context, actor Actor, 
 	// 终态实例可能仍在运行表：完成到归档（迁入 wf_hi_instance）之间有窗口，
 	// 只扫历史表会漏掉刚完结的单。运行表按同终态集补扫；IncludeActive
 	// 再追加 active。运行表通常远小于历史表，补扫开销可忽略。
-	rtStatuses := formStatsTerminalStatuses
+	rtStatuses := formStatsCountedStatuses
 	if q.IncludeActive {
 		rtStatuses = append(rtStatuses, string(enums.InstanceStatusActive))
 	}
@@ -84,7 +84,7 @@ func (s *formStatisticsServiceImpl) Aggregate(ctx context.Context, actor Actor, 
 	// 条件可走 tenant+status+created_at 或 process+created_at 索引。
 	// 两表行数同时充当各趟遍历的分片规划提示
 	var hiTotal, rtTotal int64
-	hiReq := s.buildCountQuery(actor, q, formStatsTerminalStatuses)
+	hiReq := s.buildCountQuery(actor, q, formStatsCountedStatuses)
 	if _, total, err := s.hiInstanceDAO.List(ctx, hiReq); err != nil {
 		return nil, fmt.Errorf("failed to count history instances: %w", err)
 	} else {
@@ -111,7 +111,7 @@ func (s *formStatisticsServiceImpl) Aggregate(ctx context.Context, actor Actor, 
 	}); err != nil {
 		return nil, err
 	}
-	if err := s.iterate(ctx, actor, q, formStatsTerminalStatuses, true, hiTotal, func(inst *model.WfInstance) error {
+	if err := s.iterate(ctx, actor, q, formStatsCountedStatuses, true, hiTotal, func(inst *model.WfInstance) error {
 		return feedInstanceDedup(acc, inst, seen)
 	}); err != nil {
 		return nil, err
@@ -248,17 +248,14 @@ func (s *formStatisticsServiceImpl) buildCountQuery(actor Actor, q *FormStatsQue
 	}
 }
 
-// formStatsTerminalStatuses 统计默认口径的终态集合，与实例冻结口径同源
-// （terminalInstanceStatuses）：撤回/驳回级联的实例也落在这些状态上，
-// 月报语义下都属于"有结果的单"。排序保证 SQL IN 列表稳定，便于缓存对比。
-var formStatsTerminalStatuses = func() []string {
-	out := make([]string, 0, len(terminalInstanceStatuses))
-	for s := range terminalInstanceStatuses {
-		out = append(out, s)
-	}
-	sort.Strings(out)
-	return out
-}()
+// formStatsCountedStatuses 统计计入的状态集：通过（completed）与驳回/终止
+// （terminated）——两者都是有结果的业务单。撤回/取消（cancelled）是发起人
+// 作废，执行失败（failed）是系统异常，均不构成业务结果，不计入统计。
+// 排序保证 SQL IN 列表稳定，便于缓存对比。
+var formStatsCountedStatuses = []string{
+	string(enums.InstanceStatusCompleted),
+	string(enums.InstanceStatusTerminated),
+}
 
 // ============================================================================
 // 累加器
