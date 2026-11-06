@@ -137,7 +137,7 @@ type CurrentUserActivityTask struct {
 	TaskDefKey string `json:"taskDefKey"`
 	TaskName   string `json:"taskName"`
 
-	FormPermissions map[string]string `json:"formPermissions"` // 表单字段权限：字段名 → r(只读)/w(可写)/h(隐藏)；审批提交的变量按此过滤
+	FormPermissions map[string]string `json:"formPermissions"` // 表单字段权限：字段键 → r(只读)/w(可写)/h(隐藏)；键以设计器侧字段 id 为主、存量数据键兼容，审批提交的变量由服务端按数据键对齐后过滤
 	// Variables 任务创建时的变量快照（AI 兜底待办携带 _ai 原始输出，
 	// 供审批详情面板高亮展示；普通审批任务与实例变量基本一致）。
 	Variables map[string]interface{} `json:"variables,omitempty"`

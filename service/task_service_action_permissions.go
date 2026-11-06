@@ -162,9 +162,16 @@ func resolveNodeActionPermissionsStrict(ctx context.Context, engine WorkflowEngi
 	return v, nil
 }
 
-// resolveNodeFormPermissions 返回某节点 additionalInfo.formPermissions（字段级权限 r/w/h）。
-// 必须传入事务 scope：本函数在 WithInstanceTx 回调内调用，若走全局连接，
-// SQLite 等单写锁数据库会与外层事务互等形成死锁。
+// resolveNodeFormPermissions 返回某节点 additionalInfo.formPermissions，
+// 键已按提交变量口径（数据键）对齐。必须传入事务 scope：本函数在
+// WithInstanceTx 回调内调用，若走全局连接，SQLite 等单写锁数据库会与外层
+// 事务互等形成死锁。
+//
+// 键口径：设计器权限表以字段 id 为键，提交变量以数据键为键——经 form
+// schema（ruleChain.additionalInfo.form）的 id→数据键映射换算归一，id 条目
+// 与存量数据键条目指向同一字段时 id 层为准（与渲染器查找同口径）；映射
+// 未命中的键视为已是数据键原样保留。无 form schema（外部表单等）时原样
+// 返回，存量数据键配置行为不变。
 func resolveNodeFormPermissions(ctx context.Context, scope *InstanceScope, instanceID, taskDefKey string) map[string]interface{} {
 	if scope == nil || instanceID == "" || taskDefKey == "" {
 		return map[string]interface{}{}
@@ -193,7 +200,100 @@ func resolveNodeFormPermissions(ctx context.Context, scope *InstanceScope, insta
 	if !ok {
 		return map[string]interface{}{}
 	}
-	return v
+	return normalizeFormPermissionKeys(v, formSchemaFieldKeyMap(rc))
+}
+
+// formSchemaFieldKeyMap 从 ruleChain.additionalInfo.form 的字段树提取
+// field.id → field.field（数据键）映射。递归下钻 grid.columns/card.fields/
+// tabs.tabs/subFields，与设计器 flattenFormFields 同构；无 form 时返回空表。
+func formSchemaFieldKeyMap(rc *types.RuleChain) map[string]string {
+	idToField := map[string]string{}
+	if rc == nil {
+		return idToField
+	}
+	ai, ok := rc.RuleChain.GetAdditionalInfo("form")
+	if !ok {
+		return idToField
+	}
+	m, ok := ai.(map[string]interface{})
+	if !ok {
+		return idToField
+	}
+	fields, ok := m["fields"].([]interface{})
+	if !ok {
+		return idToField
+	}
+	collectFormSchemaKeys(fields, idToField)
+	return idToField
+}
+
+// collectFormSchemaKeys 递归收集字段树的 id→数据键映射；容器（栅格列/卡片/
+// 页签/子表列）与叶子同构处理，非对象/缺键条目跳过。
+func collectFormSchemaKeys(fields []interface{}, idToField map[string]string) {
+	for _, f := range fields {
+		m, ok := f.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		field, _ := m["field"].(string)
+		if id != "" && field != "" {
+			idToField[id] = field
+		}
+		if cols, ok := m["columns"].([]interface{}); ok {
+			for _, c := range cols {
+				cm, ok := c.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				sub, ok := cm["fields"].([]interface{})
+				if ok {
+					collectFormSchemaKeys(sub, idToField)
+				}
+			}
+		}
+		if sub, ok := m["fields"].([]interface{}); ok {
+			collectFormSchemaKeys(sub, idToField)
+		}
+		if tabs, ok := m["tabs"].([]interface{}); ok {
+			for _, t := range tabs {
+				tm, ok := t.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				sub, ok := tm["fields"].([]interface{})
+				if ok {
+					collectFormSchemaKeys(sub, idToField)
+				}
+			}
+		}
+		if sub, ok := m["subFields"].([]interface{}); ok {
+			collectFormSchemaKeys(sub, idToField)
+		}
+	}
+}
+
+// normalizeFormPermissionKeys 把权限表键按 id→数据键映射归一到提交变量口径：
+// 未命中的键原样保留，id 命中的条目换算为数据键并覆盖同名存量条目（id 层
+// 为准）。两遍写入保证覆盖方向确定（map 遍历无序，单遍做不到）。映射为空
+// 时原样返回（无 schema 或存量数据键表）。
+func normalizeFormPermissionKeys(fp map[string]interface{}, idToField map[string]string) map[string]interface{} {
+	if len(idToField) == 0 || len(fp) == 0 {
+		return fp
+	}
+	out := make(map[string]interface{}, len(fp))
+	for k, val := range fp {
+		if _, ok := idToField[k]; ok {
+			continue
+		}
+		out[k] = val
+	}
+	for k, val := range fp {
+		if field, ok := idToField[k]; ok {
+			out[field] = val
+		}
+	}
+	return out
 }
 
 // requireActionEnabled 校验流程设计器是否在 actionPermissions 中显式禁用了某动作。
