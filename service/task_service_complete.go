@@ -801,9 +801,11 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 	if err := taskDAO.Update(ctx, task); err != nil {
 		return err
 	}
-	// 归还轨迹行：被委派人审结把任务归还原办理人，与委派行成对呈现过程留痕
+	// 归还轨迹行：被委派人审结把任务归还原办理人，与委派行成对呈现过程留痕。
+	// 意见不随轨迹行携带——同一文本已落 task.Comment 快照与评论表，时间线
+	// 两者各渲染一次会双行重复
 	if err := s.writeActionTraceRow(ctx, scope, task, constants.TaskTypeDelegate, string(enums.EndReasonResolved),
-		operator, prevAssignee, request.Comment, now, map[string]interface{}{
+		operator, prevAssignee, "", now, map[string]interface{}{
 			constants.VarsTraceOperator: operator,
 		}); err != nil {
 		return err
