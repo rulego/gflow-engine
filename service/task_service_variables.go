@@ -109,6 +109,12 @@ func (s *TaskServiceImpl) setTaskVariablesInternal(ctx context.Context, scope *I
 	if err := s.authorizeTaskOperator(ctx, task); err != nil {
 		return err
 	}
+	// 终态任务不再开放变量写：会签聚合在父任务收口时现读子票变量合并下传，
+	// 投完票再改自己的票会污染下游路由数据；已完成任务改快照会让归档留痕失真。
+	// 与 setAssignee 等变更入口的锁内终态复校同口径。
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, variables can no longer be modified: %w", task.Status, ErrConflict)
+	}
 	// 系统保留键不开放给办理人改写：reassign_* 是改派溯源标记（收回存量据此
 	// 判定受管链路，被改写会伪造/抹掉改派来源），proxy_operator/proxy_time 是
 	// 代审标记（被清除会让代审出的票重新取得收回资格），fallback_* 是审批人为空
@@ -201,6 +207,10 @@ func (s *TaskServiceImpl) setTaskVariableInternal(ctx context.Context, scope *In
 	if err := s.authorizeTaskOperator(ctx, task); err != nil {
 		return err
 	}
+	// 终态任务不再开放变量写（与批量写入口同口径）
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, variables can no longer be modified: %w", task.Status, ErrConflict)
+	}
 	// 只校验被写的键：既有变量集含引擎保留键（如顺序审批推进缓存）属正常状态，
 	// 整包校验会让带保留键的任务连任意新变量都写不进
 	if isReservedTaskVariableKey(variableName) {
@@ -256,6 +266,10 @@ func (s *TaskServiceImpl) removeTaskVariableInternal(ctx context.Context, scope 
 	}
 	if err := s.authorizeTaskOperator(ctx, task); err != nil {
 		return err
+	}
+	// 终态任务不再开放变量删除（与批量写入口同口径）
+	if isTerminalTaskStatus(task.Status) {
+		return fmt.Errorf("task is %s, variables can no longer be modified: %w", task.Status, ErrConflict)
 	}
 	// 只校验被删除的键：既有变量集含引擎保留键（如顺序审批推进缓存）属正常状态，
 	// 整包校验会让顺序审批任务删任何变量都报错；删除保留键本身才拒绝

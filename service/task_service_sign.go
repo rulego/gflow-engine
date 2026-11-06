@@ -416,7 +416,9 @@ func (s *TaskServiceImpl) reevaluateCountersignAfterReduce(ctx context.Context, 
 		endReason = string(enums.ApprovalResultRejected)
 	}
 	parentTask.EndReason = &endReason
-	s.mergeCountersignSubTaskVariables(ctx, scope, parentTask)
+	if err := s.mergeCountersignSubTaskVariables(ctx, scope, parentTask); err != nil {
+		return err
+	}
 	if err := taskDAO.Update(ctx, parentTask); err != nil {
 		return fmt.Errorf("failed to complete parent after reduce-sign: %w", err)
 	}

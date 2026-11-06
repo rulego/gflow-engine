@@ -6,6 +6,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -145,4 +146,31 @@ func TestResolveCCFormPermissions(t *testing.T) {
 
 	require.Nil(t, resolveCCFormPermissions(chain, rows, "nobody"), "无抄送行返回 nil")
 	require.Nil(t, resolveCCFormPermissions(chain, nil, "cc1"))
+}
+
+// 终态任务不再开放变量写：会签聚合窗口现读子票变量，投完票再改会污染下游
+// 路由数据；已完成任务改快照会让归档留痕失真。
+func TestTaskVariablesRejectTerminalTask(t *testing.T) {
+	q := proxyAuditDB(t)
+	assignee := "u1"
+	completed := "approved"
+	task := &model.WfTask{
+		ID: "t-var-done", ProcessInstanceID: nil, ProcessID: "proc-px",
+		TaskDefKey: "a", Name: "审批", TaskType: constants.TaskTypeUserTask,
+		Status: string(enums.TaskStatusCompleted), EndReason: &completed,
+		Assignee: &assignee, TenantID: "t1", CreatedBy: "system", CreatedAt: time.Now(),
+	}
+	require.NoError(t, q.WfTask.Create(task))
+
+	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "u1", TenantID: "t1"})
+
+	err := svc.SetTaskVariables(ctx, Actor{UserID: "u1", TenantID: "t1"}, "t-var-done", map[string]interface{}{"days": 9})
+	require.True(t, errors.Is(err, ErrConflict), "completed 任务变量写应拒绝，got %v", err)
+
+	err = svc.SetTaskVariable(ctx, Actor{UserID: "u1", TenantID: "t1"}, "t-var-done", "days", 9)
+	require.True(t, errors.Is(err, ErrConflict))
+
+	err = svc.RemoveTaskVariable(ctx, Actor{UserID: "u1", TenantID: "t1"}, "t-var-done", "days")
+	require.True(t, errors.Is(err, ErrConflict))
 }

@@ -456,7 +456,7 @@ func TestCountersignMergeStripsReservedVars(t *testing.T) {
 	require.NoError(t, q.WfTask.Create(sub))
 
 	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
-	svc.mergeCountersignSubTaskVariables(context.Background(), bareScope(q), parent)
+	require.NoError(t, svc.mergeCountersignSubTaskVariables(context.Background(), bareScope(q), parent))
 
 	merged, err := ParseVariablesJSON(parent.Variables)
 	require.NoError(t, err)

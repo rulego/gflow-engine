@@ -364,6 +364,11 @@ func (s *TaskServiceImpl) recallInternal(ctx context.Context, scope *InstanceSco
 	if instance.Status != string(enums.InstanceStatusActive) {
 		return fmt.Errorf("%w: 流程已结束，无法收回", ErrValidation)
 	}
+	// 次数上限锁内复核：入口守卫读的是无锁快照，并发的 N 个收回各自越过入口
+	// 后在锁内逐次 +1，缺这道复核计数可越过上限
+	if recallCountExhausted(instance.Variables) {
+		return fmt.Errorf("%w: 收回次数已达上限", ErrValidation)
+	}
 
 	taskDAO := scope.Tasks()
 	hiTaskDAO := scope.HiTasks()

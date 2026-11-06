@@ -712,7 +712,9 @@ func (s *RuntimeServiceImpl) activateProcessInstanceInternal(ctx context.Context
 			instance.StartUserID != "" && currentUser.UserID != instance.StartUserID {
 			return nil, false, fmt.Errorf("only the creator can activate draft instance %s: %w", processInstanceID, ErrPermissionDenied)
 		}
-		processDef, err := s.processDAO.Get(ctx, instance.ProcessID)
+		// 定义读取走 scope 连接：本函数运行在 WithInstanceTx 内，经全局连接读
+		// 流程表属 tx 逃逸（单写库与外层事务互等）
+		processDef, err := scope.Processes().Get(ctx, instance.ProcessID)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to get process definition for draft activation: %w", err)
 		}

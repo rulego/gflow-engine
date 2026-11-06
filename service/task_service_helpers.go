@@ -143,7 +143,11 @@ func (s *TaskServiceImpl) ensureTargetUserInTenant(ctx context.Context, task *mo
 // driveAfterCommit 事务提交后的链驱动，失败只告警：状态已落库，向上报错
 // 是对用户报假失败（重试会撞幂等拒绝），还会中断 postCommit 链上后续钩子。
 // 推进失败的实例由卡死巡检/重驱补救。
+// 驱动前剥离请求 ctx 的取消信号：任务已提交完成，客户端断连中断 ExecuteNext
+// 会留下 active 但零待办的实例（与 DispatchTaskEvent 的 WithoutCancel 同理，
+// 把该约束从调用纪律降为实现保证）。
 func (s *TaskServiceImpl) driveAfterCommit(ctx context.Context, instanceID, nodeID string, vars map[string]interface{}) {
+	ctx = context.WithoutCancel(ctx)
 	if err := s.workflowEngine.GetRuntimeServiceInternal().ExecuteNext(ctx, instanceID, nodeID, vars); err != nil {
 		logrus.WithError(err).WithFields(logrus.Fields{
 			"instanceId": instanceID,

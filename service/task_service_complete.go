@@ -274,7 +274,9 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	// 提交——原审批人最后表态，其改动不被子票旧值盖回。会签/票签父任务在
 	// 下方子任务分支聚合，此处不重复。
 	if len(mainSubTasks) > 0 {
-		s.mergeCountersignSubTaskVariables(ctx, scope, task)
+		if err := s.mergeCountersignSubTaskVariables(ctx, scope, task); err != nil {
+			return err
+		}
 	}
 	mergedVariables, err := s.mergeVariables(task.Variables, reqVars)
 	if err != nil {
@@ -429,7 +431,9 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 					parentTask.EndedAt = &now
 					endReason := string(enums.ApprovalResultRejected)
 					parentTask.EndReason = &endReason
-					s.mergeCountersignSubTaskVariables(ctx, scope, parentTask)
+					if err := s.mergeCountersignSubTaskVariables(ctx, scope, parentTask); err != nil {
+						return err
+					}
 					if err := taskDAO.Update(ctx, parentTask); err != nil {
 						return fmt.Errorf("failed to update parent task on early veto: %w", err)
 					}
@@ -493,7 +497,9 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 						endReason := string(enums.ApprovalResultRejected)
 						parentTask.EndReason = &endReason
 					}
-					s.mergeCountersignSubTaskVariables(ctx, scope, parentTask)
+					if err := s.mergeCountersignSubTaskVariables(ctx, scope, parentTask); err != nil {
+						return err
+					}
 					if err := taskDAO.Update(ctx, parentTask); err != nil {
 						return fmt.Errorf("failed to update parent task on countersign completion: %w", err)
 					}
@@ -604,9 +610,12 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 // 合并按三方合并口径：子票继承的创建快照里未修改的键不参与覆盖——逐键盲覆盖
 // 会让未投票子票/未改字段的子票用创建时的旧值盖掉他人已改的值（加签子票
 // 创建序在前必被覆盖即此病灶）。同一键被多张子票修改时按投票时间后投者赢。
-func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, scope *InstanceScope, parentTask *model.WfTask) {
+// 查询/序列化失败返回错误让调用方回滚（fail-closed）：吞错会让父任务带着
+// 未聚合的变量定局流转，审批结果不进下游路由；单张子票 JSON 损坏只跳过该票
+// 并告警（父任务变量承载全单数据，不能因一张坏票整体卡死）。
+func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, scope *InstanceScope, parentTask *model.WfTask) error {
 	if parentTask == nil {
-		return
+		return nil
 	}
 	base, perr := ParseVariablesJSON(parentTask.Variables)
 	if perr != nil || base == nil {
@@ -627,7 +636,7 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 	}
 	subTasks, err := scope.Tasks().GetByParentID(ctx, parentTask.ID)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to list countersign sub-tasks for variable merge: %w", err)
 	}
 	// 按投票时间稳定排序，同键多票修改时后投的票赢；无结束时间的行排最后
 	sort.SliceStable(subTasks, func(i, j int) bool {
@@ -643,6 +652,8 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 		}
 		sv, serr := ParseVariablesJSON(st.Variables)
 		if serr != nil {
+			logrus.WithError(serr).WithField("taskId", st.ID).
+				Warn("countersign sub-task variables corrupted; skipped in merge")
 			continue
 		}
 		for k, v := range sv {
@@ -664,10 +675,11 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 	}
 	out, err := json.Marshal(merged)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to serialize merged countersign variables: %w", err)
 	}
 	str := string(out)
 	parentTask.Variables = &str
+	return nil
 }
 
 // proxyMarkVariables 在任务变量上写入代审标记（proxy_operator/proxy_time）。
