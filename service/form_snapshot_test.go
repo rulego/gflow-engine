@@ -222,6 +222,33 @@ func TestMarkFormModified_FirstApproverEditDetected(t *testing.T) {
 	require.Equal(t, "t-start", approvals[1].FormPrevTaskID)
 }
 
+// 加签子任务继承父任务表单快照后先完成：与上一份快照无表单差异不误标
+// 「被修改」（sign_added_by 是引擎保留键不算差异）；原审批人随后的真实改动
+// 仍按差异计数标记在父任务行上。
+func TestMarkFormModified_SignSubTaskInheritedSnapshot(t *testing.T) {
+	base := time.Date(2026, 11, 6, 9, 0, 0, 0, time.Local)
+	startRow := snapTask("t-start", base.Add(5*time.Minute), `{"amount":100,"city":"北京"}`, base)
+	startRow.TaskType = constants.TaskTypeStartTask
+	tasks := []*model.WfTask{
+		startRow,
+		snapTask("t-sign", base.Add(10*time.Minute), `{"amount":100,"city":"北京","sign_added_by":"alice"}`, base.Add(time.Minute)),
+		snapTask("t-parent", base.Add(20*time.Minute), `{"amount":200,"city":"北京"}`, base.Add(2*time.Minute)),
+	}
+	approvals := []dto.ExecutionInfo{
+		{TaskID: "t-start"},
+		{TaskID: "t-parent", SubExecutions: []dto.ExecutionInfo{{TaskID: "t-sign"}}},
+	}
+	markFormModified(tasks, approvals)
+
+	signRow := approvals[1].SubExecutions[0]
+	require.False(t, signRow.FormModified, "加签行继承快照未改表，不应误标修改")
+	require.Empty(t, signRow.FormChangedCount)
+	require.Equal(t, "t-start", signRow.FormPrevTaskID)
+	require.True(t, approvals[1].FormModified, "原审批人改 amount 应标记在父任务行")
+	require.Equal(t, 1, approvals[1].FormChangedCount)
+	require.Equal(t, "t-sign", approvals[1].FormPrevTaskID)
+}
+
 // 子任务的标记经 SubExecutions 子树下发（加签行在子树里，不在顶层列表）。
 func TestMarkFormModified_ReachesSubExecutions(t *testing.T) {
 	base := time.Date(2026, 10, 23, 9, 0, 0, 0, time.Local)

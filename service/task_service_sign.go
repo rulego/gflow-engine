@@ -142,9 +142,19 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 	if u := GetUserFromCtx(ctx); u != nil {
 		operator = u.UserID
 	}
-	signVars, verr := utils2.ToJSON(map[string]interface{}{constants.VarsSignAddedBy: operator})
+	// 加签子任务继承父任务当前表单快照：加签人与原审批人须看到同一份表单数据。
+	// 只写 sign_added_by 会让详情变量缺表单字段（加签人审批页全空），完成后空
+	// 快照进修改标记比对链把全表单误标「被修改」，会签父任务聚合时还会以空值
+	// 覆盖真实表单数据。剥离口径复用 taskVariablesSnapshot（审批约定键/引擎
+	// 保留键/_前缀内部键），父任务无快照时退化为仅 sign_added_by。
+	seed := taskVariablesSnapshot(task)
+	if seed == nil {
+		seed = map[string]interface{}{}
+	}
+	seed[constants.VarsSignAddedBy] = operator
+	signVars, verr := utils2.ToJSON(seed)
 	if verr != nil {
-		return fmt.Errorf("failed to serialize sign-added-by mark: %w", verr)
+		return fmt.Errorf("failed to serialize sign task variables: %w", verr)
 	}
 	// 去重：收集该节点已存在的审批人（父任务 assignee + 现有子任务 assignee），避免重复加签
 	existing := map[string]bool{}

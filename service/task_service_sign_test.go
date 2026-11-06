@@ -79,6 +79,35 @@ func TestAddSign_MarksSignAddedBy(t *testing.T) {
 	require.Equal(t, "alice", signAddedBy(subs[0]), "子任务变量应记录加签操作人")
 }
 
+// 加签子任务继承父任务表单快照：加签人与原审批人须看到同一份表单数据；
+// 引擎保留键（转办/改派留痕）与 _ 前缀内部缓存不随继承，追加 sign_added_by
+// 留痕；种子是独立副本，父任务行变量不被改动。
+func TestAddSign_SubTaskInheritsFormSnapshot(t *testing.T) {
+	svc, q := newSignTestSvc(t)
+	signSeed(t, q, "inst-1")
+	parentVars := `{"amount":500,"year":"2026","transfer_from":"bob","transfer_time":"2026-11-06 10:00:00","reassign_from":"op1","_sequentialAssignees":["x"]}`
+	signSeedParentTask(t, q, "t-a", "inst-1", "alice", parentVars)
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "alice", TenantID: "t1", UserName: "甲"})
+
+	require.NoError(t, svc.AddSign(ctx, Actor{UserID: "alice", TenantID: "t1"}, "t-a", []string{"carol"}, "需要会签"))
+
+	subs, err := svc.taskDAO.GetByParentID(ctx, "t-a")
+	require.NoError(t, err)
+	require.Len(t, subs, 1)
+	m, perr := ParseVariablesJSON(subs[0].Variables)
+	require.NoError(t, perr)
+	require.Equal(t, float64(500), m["amount"], "表单字段应随父任务快照继承")
+	require.Equal(t, "2026", m["year"])
+	require.Equal(t, "alice", m[constants.VarsSignAddedBy])
+	require.NotContains(t, m, "transfer_from", "父任务的转办留痕不随继承")
+	require.NotContains(t, m, "reassign_from", "改派留痕键族不随继承")
+	require.NotContains(t, m, "_sequentialAssignees", "内部缓存键不随继承")
+
+	parent, gerr := svc.taskDAO.Get(ctx, "t-a")
+	require.NoError(t, gerr)
+	require.Equal(t, parentVars, *parent.Variables, "加签不得回写父任务行变量")
+}
+
 // 带标记的加签子任务仅加签人本人可减：同节点其他参与人（被加签人 bob）减
 // carol 必须被拒，加签人 alice 本人减签成功。
 func TestReduceSign_OnlySignerCanReduce(t *testing.T) {

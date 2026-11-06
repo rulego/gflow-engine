@@ -636,6 +636,10 @@ func (s *TaskServiceImpl) writeForwardTraceRow(ctx context.Context, scope *Insta
 // prevAssignee 记动作生效前刚持有该任务的人（换手前快照，空串归 NULL）——
 // 已办列表第三分支与详情可见性据此让原受理人可达；委派/改派的目标人进
 // trace_target 变量（转办专用 forward_by/forward_to）。
+// 约定：forward_by/forward_to/trace_operator/trace_target 只落本函数写入的
+// hi_task 轨迹行，永不写活任务行——活任务行变量会随任务归档进比对链与时间
+// 线渲染，混入轨迹键会把任务行误渲染成转办/委派动作，也会被加签子任务的
+// 快照继承带偏。换手后的活任务行只挂 transfer_*/reassign_* 留痕。
 func (s *TaskServiceImpl) writeActionTraceRow(ctx context.Context, scope *InstanceScope, task *model.WfTask,
 	taskType, endReason, operatorID, prevAssignee, reason string, at time.Time, vars map[string]interface{}) error {
 	if task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" {

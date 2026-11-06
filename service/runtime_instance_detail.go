@@ -654,8 +654,9 @@ const formSnapshotMaxBytes = 256 * 1024
 // taskVariablesSnapshot 任务变量快照的对外口径：剥引擎保留标记键、审批约定
 // 键（approved/comment——只在快照层剥，全局保留键集不含它们，Complete 内部
 // 还要消费审批意图）、改派留痕与下划线前缀的引擎内部键（_sequentialAssignees
-// 顺序审批缓存、_ai 智能体输出等），只余表单字段。历史任务查询透出与行级
-// 修改标记共用，两边不得各自维护剥离口径。
+// 顺序审批缓存、_ai 智能体输出等），只余表单字段。历史任务查询透出、行级
+// 修改标记与加签子任务的快照继承（addSignInternal 种子）共用，各方不得
+// 各自维护剥离口径。
 func taskVariablesSnapshot(task *model.WfTask) map[string]interface{} {
 	m := parseTaskVariables(task.Variables)
 	if m == nil {
