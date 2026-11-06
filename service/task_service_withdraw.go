@@ -522,10 +522,18 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 
 	// 触发流程跳转：ExecuteNext 推迟到事务提交后执行，避免 rulego OnMsg 同步副作用
 	// 重入 WithInstanceTx 抢同一行的 FOR UPDATE 锁。孤儿任务无实例可驱动，跳过注册。
+	// 跳转带上当前任务快照：传 nil 会让 ExecuteNext 落回实例行上的发起初值，
+	// 上游重审人看到旧表单，各节点累计的表单修改全部丢失。
 	inst := task.ProcessInstanceID
 	if inst != nil {
+		vars, verr := ParseVariablesJSON(task.Variables)
+		if verr != nil {
+			vars = nil
+		} else {
+			vars = StripReentrySnapshot(vars)
+		}
 		scope.AfterCommit(func() error {
-			s.driveAfterCommit(ctx, *inst, targetActivityID, nil)
+			s.driveAfterCommit(ctx, *inst, targetActivityID, vars)
 			return nil
 		})
 	}

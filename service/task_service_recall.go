@@ -134,7 +134,7 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 		return fmt.Errorf("%w: 超过可收回窗口（%d 天），无法收回", ErrValidation, recallWindowDays(ap))
 	}
 
-	lastNode, lastNodeName, voters, err := latestCompletedNodeInHistory(ctx, s.taskDAO.Underlying(), instanceID)
+	lastNode, lastNodeName, voters, lastVars, err := latestCompletedNodeInHistory(ctx, s.taskDAO.Underlying(), instanceID)
 	if err != nil {
 		return fmt.Errorf("failed to resolve last node: %w", err)
 	}
@@ -184,9 +184,19 @@ func (s *TaskServiceImpl) recallCompleted(ctx context.Context, actor Actor, hi *
 		return fmt.Errorf("failed to reopen completed instance: %w", err)
 	}
 
+	// 重入末节点带上最近一次完成投票的变量快照：传 nil 会让 ExecuteNext 落回
+	// 实例行上的发起初值，重审人看到旧表单，重审提交后的新值也会被初值覆盖
+	// 流向下游。口径与在途收回 buildRecalledTask 一致：先剥审批结果键与引擎
+	// 保留标记，防重建任务带着上一轮投票结果被静默自动通过。
+	recallVars, rverr := ParseVariablesJSON(stripApprovalResultKeys(lastVars))
+	if rverr != nil {
+		recallVars = nil
+	} else {
+		recallVars = StripReentrySnapshot(recallVars)
+	}
 	// 重入末节点重建任务。失败则整体退回归档态补偿——不补偿会留下
 	// active 但零任务的僵尸实例，且在途收回通道救不了它（无 completed 任务可寻）
-	if err := internal.ExecuteNext(ctx, instanceID, lastNode, nil); err != nil {
+	if err := internal.ExecuteNext(ctx, instanceID, lastNode, recallVars); err != nil {
 		if cerr := s.rearchiveCompletedInstance(ctx, s.taskDAO.Underlying(), hi, instanceID); cerr != nil {
 			return fmt.Errorf("末节点重入失败且补偿失败，实例 %s 可能停留为无任务运行态需人工处理: 重入错误=%v 补偿错误=%w", instanceID, err, cerr)
 		}
@@ -292,8 +302,9 @@ func (s *TaskServiceImpl) rearchiveCompletedInstance(ctx context.Context, q *que
 
 // latestCompletedNodeInHistory 在历史任务里找最近完成的 userTask 节点（末节点）
 // 及该节点全部投票人（去重，供作废通知）。节点名随任务行返回，作废通知的
-// 「节点待办已随收回作废」文案需要它。
-func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceID string) (string, string, []string, error) {
+// 「节点待办已随收回作废」文案需要它；最近完成行的变量快照一并带出，供
+// 终态重开继承最新表单数据（会签末节点该行即父任务，持有聚合后的变量）。
+func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceID string) (string, string, []string, *string, error) {
 	wt := q.WfHiTask
 	var last model.WfHiTask
 	err := wt.WithContext(ctx).
@@ -304,10 +315,10 @@ func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceI
 		Limit(1).
 		Scan(&last)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("failed to query last completed node: %w", err)
+		return "", "", nil, nil, fmt.Errorf("failed to query last completed node: %w", err)
 	}
 	if last.ID == "" || last.TaskDefKey == nil || *last.TaskDefKey == "" {
-		return "", "", nil, nil
+		return "", "", nil, nil, nil
 	}
 	var rows []model.WfHiTask
 	err = wt.WithContext(ctx).
@@ -318,7 +329,7 @@ func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceI
 		Where(wt.Assignee.Neq("")).
 		Scan(&rows)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("failed to query last node voters: %w", err)
+		return "", "", nil, nil, fmt.Errorf("failed to query last node voters: %w", err)
 	}
 	seen := map[string]bool{}
 	voters := make([]string, 0, len(rows))
@@ -334,7 +345,7 @@ func latestCompletedNodeInHistory(ctx context.Context, q *query.Query, instanceI
 		seen[*r.Assignee] = true
 		voters = append(voters, *r.Assignee)
 	}
-	return *last.TaskDefKey, last.Name, voters, nil
+	return *last.TaskDefKey, last.Name, voters, last.Variables, nil
 }
 
 // recallInternal 在已持有实例行锁的事务内执行 Recall 实际逻辑。

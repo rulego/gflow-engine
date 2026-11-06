@@ -296,6 +296,100 @@ func normalizeFormPermissionKeys(fp map[string]interface{}, idToField map[string
 	return out
 }
 
+// normalizeDetailFormPermissions 详情出口的权限表归一：键换算回字段 id 口径
+// （渲染器查找 id 键优先），存量数据键条目换算到对应字段 id，同字段 id 与
+// 数据键条目并存时 id 层为准；既非字段 id、也换算不到 id 的键（已删字段的
+// 陈旧配置）剔除——前端拿到干净表，数据键改名桥接不再在陈旧键上扩散。
+// 映射为空（DSL 未内联 schema 的引用型表单/外部表单）时键换算无从进行，
+// 退化为仅过滤非字符串值的原样透出，权限位不得因缺 schema 丢失。
+func normalizeDetailFormPermissions(fp map[string]interface{}, idToField map[string]string) map[string]string {
+	fieldToID := make(map[string]string, len(idToField))
+	for id, field := range idToField {
+		if _, dup := fieldToID[field]; !dup {
+			fieldToID[field] = id
+		}
+	}
+	out := make(map[string]string, len(fp))
+	for k, val := range fp {
+		s, ok := val.(string)
+		if !ok {
+			continue
+		}
+		if len(idToField) == 0 {
+			out[k] = s
+			continue
+		}
+		if _, isID := idToField[k]; isID {
+			out[k] = s
+			continue
+		}
+		if id, mapped := fieldToID[k]; mapped {
+			// id 条目后到也不被数据键换算值盖回（map 遍历无序，双向都成立）
+			if _, has := out[id]; !has {
+				out[id] = s
+			}
+		}
+	}
+	return out
+}
+
+// resolveCCFormPermissions 抄送人视角的字段权限：从用户所在的 ccTask 行定位
+// 抄送节点，取其 additionalInfo.formPermissions 归一后合并。抄送是只读知会，
+// 'w' 无意义归一为 'r'；同一字段多节点配置不一致取最严（h > r）。
+// tasks 须含历史行（CC 行创建即完成、活态实例也只在历史表可见）。
+func resolveCCFormPermissions(rc *types.RuleChain, tasks []*model.WfTask, userID string) map[string]string {
+	if rc == nil || userID == "" {
+		return nil
+	}
+	idToField := formSchemaFieldKeyMap(rc)
+	merged := map[string]string{}
+	found := false
+	for _, t := range tasks {
+		if t == nil || t.TaskType != constants.TaskTypeCCTask ||
+			t.Assignee == nil || *t.Assignee != userID || t.TaskDefKey == "" {
+			continue
+		}
+		node, ok := rc.GetNode(t.TaskDefKey)
+		if !ok {
+			continue
+		}
+		ap, ok := node.GetAdditionalInfo("formPermissions")
+		if !ok {
+			continue
+		}
+		v, ok := ap.(map[string]interface{})
+		if !ok || len(v) == 0 {
+			continue
+		}
+		found = true
+		for k, p := range normalizeDetailFormPermissions(v, idToField) {
+			if p == "w" {
+				p = "r"
+			}
+			if prev, has := merged[k]; has && strictnessRank(prev) >= strictnessRank(p) {
+				continue
+			}
+			merged[k] = p
+		}
+	}
+	if !found {
+		return nil
+	}
+	return merged
+}
+
+// strictnessRank 权限位收紧序：h(2) > r(1) > w(0)，合并多节点配置取更严者。
+func strictnessRank(p string) int {
+	switch p {
+	case "h":
+		return 2
+	case "r":
+		return 1
+	default:
+		return 0
+	}
+}
+
 // requireActionEnabled 校验流程设计器是否在 actionPermissions 中显式禁用了某动作。
 // 解析失败一律 fail-closed 拒绝：解析不出即无法证明设计器未禁用，放行等于绕过显式 disable。
 // 仅供事务外调用（各入口在进锁前的校验段）；事务内调用走 requireActionEnabledInScope。
@@ -395,6 +489,27 @@ func (s *TaskServiceImpl) filterVariablesByFormPermissions(ctx context.Context, 
 		filtered[k] = v
 	}
 	return filtered
+}
+
+// rejectFormPermissionWrite 变量接口的字段权限校验：只读(r)/隐藏(h)字段不允许
+// 办理人经 SetTaskVariables/SetTaskVariable/RemoveTaskVariable 改写或删除——
+// complete 提交侧已过滤，独立端点不设防会变成绕过通道。显式拒绝而非静默
+// 丢弃：调用方逐键指定要写的变量，静默 no-op 会被误当成功。无配置不限制
+// （与提交侧同口径）。
+func (s *TaskServiceImpl) rejectFormPermissionWrite(ctx context.Context, scope *InstanceScope, task *model.WfTask, keys ...string) error {
+	if task == nil || task.ProcessInstanceID == nil || *task.ProcessInstanceID == "" || len(keys) == 0 {
+		return nil
+	}
+	fp := resolveNodeFormPermissions(ctx, scope, *task.ProcessInstanceID, task.TaskDefKey)
+	if len(fp) == 0 {
+		return nil
+	}
+	for _, k := range keys {
+		if perm, ok := fp[k].(string); ok && (perm == "r" || perm == "h") {
+			return fmt.Errorf("variable %q is readonly/hidden by form permission: %w", k, ErrValidation)
+		}
+	}
+	return nil
 }
 
 // hasCompletedTaskAtNode 判断实例中某节点是否存在已完成的 userTask 任务。

@@ -1344,7 +1344,7 @@ func TestLatestCompletedNodeInHistory_ExcludesProxyAndSystemVotes(t *testing.T) 
 	seedVote("hi-v2", "u2", &proxyVars, secFixStrPtr("admin1"))
 	seedVote("hi-v3", "u3", nil, secFixStrPtr("system"))
 
-	_, _, voters, err := latestCompletedNodeInHistory(ctx, q, "inst-vote")
+	_, _, voters, _, err := latestCompletedNodeInHistory(ctx, q, "inst-vote")
 	require.NoError(t, err)
 	require.Equal(t, []string{"u1"}, voters, "代审票与系统票不应产生收回资格")
 }

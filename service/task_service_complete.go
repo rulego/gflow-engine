@@ -5,9 +5,11 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -238,12 +240,15 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	// （实例 completed，加签待办被归档吞掉）。
 	// 加签人必须先审；全部子任务完成后原审批人再通过。
 	// 不适用于会签/票签子任务路径（它们带 ParentID，在下方分支按阈值判定）。
+	// 查询失败必须拒绝完成（fail-closed），否则守卫被静默绕过。
+	// 子任务行集在下方合并变量处复用（加签收口并入子票），不重复查库。
+	var mainSubTasks []*model.WfTask
 	if task.ParentID == nil || *task.ParentID == "" {
-		// 查询失败必须拒绝完成（fail-closed），否则守卫被静默绕过
 		subs, serr := taskDAO.GetByParentID(ctx, task.ID)
 		if serr != nil {
 			return fmt.Errorf("failed to check pending add-sign sub-tasks: %w", serr)
 		}
+		mainSubTasks = subs
 		for _, st := range subs {
 			if st == nil {
 				continue
@@ -263,6 +268,13 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	if callingMode == CallingModeAPI {
 		reqVars = s.filterVariablesByFormPermissions(ctx, scope, task, request.Variables)
 		stripEngineReservedVars(reqVars)
+	}
+	// 加签子票变量并入（单任务加签收口）：原审批人直批走主路径，此前只带
+	// 自己的快照下传，加签人改过的表单值不会流向下游。先并子票、后叠本次
+	// 提交——原审批人最后表态，其改动不被子票旧值盖回。会签/票签父任务在
+	// 下方子任务分支聚合，此处不重复。
+	if len(mainSubTasks) > 0 {
+		s.mergeCountersignSubTaskVariables(ctx, scope, task)
 	}
 	mergedVariables, err := s.mergeVariables(task.Variables, reqVars)
 	if err != nil {
@@ -588,13 +600,21 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 // 流转前 ExecuteNext 的 vars 取自 parentTask.Variables，原为创建快照、不含子任务审批写入的
 // approved/comment，导致会签节点后的 switch(msg.approved) 等条件路由拿不到审批结果。
 // 这里在父任务完成时聚合所有已审批(EndReason 非空)子任务的变量，写回 parentTask.Variables。
+//
+// 合并按三方合并口径：子票继承的创建快照里未修改的键不参与覆盖——逐键盲覆盖
+// 会让未投票子票/未改字段的子票用创建时的旧值盖掉他人已改的值（加签子票
+// 创建序在前必被覆盖即此病灶）。同一键被多张子票修改时按投票时间后投者赢。
 func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, scope *InstanceScope, parentTask *model.WfTask) {
 	if parentTask == nil {
 		return
 	}
-	merged, perr := ParseVariablesJSON(parentTask.Variables)
-	if perr != nil || merged == nil {
-		merged = map[string]interface{}{}
+	base, perr := ParseVariablesJSON(parentTask.Variables)
+	if perr != nil || base == nil {
+		base = map[string]interface{}{}
+	}
+	merged := make(map[string]interface{}, len(base))
+	for k, v := range base {
+		merged[k] = v
 	}
 	// 父任务自身的留痕键（如审批人为空兜底写入的 fallback_*）是合法归档数据，
 	// 先快照：子票的保留键属于子票自己的票不许合并，但父行自身的留痕要在
@@ -609,6 +629,14 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 	if err != nil {
 		return
 	}
+	// 按投票时间稳定排序，同键多票修改时后投的票赢；无结束时间的行排最后
+	sort.SliceStable(subTasks, func(i, j int) bool {
+		ei, ej := subTasks[i].EndedAt, subTasks[j].EndedAt
+		if ei != nil && ej != nil {
+			return ei.Before(*ej)
+		}
+		return ei != nil && ej == nil
+	})
 	for _, st := range subTasks {
 		if st.EndReason == nil || st.Variables == nil || *st.Variables == "" {
 			continue
@@ -618,6 +646,12 @@ func (s *TaskServiceImpl) mergeCountersignSubTaskVariables(ctx context.Context, 
 			continue
 		}
 		for k, v := range sv {
+			bv, inBase := base[k]
+			// 键值与创建快照一致 = 子票未改此键，不覆盖（保住其他子票的修改）；
+			// 新增键或修改键才写入
+			if inBase && bytes.Equal(snapshotValueBytes(bv), snapshotValueBytes(v)) {
+				continue
+			}
 			merged[k] = v
 		}
 	}

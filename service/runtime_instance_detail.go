@@ -167,7 +167,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 	var actionPermissions = map[string]interface{}{}        // 审批人节点（userTask）的设计器动作权限
 	var starterActionPermissions = map[string]interface{}{} // 发起人动作权限（流程级 ruleChain.additionalInfo.actionPermissions）
 	var formPermissions = map[string]string{}
-	var ruleChain *types.RuleChain // 解析后的链定义（upcoming 预测遍历用）
+	var ccFormPermissions map[string]string // 抄送人视角字段权限（无待办、仅抄送可见时下发）
+	var ruleChain *types.RuleChain          // 解析后的链定义（upcoming 预测遍历用）
 	if instance.ProcessID != "" {
 		procDef, err := s.workflowEngine.GetProcessService().Get(ctx, instance.ProcessID)
 		if err == nil && procDef != nil {
@@ -224,14 +225,15 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 						if ap, ok := node.GetAdditionalInfo("formPermissions"); ok {
 							// additionalInfo 经 JSON 反序列化为 map[string]interface{}，字段值需逐键断言为 string 取出。
 							if v, ok := ap.(map[string]interface{}); ok {
-								for k, val := range v {
-									if s, ok := val.(string); ok {
-										formPermissions[k] = s
-									}
-								}
+								formPermissions = normalizeDetailFormPermissions(v, formSchemaFieldKeyMap(rc))
 							}
 						}
 					}
+				} else {
+					// 无待办任务且以抄送身份查看：下发其所在抄送节点的字段权限，
+					// 设计器 CcDrawer 的配置至此生效（'h' 隐藏字段抄送人不可见）。
+					// 多个抄送节点同字段配置不一致时取最严（h > r > w）。
+					ccFormPermissions = resolveCCFormPermissions(rc, timelineTasks, currentUserId)
 				}
 			}
 		}
@@ -240,8 +242,18 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 	// 5. 变量（来自任务）
 	var variables map[string]interface{}
 	sourceTask := currentUserTask
-	if sourceTask == nil && len(tasks) > 0 {
-		sourceTask = tasks[len(tasks)-1]
+	if sourceTask == nil {
+		// 兜底行从末尾向前取第一份真实任务快照：终态实例的历史行集含流转
+		// 轨迹行（转办/委派/改派/收回留痕），其变量只有留痕键，选中会让
+		// 详情变量变成无业务含义的垃圾键，整张表单数据消失。
+		for i := len(tasks) - 1; i >= 0; i-- {
+			t := tasks[i]
+			if t == nil || constants.IsTransitionTraceType(t.TaskType) || t.TaskType == constants.TaskTypeRecall {
+				continue
+			}
+			sourceTask = t
+			break
+		}
 	}
 	if sourceTask != nil {
 		// 解析失败保持 nil（响应里变量为空），不阻断详情装配
@@ -290,6 +302,9 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		Variables:         variables,
 		Upcoming:          upcoming,
 		ActionPermissions: map[string]interface{}{},
+	}
+	if len(ccFormPermissions) > 0 {
+		resp.CCFormPermissions = ccFormPermissions
 	}
 	if instance.EndReason != nil {
 		resp.EndReason = *instance.EndReason

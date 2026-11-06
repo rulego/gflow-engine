@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/sirupsen/logrus"
 )
@@ -149,4 +150,27 @@ func (s *TaskServiceImpl) driveAfterCommit(ctx context.Context, instanceID, node
 			"node":       nodeID,
 		}).Error("post-commit drive failed; committed state stands, instance awaits stuck-instance rescue")
 	}
+}
+
+// StripReentrySnapshot 重入（退回/驳回回跳/终态收回重开）传给 ExecuteNext 的
+// 变量快照净化：剥引擎保留标记键与审批结果约定键。带上上一轮的 approved 残留，
+// 重建任务被普通 Complete 消费时会带着旧投票结果静默自动通过。
+func StripReentrySnapshot(vars map[string]interface{}) map[string]interface{} {
+	vars = stripReservedTaskVars(vars)
+	if vars == nil {
+		return nil
+	}
+	if _, hasApproved := vars[constants.VarsApproved]; !hasApproved {
+		if _, hasComment := vars[constants.VarsComment]; !hasComment {
+			return vars
+		}
+	}
+	out := make(map[string]interface{}, len(vars))
+	for k, v := range vars {
+		if k == constants.VarsApproved || k == constants.VarsComment {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }

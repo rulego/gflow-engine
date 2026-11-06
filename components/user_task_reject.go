@@ -252,7 +252,11 @@ func (n *UserTaskNode) jumpToNode(ctx types.RuleContext, msg types.RuleMsg, inst
 		logrus.WithField("targetNode", targetNodeID).
 			Warn("TaskService not injected, cannot supersede stale tasks before reject jump")
 	}
-	if err := n.RuntimeService.ExecuteNext(ctx.GetContext(), instanceID, targetNodeID, nil); err != nil {
+	// 回跳带上当前消息变量（即驳回人任务的最新快照）：传 nil 会让 ExecuteNext
+	// 落回实例行上的发起初值，重审人看到旧表单，各节点累计的表单修改全部丢失。
+	// 净化后下传，防上一轮投票结果残留在重建任务上。
+	jumpVars := rejectJumpVars(msg)
+	if err := n.RuntimeService.ExecuteNext(ctx.GetContext(), instanceID, targetNodeID, jumpVars); err != nil {
 		logrus.Errorf("jump to node %s failed: %v", targetNodeID, err)
 		// 跳转失败：优先尝试 Reject/Failure 边（设计师预留的错误分支），找不到才 terminate
 		n.fallbackRejection(ctx, msg, instanceID, constants.EndReasonPrefixRejected+"：跳转失败，降级处理")
@@ -408,6 +412,21 @@ func (n *UserTaskNode) nodeExists(ctx types.RuleContext, nodeID string) bool {
 		}
 	}
 	return false
+}
+
+// rejectJumpVars 从消息载荷取驳回回跳要继承的变量快照：消息数据即驳回人
+// 任务的最新合并变量（Complete 下传）。非对象载荷（fork-join 后的分支消息
+// 数组等）返回 nil，ExecuteNext 按无快照处理。
+func rejectJumpVars(msg types.RuleMsg) map[string]interface{} {
+	jsonData, err := msg.GetJsonData()
+	if err != nil {
+		return nil
+	}
+	v, ok := jsonData.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return service.StripReentrySnapshot(v)
 }
 
 // findPrevUserTaskNodeID 通过 Definition 反查当前节点的前驱 userTask 节点

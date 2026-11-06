@@ -124,6 +124,10 @@ type InstanceDetailResponse struct {
 	// 本实例中已有完成任务的 userTask 节点，按最近完成在前排序；已剔除当前节点
 	// 自身与回退路径跨并行分支的节点，与服务端 Return 写路径校验同口径
 	ReturnableNodes []ReturnableNode `json:"returnableNodes,omitempty"`
+	// CCFormPermissions 抄送人视角的表单字段权限：当前用户无待办任务、
+	// 仅以抄送身份查看时，按其所在抄送节点 additionalInfo.formPermissions
+	// 下发（h 隐藏/r 只读，多节点取最严）；非抄送视角为空。
+	CCFormPermissions map[string]string `json:"ccFormPermissions,omitempty"`
 }
 
 // ReturnableNode 可回退目标节点

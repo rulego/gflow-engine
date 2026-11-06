@@ -119,6 +119,15 @@ func (s *TaskServiceImpl) setTaskVariablesInternal(ctx context.Context, scope *I
 			return fmt.Errorf("variable %q is reserved by the engine: %w", k, ErrValidation)
 		}
 	}
+	// 表单字段权限同口径校验：r/h 字段不得经变量接口改写（complete 提交侧
+	// 已过滤，独立端点不设防即绕过通道）
+	keys := make([]string, 0, len(variables))
+	for k := range variables {
+		keys = append(keys, k)
+	}
+	if err := s.rejectFormPermissionWrite(ctx, scope, task, keys...); err != nil {
+		return err
+	}
 	// 合并而非整体替换：任务变量里存有引擎的运行时状态（如顺序审批的
 	// _sequentialAssignees 缓存），整体覆盖会将其冲掉，后续推进丢失进度。
 	// 损坏 JSON 按错误拒绝：静默清空会连带冲掉引擎运行时状态。
@@ -197,6 +206,10 @@ func (s *TaskServiceImpl) setTaskVariableInternal(ctx context.Context, scope *In
 	if isReservedTaskVariableKey(variableName) {
 		return fmt.Errorf("variable %q is reserved by the engine: %w", variableName, ErrValidation)
 	}
+	// 表单字段权限同口径校验：r/h 字段不得经变量接口改写
+	if err := s.rejectFormPermissionWrite(ctx, scope, task, variableName); err != nil {
+		return err
+	}
 	merged, err := ParseVariablesJSON(task.Variables)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrValidation, err)
@@ -248,6 +261,10 @@ func (s *TaskServiceImpl) removeTaskVariableInternal(ctx context.Context, scope 
 	// 整包校验会让顺序审批任务删任何变量都报错；删除保留键本身才拒绝
 	if isReservedTaskVariableKey(variableName) {
 		return fmt.Errorf("variable %q is reserved by the engine: %w", variableName, ErrValidation)
+	}
+	// 表单字段权限同口径校验：r/h 字段不得经变量接口删除（删除即改写）
+	if err := s.rejectFormPermissionWrite(ctx, scope, task, variableName); err != nil {
+		return err
 	}
 	merged, err := ParseVariablesJSON(task.Variables)
 	if err != nil {
