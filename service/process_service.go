@@ -28,7 +28,7 @@ type ProcessService interface {
 	Get(ctx context.Context, processID string) (*model.WfProcess, error)
 
 	// CategoriesByIDs 批量取流程分类（id → category，空串/缺失不计入 map）。
-	// 统计聚合按分类分组用：只投影两列，避免逐 ID Get 全量定义行（含 definition_json）。
+	// 统计聚合按分类分组用：一次批量查询替代逐 ID Get，消除 N+1。
 	CategoriesByIDs(ctx context.Context, ids []string) (map[string]string, error)
 
 	// GetByKey 根据Key获取最新版本的流程定义

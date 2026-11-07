@@ -82,21 +82,3 @@ func resolveInstanceActivityNameCached(instance *model.WfInstance, cache map[str
 	}
 	return nodeID
 }
-
-// resolveInstanceActivityName 按实例 CurrentActivity 节点 ID 从关联流程定义解析节点名；
-// 解析失败、节点缺失或无流程定义时回退节点 ID，保证列表"当前节点"列不空。
-func resolveInstanceActivityName(instance *model.WfInstance) string {
-	if instance == nil || instance.CurrentActivity == nil || *instance.CurrentActivity == "" {
-		return ""
-	}
-	nodeID := *instance.CurrentActivity
-	if instance.Process == nil {
-		return nodeID
-	}
-	if rc, err := instance.Process.ToRuleChain(); err == nil && rc != nil {
-		if node, ok := rc.GetNode(nodeID); ok && node.Name != "" {
-			return node.Name
-		}
-	}
-	return nodeID
-}

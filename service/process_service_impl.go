@@ -547,8 +547,8 @@ func isUniqueViolation(err error) bool {
 		strings.Contains(msg, "duplicate key") || strings.Contains(msg, "UNIQUE constraint failed")
 }
 
-// CategoriesByIDs 批量取流程分类（id → category）：只投影 id/category 两列，
-// 供统计聚合按分类分组，替代逐 ID Get 全量定义行（含 definition_json）的 N+1。
+// CategoriesByIDs 批量取流程分类（id → category）：一次批量查询替代逐 ID Get
+// 全量定义行的 N+1，供统计聚合按分类分组。
 func (s *ProcessServiceImpl) CategoriesByIDs(ctx context.Context, ids []string) (map[string]string, error) {
 	out := make(map[string]string, len(ids))
 	if len(ids) == 0 {
