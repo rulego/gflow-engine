@@ -73,6 +73,9 @@ func (noopSecFixProcessService) List(context.Context, Actor, *dto.ProcessQueryRe
 func (noopSecFixProcessService) Get(context.Context, string) (*model.WfProcess, error) {
 	return nil, nil
 }
+func (noopSecFixProcessService) CategoriesByIDs(context.Context, []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
 func (noopSecFixProcessService) GetByKey(context.Context, string, string) (*model.WfProcess, error) {
 	return nil, nil
 }

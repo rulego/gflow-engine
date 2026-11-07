@@ -17,8 +17,9 @@ import (
 )
 
 // detailPageSizeFetchAll 实例详情需要单实例任务全集（时间线、活跃节点判定、
-// 后续审批人预测）：会签子任务、加签、驳回回跳重跑很容易超过默认 pageSize=10，
-// 且默认 created_at 升序会优先截掉最新创建的活跃任务。
+// 后续审批人预测）：会签子任务、加签、驳回回跳重跑很容易超过默认 pageSize。
+// 注意宿主分页钳制为 MaxPageSize=200，本常量超过 200 时按 200 生效，超量
+// 由 listAllInstanceTasks 的循环翻页兜底（正确性不受影响，多付几次 COUNT）。
 const detailPageSizeFetchAll = 1000
 
 // listAllInstanceTasks 翻页取全单实例任务集，防止分页截断。实例任务量正常远
@@ -217,11 +218,15 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 				}
 
 				if currentUserTask != nil {
-					// 审批人节点 actionPermissions：复用 service 层校验同一解析路径，
-					// 保证详情按钮显隐与 service 强制校验判定一致。
-					actionPermissions = resolveNodeActionPermissions(ctx, s.workflowEngine, processInstanceID, currentUserTask.TaskDefKey)
-
 					if node, ok := rc.GetNode(currentUserTask.TaskDefKey); ok {
+						// 审批人节点 actionPermissions：直接读已解析链的节点配置。
+						// 不再走 resolveNodeActionPermissions——那条路径重复加载实例行
+						// 与定义行并二次解析全量链 JSON，本函数上文已全部持有。
+						if ap, ok := node.GetAdditionalInfo("actionPermissions"); ok {
+							if v, ok := ap.(map[string]interface{}); ok {
+								actionPermissions = v
+							}
+						}
 						if ap, ok := node.GetAdditionalInfo("formPermissions"); ok {
 							// additionalInfo 经 JSON 反序列化为 map[string]interface{}，字段值需逐键断言为 string 取出。
 							if v, ok := ap.(map[string]interface{}); ok {

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/rulego/api/types"
 )
 
 // decorateCurrentActivityNames 为列表/单条实例装配非持久化字段 CurrentActivityName：
@@ -44,9 +45,42 @@ func (s *RuntimeServiceImpl) decorateCurrentActivityNames(ctx context.Context, i
 		}
 		// 补齐失败（DB 故障）不阻塞列表：下方解析对 Process==nil 回退节点 ID
 	}
+	// 同页同定义的行共享一次链解析：ToRuleChain 是全量 definition_json 反序列化，
+	// 按 processID memoize 消除逐实例重复解析（分页 200 行共享 10 定义时的纯 CPU 放大）
+	chainCache := make(map[string]*types.RuleChain, len(instances))
 	for _, inst := range instances {
-		inst.CurrentActivityName = resolveInstanceActivityName(inst)
+		inst.CurrentActivityName = resolveInstanceActivityNameCached(inst, chainCache)
 	}
+}
+
+// resolveInstanceActivityNameCached 按 memoize 缓存解析当前节点名；
+// cache 为 nil 时等价于直接解析。
+func resolveInstanceActivityNameCached(instance *model.WfInstance, cache map[string]*types.RuleChain) string {
+	if instance == nil || instance.CurrentActivity == nil || *instance.CurrentActivity == "" {
+		return ""
+	}
+	nodeID := *instance.CurrentActivity
+	if instance.Process == nil {
+		return nodeID
+	}
+	var rc *types.RuleChain
+	if cache != nil {
+		rc = cache[instance.ProcessID]
+	}
+	if rc == nil {
+		parsed, err := instance.Process.ToRuleChain()
+		if err != nil || parsed == nil {
+			return nodeID
+		}
+		rc = parsed
+		if cache != nil {
+			cache[instance.ProcessID] = rc
+		}
+	}
+	if node, ok := rc.GetNode(nodeID); ok && node.Name != "" {
+		return node.Name
+	}
+	return nodeID
 }
 
 // resolveInstanceActivityName 按实例 CurrentActivity 节点 ID 从关联流程定义解析节点名；

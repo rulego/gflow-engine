@@ -65,6 +65,11 @@ type TaskQuery struct {
 	TraceUser string `json:"traceUser" form:"traceUser"`
 	// TaskTypes 任务类型过滤（如 forward 轨迹行），运行/历史任务查询通用
 	TaskTypes []string `json:"taskTypes" form:"taskTypes"`
+	// OmitVariables 列投影开关：纯计数/派生类聚合（审批统计、超期计数等）只需
+	// 状态/时间列，不需要 variables 大 JSON 列——开启后 DAO 查询剔除该列，
+	// 省掉 V×N 的 DB 传输与解析（V 单行可至 15MB）。需要变量快照的路径
+	// （详情装配、列表回显）不得开启。
+	OmitVariables bool `json:"omitVariables"`
 	// CreatedBy 任务创建人过滤：转办轨迹行的 created_by 记录转办操作人
 	CreatedBy string `json:"createdBy" form:"createdBy"`
 	// PrevAssignee 前一任办理人过滤：历史表轨迹行专用（运行表无此列），

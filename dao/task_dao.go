@@ -249,6 +249,10 @@ func (d *TaskDAO) List(ctx context.Context, query *dto.TaskQuery) ([]*model.WfTa
 	} else {
 		queryBuilder = queryBuilder.Order(order.Asc())
 	}
+	// 纯计数/派生聚合的列投影：剔除 variables 大 JSON 列（V×N 的传输与解析放大器）
+	if query.OmitVariables {
+		queryBuilder = queryBuilder.Omit(q.Variables)
+	}
 	// 执行查询
 	tasks, err := queryBuilder.Offset(offset).Limit(size).Find()
 	if err != nil {

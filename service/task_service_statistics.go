@@ -243,6 +243,7 @@ func (s *TaskServiceImpl) countOverdueActiveTasks(ctx context.Context, userID, t
 		PageRequest: dto.PageRequest{
 			Status: []string{string(enums.TaskStatusPending), string(enums.TaskStatusActive)},
 		},
+		OmitVariables: true,
 	})
 	if err != nil {
 		return 0, err
@@ -265,14 +266,16 @@ func countOverdueFromTasks(tasks []*model.WfTask, now time.Time) int64 {
 func (s *TaskServiceImpl) aggregateMonthCompleted(ctx context.Context, userID, tenantID string, monthStart time.Time) (approved, rejected, total, avgDuration int64) {
 	tasks, err := s.queryAllTasksPaged(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID, EndedAfter: &monthStart,
-		PageRequest: dto.PageRequest{Status: []string{string(enums.TaskStatusCompleted)}},
+		PageRequest:   dto.PageRequest{Status: []string{string(enums.TaskStatusCompleted)}},
+		OmitVariables: true,
 	})
 	if err != nil {
 		logrus.WithError(err).Warn("Failed to query month completed tasks")
 	}
 	histTasks, histErr := s.queryAllTasksPaged(ctx, &dto.TaskQuery{
 		Assignee: userID, TenantID: tenantID, EndedAfter: &monthStart, QueryHistory: true,
-		PageRequest: dto.PageRequest{Status: []string{string(enums.TaskStatusCompleted)}},
+		PageRequest:   dto.PageRequest{Status: []string{string(enums.TaskStatusCompleted)}},
+		OmitVariables: true,
 	})
 	if histErr != nil {
 		logrus.WithError(histErr).Warn("Failed to query month completed tasks from history")
@@ -455,8 +458,9 @@ func (s *TaskServiceImpl) GetApprovalStatisticsDetail(ctx context.Context, actor
 	// ========== 日期筛选的已完成任务（用于趋势、类型分布、效率指标） ==========
 
 	filteredQuery := &dto.TaskQuery{
-		Assignee: userID,
-		TenantID: tenantID,
+		Assignee:      userID,
+		TenantID:      tenantID,
+		OmitVariables: true,
 		PageRequest: dto.PageRequest{
 			Status: []string{string(enums.TaskStatusCompleted)},
 		},
@@ -508,14 +512,23 @@ func (s *TaskServiceImpl) GetApprovalStatisticsDetail(ctx context.Context, actor
 		processIDCounts[task.ProcessID]++
 	}
 
+	// 定义一次批量取回分类，消除逐定义 Get 全量行的 N+1
+	procIDs := make([]string, 0, len(processIDCounts))
+	for id := range processIDCounts {
+		procIDs = append(procIDs, id)
+	}
+	procCategory := make(map[string]string, len(procIDs))
+	if procs, perr := s.workflowEngine.GetProcessService().CategoriesByIDs(ctx, procIDs); perr != nil {
+		logrus.WithError(perr).Warn("Failed to batch query process categories, using default")
+	} else {
+		procCategory = procs
+	}
+
 	categoryCounts := make(map[string]int64)
 	for processID, count := range processIDCounts {
 		category := "其他"
-		proc, procErr := s.workflowEngine.GetProcessService().Get(ctx, processID)
-		if procErr != nil {
-			logrus.WithError(procErr).Warnf("Failed to query process %s for category, using default", processID)
-		} else if proc != nil && proc.Category != nil && *proc.Category != "" {
-			category = *proc.Category
+		if c, ok := procCategory[processID]; ok && c != "" {
+			category = c
 		}
 		categoryCounts[category] += count
 	}

@@ -546,3 +546,23 @@ func isUniqueViolation(err error) bool {
 	return strings.Contains(msg, "23505") || strings.Contains(msg, "1062") ||
 		strings.Contains(msg, "duplicate key") || strings.Contains(msg, "UNIQUE constraint failed")
 }
+
+// CategoriesByIDs 批量取流程分类（id → category）：只投影 id/category 两列，
+// 供统计聚合按分类分组，替代逐 ID Get 全量定义行（含 definition_json）的 N+1。
+func (s *ProcessServiceImpl) CategoriesByIDs(ctx context.Context, ids []string) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	procs, err := s.processDAO.GetByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch query process categories: %w", err)
+	}
+	for _, p := range procs {
+		if p == nil || p.Category == nil || *p.Category == "" {
+			continue
+		}
+		out[p.ID] = *p.Category
+	}
+	return out, nil
+}

@@ -1712,11 +1712,14 @@ func (s *RuntimeServiceImpl) GetStuckProcessInstances(ctx context.Context, actor
 		return nil, err
 	}
 	db := s.instanceDAO.Underlying().WfInstance.UnderlyingDB().WithContext(ctx)
+	// 上限截断：一次 DB 抖动可批量制造卡死实例，无界查询会放大成内存/驱动风暴；
+	// 巡检按轮次消化，单轮上限与逾期巡检同量级
 	q := db.Table("wf_instance as i").
 		Select("i.*").
 		Where("i.status = ?", string(enums.InstanceStatusActive)).
 		Where("NOT EXISTS (SELECT 1 FROM wf_task t WHERE t.process_instance_id = i.id AND t.status IN (?, ?))",
-			string(enums.TaskStatusActive), string(enums.TaskStatusPending))
+			string(enums.TaskStatusActive), string(enums.TaskStatusPending)).
+		Limit(stuckInstanceBatchLimit)
 	if tenantID != "" {
 		q = q.Where("i.tenant_id = ?", tenantID)
 	}
@@ -1733,6 +1736,10 @@ func (s *RuntimeServiceImpl) GetStuckProcessInstances(ctx context.Context, actor
 // 在途计时器正常收尾，不视为计时器丢失。
 const expiredDelayGracePeriod = 60 * time.Second
 
+// stuckInstanceBatchLimit 卡死/超期巡检单轮拉取上限：病态积压按轮次消化，
+// 防单次无界查询（含 variables 大列）自放大。
+const stuckInstanceBatchLimit = 500
+
 // GetExpiredDelayTasks 找出超期未完成的 delay 任务。
 //
 // delay 计时器活在驱动它的副本进程内，副本崩溃后任务行停在未终态；due_date
@@ -1748,7 +1755,8 @@ func (s *RuntimeServiceImpl) GetExpiredDelayTasks(ctx context.Context, actor Act
 	q := db.Table("wf_task").
 		Where("task_type = ?", constants.TaskTypeDelay).
 		Where("status IN (?, ?)", string(enums.TaskStatusActive), string(enums.TaskStatusPending)).
-		Where("due_date IS NOT NULL AND due_date < ?", time.Now().Add(-expiredDelayGracePeriod))
+		Where("due_date IS NOT NULL AND due_date < ?", time.Now().Add(-expiredDelayGracePeriod)).
+		Limit(stuckInstanceBatchLimit)
 	if tenantID != "" {
 		q = q.Where("tenant_id = ?", tenantID)
 	}
