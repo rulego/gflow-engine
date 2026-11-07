@@ -736,8 +736,12 @@ func (n *AIAgentNode) routeByHumanDecision(ctx types.RuleContext, msg types.Rule
 		ParentIDIsNull: true,
 	})
 	if err != nil {
-		logrus.WithError(err).Warnf("AIAgentNode %s: query fallback tasks failed, proceed to AI call", n.GetSelfId())
-		return false
+		// fail-closed：守卫查询是「是否已有人工兜底待办/结论」的判据，查询失败
+		// 不能当「没有兜底」继续调 LLM——会重复计费、人工兜底期间二次推进，
+		// 待办人完成时再触发一次下游。挂起本轮等下一轮 OnMsg 重查。
+		logrus.WithError(err).Warnf("AIAgentNode %s: query fallback tasks failed; hold this round for retry", n.GetSelfId())
+		ctx.DoOnEnd(msg, nil, "")
+		return true
 	}
 
 	approved, rejected, active := 0, 0, 0

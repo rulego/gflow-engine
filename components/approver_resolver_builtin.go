@@ -225,7 +225,12 @@ func (multiLevelManagerResolver) Resolve(in ApproverResolveInput) ([]string, err
 	set := map[string]bool{}
 	for i := 0; levels < 0 || i < levels; i++ {
 		mgr, err := in.Identity.GetUserManagerID(in.Ctx, in.TenantID, current)
-		if err != nil || mgr == "" {
+		// err 与「到顶」必须分开：identity 故障按解析失败报错（任务创建失败可救援），
+		// 吞错会把升级链静默截断在中途或落进审批人为空兜底（默认转管理员/可配自动通过）
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve manager of %s: %w", current, err)
+		}
+		if mgr == "" {
 			break
 		}
 		if visited[mgr] {
