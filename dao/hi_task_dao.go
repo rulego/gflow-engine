@@ -193,6 +193,11 @@ func (d *HiTaskDAO) List(ctx context.Context, query *dto.TaskQuery) ([]*model.Wf
 	} else {
 		queryBuilder = queryBuilder.Order(order.Asc())
 	}
+	// 纯计数/派生聚合的列投影：与 TaskDAO.List 同口径，统计聚合的历史半边
+	// （月度汇总、详情趋势）同样吃这条剔除，否则 OmitVariables 静默失效
+	if query.OmitVariables {
+		queryBuilder = queryBuilder.Omit(q.Variables)
+	}
 	// 执行查询
 	var tasks []*model.WfTask
 	err = queryBuilder.Offset(offset).Limit(size).Scan(&tasks)
