@@ -5,6 +5,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -271,4 +272,41 @@ func TestReduceSign_ToZero_ByParticipant_Terminates(t *testing.T) {
 	subs, gerr := svc.taskDAO.GetByParentID(ctx, "t-cs-zero")
 	require.NoError(t, gerr)
 	require.Empty(t, subs, "两张子任务都应被移除")
+}
+
+// 加签子任务必须派发 assigned 事件：站内「等你审批」与飞书/钉钉/企微卡片扇出
+// 都挂在 assigned 上，缺派发时被加签人收不到任何到达通知（只能靠待办列表发现）。
+func TestAddSign_DispatchesAssignedEvents(t *testing.T) {
+	svc, q := newSignTestSvc(t)
+	var mu sync.Mutex
+	var assignedTo [][]string
+	svc.workflowEngine = &recallEngineDouble{
+		testEngineDouble: testEngineDouble{
+			listener: func(_ context.Context, evt TaskEvent) {
+				if evt.Type == TaskEventAssigned {
+					mu.Lock()
+					assignedTo = append(assignedTo, append([]string(nil), evt.ToUsers...))
+					mu.Unlock()
+				}
+			},
+		},
+		proc: recallProcessFake{def: signTestDef},
+		q:    q,
+	}
+	signSeed(t, q, "inst-1")
+	signSeedParentTask(t, q, "t-a", "inst-1", "alice", "")
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "alice", TenantID: "t1", UserName: "甲"})
+
+	require.NoError(t, svc.AddSign(ctx, Actor{UserID: "alice", TenantID: "t1"}, "t-a", []string{"carol", "dave"}, "补两位会审"))
+
+	// DispatchTaskEvent 是 goroutine 异步派发，轮询等待两个事件落齐
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(assignedTo) == 2
+	}, 2*time.Second, 10*time.Millisecond, "每位被加签人应各有一条 assigned 事件")
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.ElementsMatch(t, [][]string{{"carol"}, {"dave"}}, assignedTo)
 }

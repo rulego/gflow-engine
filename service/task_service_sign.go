@@ -168,6 +168,20 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 			}
 		}
 	}
+	// 事件携带的实例上下文对全部子任务相同，循环外一次读取
+	listener := s.workflowEngine.GetTaskEventListener()
+	var evtProcessName, evtStartUser, evtInstStatus string
+	signInstanceID := ""
+	if task.ProcessInstanceID != nil {
+		signInstanceID = *task.ProcessInstanceID
+	}
+	if listener != nil && signInstanceID != "" {
+		if inst, iErr := scope.Instances().Get(ctx, signInstanceID); iErr == nil && inst != nil {
+			evtProcessName = inst.Name
+			evtStartUser = inst.StartUserID
+			evtInstStatus = inst.Status
+		}
+	}
 	for _, userID := range userIDs {
 		if existing[userID] {
 			continue
@@ -196,6 +210,32 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 		}
 		if err := taskDAO.Create(ctx, signTask); err != nil {
 			return fmt.Errorf("failed to create sign task for user %s: %w", userID, err)
+		}
+
+		// 加签子任务派发 assigned 事件：站内「等你审批」与飞书/钉钉/企微卡片扇出
+		// 都挂在 assigned 上，缺派发时被加签人收不到任何到达通知（只能靠待办列表
+		// 发现）。与 createParallelSubTasks 的会签子任务同口径。
+		if listener != nil {
+			evt := TaskEvent{
+				Type:                TaskEventAssigned,
+				TaskID:              signTask.ID,
+				TaskDefKey:          signTask.TaskDefKey,
+				ParentTaskID:        task.ID,
+				InstanceID:          signInstanceID,
+				ProcessID:           task.ProcessID,
+				TenantID:            task.TenantID,
+				ProcessName:         evtProcessName,
+				StartUserID:         evtStartUser,
+				InstanceStatusAfter: evtInstStatus,
+				TaskName:            signTask.Name,
+				ToUsers:             []string{userID},
+				FromUser:            operator,
+				Timestamp:           time.Now(),
+			}
+			scope.AfterCommit(func() error {
+				DispatchTaskEvent(listener, evt, ctx)
+				return nil
+			})
 		}
 	}
 
