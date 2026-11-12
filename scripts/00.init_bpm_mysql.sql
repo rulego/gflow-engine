@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS wf_task_comment (
     user_id VARCHAR(64) NOT NULL COMMENT '评论人ID',
     user_name VARCHAR(100) NOT NULL DEFAULT '' COMMENT '评论人姓名（冗余，避免联表）',
     content TEXT NOT NULL COMMENT '评论内容',
+    attachments TEXT NULL COMMENT '伴生附件引用 JSON 数组 [{filename,path,size}]，NULL=无附件',
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
     KEY idx_comment_task (task_id),
     KEY idx_comment_tenant (tenant_id)

@@ -184,6 +184,9 @@ type ExecutionInfo struct {
 	// 减签候选与 ReduceSign 写路径校验同口径；流程配置的子任务无标记为空
 	SignAddedBy string  `json:"signAddedBy,omitempty"`
 	Comment     *string `json:"comment"`
+	// Attachments 意见行伴生的附件引用（filename/path/size）：预览与下载走宿主
+	// /files（path 即下载口参数）；无附件的行为 nil
+	Attachments []ApprovalAttachment `json:"attachments,omitempty"`
 	// TransferredFrom 转办前处理人 userId：任务被转办过（transfer_from 任务变量
 	// 非空）时透出，时间线渲染「由 X 转办」；多次转办以最后一次为准（变量覆盖写）
 	TransferredFrom string `json:"transferredFrom,omitempty"`

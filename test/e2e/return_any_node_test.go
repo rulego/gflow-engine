@@ -201,7 +201,7 @@ func TestE2E_Return_MultiHopToFirstNode(t *testing.T) {
 	require.Len(t, tasksC, 1)
 
 	// user_c 跨过 B 直接退回 node_a
-	err := env.engine.GetTaskService().Return(env.userCtxAs("user_c"), service.Actor{UserID: "user_c", TenantID: e2eTenantID}, tasksC[0].ID, "node_a", "材料不齐退回发起环节")
+	err := env.engine.GetTaskService().Return(env.userCtxAs("user_c"), service.Actor{UserID: "user_c", TenantID: e2eTenantID}, tasksC[0].ID, "node_a", "材料不齐退回发起环节", nil)
 	require.NoError(t, err, "multi-hop return should succeed")
 
 	// B 的旧票已从运行表清理并归档，end_reason 带作废标记（原审批结果保留在后）
@@ -256,7 +256,7 @@ func TestE2E_Return_InvalidTargetsRejected(t *testing.T) {
 
 	returnAs := func(actorUserID, target string) error {
 		return env.engine.GetTaskService().Return(env.userCtxAs(actorUserID),
-			service.Actor{UserID: actorUserID, TenantID: e2eTenantID}, tasksC[0].ID, target, "测试")
+			service.Actor{UserID: actorUserID, TenantID: e2eTenantID}, tasksC[0].ID, target, "测试", nil)
 	}
 
 	assert.Error(t, returnAs("user_c", "node_c"), "回退到当前节点自身必须拒绝")
@@ -285,7 +285,7 @@ func TestE2E_Return_CrossesParallelGatewayRejected(t *testing.T) {
 	require.Len(t, tasksC, 1)
 
 	// 回退到分支尾节点：重执行区域穿过 join，必须拒绝
-	err := env.engine.GetTaskService().Return(env.userCtxAs("user_c"), service.Actor{UserID: "user_c", TenantID: e2eTenantID}, tasksC[0].ID, "task_b", "跨分支退回")
+	err := env.engine.GetTaskService().Return(env.userCtxAs("user_c"), service.Actor{UserID: "user_c", TenantID: e2eTenantID}, tasksC[0].ID, "task_b", "跨分支退回", nil)
 	assert.Error(t, err, "return crossing a parallel gateway must be rejected")
 	assert.Len(t, env.activeTasksFor(instanceID, "user_c"), 1, "被拒绝的回退不应影响在途任务")
 }
@@ -305,7 +305,7 @@ func TestE2E_Return_WithinBranchAllowed(t *testing.T) {
 	require.Len(t, tasksA2, 1)
 
 	// a2 退回同支的 a1：区域不跨网关，必须放行
-	err := env.engine.GetTaskService().Return(env.userCtxAs("user_a2"), service.Actor{UserID: "user_a2", TenantID: e2eTenantID}, tasksA2[0].ID, "task_a1", "分支内退回")
+	err := env.engine.GetTaskService().Return(env.userCtxAs("user_a2"), service.Actor{UserID: "user_a2", TenantID: e2eTenantID}, tasksA2[0].ID, "task_a1", "分支内退回", nil)
 	require.NoError(t, err, "within-branch return should be allowed")
 	require.Eventually(t, func() bool { return len(env.activeTasksFor(instanceID, "user_a1")) > 0 },
 		3*time.Second, 50*time.Millisecond, "branch A step1 must be recreated after return")
@@ -344,7 +344,7 @@ func TestE2E_Return_SequentialNodeRestartsFromFirstStep(t *testing.T) {
 	require.Len(t, tasksB2, 1)
 
 	// b2 退回 node_a：退到上一外部节点而非本节点自重启
-	err := env.engine.GetTaskService().Return(env.userCtxAs("user_b2"), service.Actor{UserID: "user_b2", TenantID: e2eTenantID}, tasksB2[0].ID, "node_a", "前置环节材料需修正")
+	err := env.engine.GetTaskService().Return(env.userCtxAs("user_b2"), service.Actor{UserID: "user_b2", TenantID: e2eTenantID}, tasksB2[0].ID, "node_a", "前置环节材料需修正", nil)
 	require.NoError(t, err, "sequential step2 return to previous external node should succeed")
 	require.Eventually(t, func() bool { return env.taskRowsByDefKey(instanceID, "node_b") == 0 },
 		2*time.Second, 50*time.Millisecond, "sequential node stale rows (b1 completed vote) must be cleaned")

@@ -381,6 +381,7 @@ CREATE TABLE IF NOT EXISTS wf_task_comment
     user_id             VARCHAR(64) NOT NULL,                 -- 评论人ID
     user_name           VARCHAR(100) NOT NULL DEFAULT '',     -- 评论人姓名（冗余，避免联表）
     content             TEXT NOT NULL,
+    attachments         TEXT,                                   -- 伴生附件引用 JSON 数组 [{filename,path,size}]，NULL=无附件
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -394,4 +395,5 @@ COMMENT ON COLUMN wf_task_comment.tenant_id IS '租户ID';
 COMMENT ON COLUMN wf_task_comment.user_id IS '评论人ID';
 COMMENT ON COLUMN wf_task_comment.user_name IS '评论人姓名';
 COMMENT ON COLUMN wf_task_comment.content IS '评论内容';
+COMMENT ON COLUMN wf_task_comment.attachments IS '伴生附件引用 JSON 数组 [{filename,path,size}]，NULL=无附件';
 COMMENT ON COLUMN wf_task_comment.created_at IS '创建时间';

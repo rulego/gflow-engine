@@ -8,14 +8,16 @@ import (
 	"fmt"
 
 	"github.com/rulego/gflow-engine/types/constants"
+	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 )
 
 // ProxyAudit 管理员代审在途任务。
 // 前置校验（锁外）：管理员/系统身份、任务已签收、非委派中、流程级 proxyAudit
 // 开关未显式关闭（缺省即开）。
-// 出票走 completeWithApprovalInternal 的 OnBehalfOf 分支（锁内还有委派兜底）。
-func (s *TaskServiceImpl) ProxyAudit(ctx context.Context, actor Actor, taskID string, approved bool, comment string) error {
+// 出票走 completeWithApprovalInternal 的 OnBehalfOf 分支（锁内还有委派兜底）；
+// attachments 随本人意见行落库，节点 uploadAttachment 开关同样生效。
+func (s *TaskServiceImpl) ProxyAudit(ctx context.Context, actor Actor, taskID string, approved bool, comment string, attachments []dto.ApprovalAttachment) error {
 	ctx = bindActorAPI(ctx, actor)
 	if taskID == "" {
 		return fmt.Errorf("task ID cannot be empty")
@@ -69,7 +71,7 @@ func (s *TaskServiceImpl) ProxyAudit(ctx context.Context, actor Actor, taskID st
 	if task.ProcessInstanceID != nil {
 		instanceID = *task.ProcessInstanceID
 	}
-	request := &ApprovalRequest{TaskID: taskID, ApprovalResult: result, Comment: comment}
+	request := &ApprovalRequest{TaskID: taskID, ApprovalResult: result, Comment: comment, Attachments: attachments}
 	if instanceID == "" {
 		return s.completeWithApprovalInternal(ctx, bareScope(s.taskDAO.Underlying()), request)
 	}

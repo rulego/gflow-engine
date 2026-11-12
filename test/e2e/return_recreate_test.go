@@ -70,7 +70,7 @@ func TestE2E_Return_RecreatesTargetTask(t *testing.T) {
 	require.Len(t, tasksB, 1)
 
 	// user_b 退回 node_a
-	err = env.engine.GetTaskService().Return(env.userCtxAs("user_b"), service.Actor{UserID: "user_b", TenantID: e2eTenantID}, tasksB[0].ID, "node_a", "材料不齐退回")
+	err = env.engine.GetTaskService().Return(env.userCtxAs("user_b"), service.Actor{UserID: "user_b", TenantID: e2eTenantID}, tasksB[0].ID, "node_a", "材料不齐退回", nil)
 	require.NoError(t, err, "return should succeed")
 
 	require.Eventually(t, func() bool { return len(env.activeTasksFor(instanceID, "user_a")) > 0 },

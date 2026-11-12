@@ -39,6 +39,7 @@ type RuntimeServiceImpl struct {
 	hiInstanceDAO  HiInstanceStore
 	processDAO     ProcessStore
 	taskDAO        TaskStore
+	taskCommentDAO TaskCommentStore
 	idGenerator    IDGenerator
 	enginePool     types.RuleEnginePool
 	// execGates ExecuteNext 的实例级可重入门闩表（instanceID -> *execGate）
@@ -65,6 +66,7 @@ func NewRuntimeService(workflowEngine WorkflowEngine) RuntimeService {
 		hiInstanceDAO:  dao.NewHiInstanceDAO(),
 		processDAO:     dao.NewProcessDAO(),
 		taskDAO:        dao.NewTaskDAO(),
+		taskCommentDAO: dao.NewTaskCommentDAO(),
 		idGenerator:    workflowEngine.GetIDGenerator(),
 		enginePool:     rulego.NewRuleGo(),
 		workflowEngine: workflowEngine,
@@ -80,6 +82,7 @@ func NewRuntimeServiceWithQuery(query *query.Query, workflowEngine WorkflowEngin
 		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(query),
 		processDAO:     dao.NewProcessDAOWithQuery(query),
 		taskDAO:        dao.NewTaskDAOWithQuery(query),
+		taskCommentDAO: dao.NewTaskCommentDAOWithQuery(query),
 		idGenerator:    workflowEngine.GetIDGenerator(),
 		enginePool:     rulego.NewRuleGo(),
 		workflowEngine: workflowEngine,

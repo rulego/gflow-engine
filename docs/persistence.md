@@ -56,6 +56,12 @@
 
 角色/部门/个人候选任务的候选组记录（`entity_type` = `person` / `role` / `department` + `entity_id` 列表）。认领（Claim）时据此校验当前用户是否在候选组内，部门候选展开成员由 IdentityService 完成。
 
+## wf_task_comment（审批意见账本）
+
+审批动作的留痕账本：一动作一行，由引擎在审批事务内写入（通过/拒绝/回退/代审/强制改派），不随任务归档丢失。`attachments` 列存伴生的附件引用 JSON（`[{filename,path,size}]`，文件本体在宿主文件存储，引擎只记引用）。实例详情时间线以本表为意见源、任务快照字段兜底。
+
+不要与讨论区评论混淆：讨论区由宿主 `comments` 表承载（挂实例实体），与本表职责不同、互不替代。
+
 ## 历史表
 
 `wf_hi_instance` / `wf_hi_task` 与运行表结构一致，任务/实例完结或被 `SupersedeNodeTasks`（驳回回跳清理）时整行迁移，供已办列表与审计查询。各表 `duration` 列均为 **BIGINT（毫秒）**：实例表（`wf_instance`/`wf_hi_instance`）自 v1.0.0 起由 INTEGER 扩为 BIGINT，任务表（`wf_task`/`wf_hi_task`）本就是 BIGINT。

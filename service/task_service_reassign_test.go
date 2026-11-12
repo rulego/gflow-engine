@@ -155,6 +155,7 @@ func reassignTestDB(t *testing.T) *dao.TaskDAO {
 		user_id TEXT,
 		user_name TEXT,
 		content TEXT,
+		attachments TEXT,
 		created_at DATETIME
 	)`).Error)
 	require.NoError(t, db.Exec("DELETE FROM wf_task").Error)

@@ -35,6 +35,7 @@ func newWfTaskComment(db *gorm.DB, opts ...gen.DOOption) wfTaskComment {
 	_wfTaskComment.UserID = field.NewString(tableName, "user_id")
 	_wfTaskComment.UserName = field.NewString(tableName, "user_name")
 	_wfTaskComment.Content = field.NewString(tableName, "content")
+	_wfTaskComment.Attachments = field.NewString(tableName, "attachments")
 	_wfTaskComment.CreatedAt = field.NewTime(tableName, "created_at")
 
 	_wfTaskComment.fillFieldMap()
@@ -53,6 +54,7 @@ type wfTaskComment struct {
 	UserID            field.String // 评论人 ID
 	UserName          field.String // 评论人姓名
 	Content           field.String // 评论内容
+	Attachments       field.String // 伴生附件引用 JSON 数组
 	CreatedAt         field.Time
 
 	fieldMap map[string]field.Expr
@@ -77,6 +79,7 @@ func (w *wfTaskComment) updateTableName(table string) *wfTaskComment {
 	w.UserID = field.NewString(table, "user_id")
 	w.UserName = field.NewString(table, "user_name")
 	w.Content = field.NewString(table, "content")
+	w.Attachments = field.NewString(table, "attachments")
 	w.CreatedAt = field.NewTime(table, "created_at")
 
 	w.fillFieldMap()
@@ -94,7 +97,7 @@ func (w *wfTaskComment) GetFieldByName(fieldName string) (field.OrderExpr, bool)
 }
 
 func (w *wfTaskComment) fillFieldMap() {
-	w.fieldMap = make(map[string]field.Expr, 8)
+	w.fieldMap = make(map[string]field.Expr, 9)
 	w.fieldMap["id"] = w.ID
 	w.fieldMap["task_id"] = w.TaskID
 	w.fieldMap["process_instance_id"] = w.ProcessInstanceID
@@ -102,6 +105,7 @@ func (w *wfTaskComment) fillFieldMap() {
 	w.fieldMap["user_id"] = w.UserID
 	w.fieldMap["user_name"] = w.UserName
 	w.fieldMap["content"] = w.Content
+	w.fieldMap["attachments"] = w.Attachments
 	w.fieldMap["created_at"] = w.CreatedAt
 }
 

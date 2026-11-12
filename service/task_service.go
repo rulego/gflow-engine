@@ -21,6 +21,9 @@ type ApprovalRequest struct {
 	ApprovalResult enums.ApprovalResult   `json:"approvalResult"`
 	Comment        string                 `json:"comment"`   // 审批意见
 	Variables      map[string]interface{} `json:"variables"` // 流程变量（API 模式按表单字段权限过滤）
+	// Attachments 随审批提交的附件引用，须节点 actionPermissions.uploadAttachment
+	// 显式开启才被接受，校验链见 task_service_attachment.go
+	Attachments []dto.ApprovalAttachment `json:"attachments"`
 }
 
 // TaskService 任务服务接口
@@ -204,8 +207,9 @@ type TaskService interface {
 	// 此方法按 instanceID 取当前 active 任务，复用 withdrawInternal（含 StartUserID 校验 + 终止实例）。
 	WithdrawByInstance(ctx context.Context, actor Actor, instanceID, reason string) error
 
-	// Return 退回（将任务退回到指定节点）
-	Return(ctx context.Context, actor Actor, taskID, targetActivityID, reason string) error
+	// Return 退回（将任务退回到指定节点）。attachments 为随退回提交的附件引用，
+	// 须节点 uploadAttachment 开关开启，与退回原因同事务落意见行。
+	Return(ctx context.Context, actor Actor, taskID, targetActivityID, reason string, attachments []dto.ApprovalAttachment) error
 
 	// Recall 收回（审批人撤销自己最近一条已通过的审批，重建自己的待审任务）。
 	// 收回守卫见 task_service_recall.go：实例运行中、本人办理、无更晚办理记录、
@@ -215,8 +219,8 @@ type TaskService interface {
 	// ProxyAudit 管理员代审：代替当前办理人给出审批结果（票记原办理人名下）。
 	// 前置：流程级 actionPermissions.proxyAudit 未显式关闭（缺省即开）+
 	// WorkflowAdmin/系统身份 + 任务已签收且非委派中。被代审的票不可再收回
-	// （evaluateRecallGuard 拦截）。
-	ProxyAudit(ctx context.Context, actor Actor, taskID string, approved bool, comment string) error
+	// （evaluateRecallGuard 拦截）。attachments 随本人意见行落库。
+	ProxyAudit(ctx context.Context, actor Actor, taskID string, approved bool, comment string, attachments []dto.ApprovalAttachment) error
 
 	// ========== 节点审批人管理 ==========
 

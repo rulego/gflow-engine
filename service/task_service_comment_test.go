@@ -40,7 +40,7 @@ func commentTestDB(t *testing.T) *query.Query {
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS wf_task_comment (
 		id TEXT PRIMARY KEY, task_id TEXT NOT NULL, process_instance_id TEXT NOT NULL DEFAULT '',
 		tenant_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL,
-		user_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
+		user_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, attachments TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`).Error)
 	for _, tbl := range []string{"wf_task", "wf_hi_task", "wf_task_comment"} {
 		require.NoError(t, db.Exec("DELETE FROM "+tbl).Error)

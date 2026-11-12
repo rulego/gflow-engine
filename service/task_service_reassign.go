@@ -168,7 +168,7 @@ func (s *TaskServiceImpl) reassignInternal(ctx context.Context, scope *InstanceS
 	if reason != "" {
 		comment += "；原因：" + reason
 	}
-	if cErr := s.recordApprovalComment(ctx, scope, task, operatorID, comment); cErr != nil {
+	if cErr := s.recordApprovalComment(ctx, scope, task, operatorID, comment, nil); cErr != nil {
 		return nil, "", fmt.Errorf("failed to record reassign comment: %w", cErr)
 	}
 	return task, oldAssignee, nil

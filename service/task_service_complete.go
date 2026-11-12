@@ -225,6 +225,13 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 		}
 	}
 
+	// 动作附件校验链：开关/数量/大小/path 租户归属（不带附件直接放行）。
+	// 放在委派归还分支之前——被委派人的 approve/reject 同样可携带凭证，
+	// 校验不过整单拒绝，不产生半提交状态。
+	if err := s.validateActionAttachments(ctx, scope, task, request.Attachments); err != nil {
+		return err
+	}
+
 	// 委派归还：被委派人(approve/reject)应把任务归还原审批人(Owner)，不直接完成流转。
 	// delegatee 若直接 complete+advance，原 owner 将永不审查，因此走 resolveDelegatedApproval。
 	// 代审与委派归还语义纠缠（Complete 会归还而非出票），入口与锁内双拦。
@@ -347,7 +354,8 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 	if u := GetUserFromCtx(ctx); u != nil {
 		commentOperator = u.UserID
 	}
-	if err := s.recordApprovalComment(ctx, scope, task, commentOperator, request.Comment); err != nil {
+	commentAt := time.Now()
+	if err := s.recordApprovalCommentAt(ctx, scope, task, commentOperator, request.Comment, request.Attachments, commentAt); err != nil {
 		return fmt.Errorf("failed to record approval comment: %w", err)
 	}
 
@@ -359,7 +367,10 @@ func (s *TaskServiceImpl) completeWithApprovalInternal(ctx context.Context, scop
 			action = "驳回"
 		}
 		sys := fmt.Sprintf("代审：管理员 %s 代 %s %s该审批", displayAssignee(commentOperator), onBehalfOf, action)
-		if err := s.recordApprovalComment(ctx, scope, task, commentOperator, sys); err != nil {
+		// 代审系统行不带附件（附件已随上方本人意见行落库），且落行时间锚定本人
+		// 意见行 +1ms：时间线意见源取同任务最早行，系统行必须排在本人意见之后。
+		// 不能用更早捕获的 now 偏移——本人行写入耗时可能超过 1ms，反而让系统行超前
+		if err := s.recordApprovalCommentAt(ctx, scope, task, commentOperator, sys, nil, commentAt.Add(time.Millisecond)); err != nil {
 			return fmt.Errorf("failed to record proxy audit comment: %w", err)
 		}
 	}
@@ -810,7 +821,7 @@ func (s *TaskServiceImpl) resolveDelegatedApproval(ctx context.Context, scope *I
 		}); err != nil {
 		return err
 	}
-	if err := s.recordApprovalComment(ctx, scope, task, operator, request.Comment); err != nil {
+	if err := s.recordApprovalComment(ctx, scope, task, operator, request.Comment, request.Attachments); err != nil {
 		return err
 	}
 

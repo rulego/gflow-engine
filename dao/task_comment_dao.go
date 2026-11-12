@@ -8,7 +8,8 @@ import (
 	"github.com/rulego/gflow-engine/query"
 )
 
-// TaskCommentDAO 任务审批意见数据访问对象。
+// TaskCommentDAO 任务审批意见数据访问对象（wf_task_comment：审批意见留痕
+// 账本，一动作一行；讨论区评论是宿主 comments 表，不在本 DAO 范围）。
 // 读写经由构造时传入的 *query.Query：传入事务包装的 Query 时，
 // 读写自动落在调用方事务内。
 type TaskCommentDAO struct {
@@ -49,6 +50,23 @@ func (d *TaskCommentDAO) ListByTaskID(ctx context.Context, taskID string) ([]*mo
 		Find()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list task comments: %w", err)
+	}
+	return comments, nil
+}
+
+// ListByTaskIDs 批量查询多任务的意见行（按时间正序），实例详情时间线的
+// 一次批查用：避免逐任务回查 N+1。
+func (d *TaskCommentDAO) ListByTaskIDs(ctx context.Context, taskIDs []string) ([]*model.WfTaskComment, error) {
+	if len(taskIDs) == 0 {
+		return nil, nil
+	}
+	q := d.Query.WfTaskComment
+	comments, err := q.WithContext(ctx).
+		Where(q.TaskID.In(taskIDs...)).
+		Order(q.CreatedAt).
+		Find()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list task comments by ids: %w", err)
 	}
 	return comments, nil
 }

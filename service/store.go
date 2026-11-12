@@ -97,6 +97,7 @@ type TaskCommentStore interface {
 	Underlying() *query.Query
 	Create(ctx context.Context, comment *model.WfTaskComment) error
 	ListByTaskID(ctx context.Context, taskID string) ([]*model.WfTaskComment, error)
+	ListByTaskIDs(ctx context.Context, taskIDs []string) ([]*model.WfTaskComment, error)
 }
 
 // 编译期锁定：具体 DAO 必须满足对应窄接口，宿主自有实现与内置实现同契约。

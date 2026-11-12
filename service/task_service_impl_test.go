@@ -219,7 +219,7 @@ func TestTaskServiceImpl_Withdraw_EmptyUserID(t *testing.T) {
 
 func TestTaskServiceImpl_Return_EmptyTaskID(t *testing.T) {
 	s := newTaskServiceImplForTest()
-	err := s.Return(context.Background(), Actor{}, "", "node1", "reason")
+	err := s.Return(context.Background(), Actor{}, "", "node1", "reason", nil)
 	if err == nil {
 		t.Error("expected error for empty taskID")
 	}
@@ -227,7 +227,7 @@ func TestTaskServiceImpl_Return_EmptyTaskID(t *testing.T) {
 
 func TestTaskServiceImpl_Return_EmptyTargetActivityID(t *testing.T) {
 	s := newTaskServiceImplForTest()
-	err := s.Return(context.Background(), Actor{UserID: "u1"}, "t1", "", "reason")
+	err := s.Return(context.Background(), Actor{UserID: "u1"}, "t1", "", "reason", nil)
 	if err == nil {
 		t.Error("expected error for empty targetActivityID")
 	}
@@ -634,7 +634,7 @@ func TestWithdraw_EmptyUserID(t *testing.T) {
 
 func TestReturn_EmptyTaskID(t *testing.T) {
 	s := newTaskServiceForValidation()
-	err := s.Return(context.Background(), Actor{}, "", "target", "reason")
+	err := s.Return(context.Background(), Actor{}, "", "target", "reason", nil)
 	if err == nil {
 		t.Error("expected error for empty taskID")
 	}
@@ -642,7 +642,7 @@ func TestReturn_EmptyTaskID(t *testing.T) {
 
 func TestReturn_EmptyTargetActivityID(t *testing.T) {
 	s := newTaskServiceForValidation()
-	err := s.Return(context.Background(), Actor{UserID: "user1"}, "task1", "", "reason")
+	err := s.Return(context.Background(), Actor{UserID: "user1"}, "task1", "", "reason", nil)
 	if err == nil {
 		t.Error("expected error for empty targetActivityID")
 	}
@@ -650,7 +650,7 @@ func TestReturn_EmptyTargetActivityID(t *testing.T) {
 
 func TestReturn_EmptyUserID(t *testing.T) {
 	s := newTaskServiceForValidation()
-	err := s.Return(context.Background(), Actor{}, "task1", "target", "reason")
+	err := s.Return(context.Background(), Actor{}, "task1", "target", "reason", nil)
 	if err == nil {
 		t.Error("expected error for empty userID")
 	}

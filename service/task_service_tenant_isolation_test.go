@@ -39,7 +39,7 @@ func TestSecFix_ReturnCrossTenantRejected(t *testing.T) {
 	}))
 	taskSvc := &TaskServiceImpl{taskDAO: dao.NewTaskDAOWithQuery(q), workflowEngine: candGroupEngine{}}
 
-	err := taskSvc.Return(ctx, Actor{UserID: "userB", TenantID: "t2"}, "task-ret-xt", "node1", "reason")
+	err := taskSvc.Return(ctx, Actor{UserID: "userB", TenantID: "t2"}, "task-ret-xt", "node1", "reason", nil)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrNotFound), "跨租户 Return 应伪装成 not found，got %v", err)
 }

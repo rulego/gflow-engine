@@ -85,7 +85,7 @@ var miDDL = []string{
 	`CREATE TABLE IF NOT EXISTS wf_task_comment (
 		id TEXT PRIMARY KEY, task_id TEXT NOT NULL, process_instance_id TEXT NOT NULL DEFAULT '',
 		tenant_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL,
-		user_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
+		user_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, attachments TEXT,
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
 }
 
@@ -114,6 +114,9 @@ func newMultiReplicaEnv(t *testing.T) *miEnv {
 	for _, ddl := range miDDL {
 		require.NoError(t, db.Exec(ddl).Error, "create table")
 	}
+	// CREATE IF NOT EXISTS 不迁移既有表：跑过旧版测试的库仍是旧 schema，
+	// 增量列在此补齐，保证测试库可重复使用
+	require.NoError(t, db.Exec(`ALTER TABLE wf_task_comment ADD COLUMN IF NOT EXISTS attachments TEXT`).Error, "migrate wf_task_comment")
 	for _, tbl := range []string{"wf_task_comment", "wf_hi_task", "wf_hi_instance", "wf_task_assignee", "wf_task", "wf_instance", "wf_process"} {
 		require.NoError(t, db.Exec("DELETE FROM "+tbl).Error, "clear "+tbl)
 	}

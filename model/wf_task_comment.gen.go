@@ -19,6 +19,7 @@ type WfTaskComment struct {
 	UserID            string    `gorm:"column:user_id;not null;comment:评论人 ID" json:"userId"`                         // 评论人 ID
 	UserName          string    `gorm:"column:user_name;not null;comment:评论人姓名" json:"userName"`                      // 评论人姓名
 	Content           string    `gorm:"column:content;not null;comment:评论内容" json:"content"`                          // 评论内容
+	Attachments       *string   `gorm:"column:attachments;comment:伴生附件引用 JSON 数组" json:"attachments"`                 // [{filename,path,size}]，NULL=无
 	CreatedAt         time.Time `gorm:"column:created_at;not null;default:CURRENT_TIMESTAMP" json:"createdAt"`
 }
 

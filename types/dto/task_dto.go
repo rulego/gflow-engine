@@ -17,6 +17,15 @@ type CompleteTaskRequest struct {
 	Comment   string                 `json:"comment"`   // 完成备注（为空时以 Variables 中的 VarsComment 为准）
 }
 
+// ApprovalAttachment 审批动作携带的附件引用。文件本体已先行落宿主文件存储
+// （/files/upload），动作请求只带引用元数据，随审批意见同事务写入意见行；
+// 下载走宿主 /files（引擎不做文件存在性校验，404 由下载口兜底）。
+type ApprovalAttachment struct {
+	Filename string `json:"filename"` // 展示名（含扩展名）
+	Path     string `json:"path"`     // 存储路径，形如 {tenantID}/{category}/{date}/{filename}
+	Size     int64  `json:"size"`     // 字节数
+}
+
 // DelegateTaskRequest 委托任务请求
 // 用于委托任务操作
 type DelegateTaskRequest struct {

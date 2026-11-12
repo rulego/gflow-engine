@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
@@ -116,6 +118,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 		}
 	}
 	markFormModified(timelineTasks, approvalList)
+	// 意见源升级：账本行（wf_task_comment）优先、Comment 快照兜底，附件随账本行透出
+	mergeTimelineComments(approvalList, s.loadTimelineComments(ctx, timelineTasks))
 
 	// 3. 当前用户在该实例上的待审批任务 - 查找 active/suspended/pending 状态的任务
 	var currentUserTask *model.WfTask
@@ -570,6 +574,79 @@ func currentUserIsLastNodeVoter(tasks []*model.WfTask, userID string) bool {
 		}
 	}
 	return false
+}
+
+// loadTimelineComments 一次批查时间线全部任务（含会签子任务）的意见行，按任务
+// 分组、组内时间正序。查询失败降级为空表：意见源退回 Comment 快照、附件不展示，
+// 不让账本查询故障拖垮详情主路径。
+func (s *RuntimeServiceImpl) loadTimelineComments(ctx context.Context, tasks []*model.WfTask) map[string][]*model.WfTaskComment {
+	ids := make([]string, 0, len(tasks))
+	for _, t := range tasks {
+		if t != nil && t.ID != "" {
+			ids = append(ids, t.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if s.taskCommentDAO == nil {
+		return nil
+	}
+	rows, err := s.taskCommentDAO.ListByTaskIDs(ctx, ids)
+	if err != nil {
+		logrus.WithError(err).Warn("failed to load timeline comments; falling back to snapshot comments")
+		return nil
+	}
+	byTask := make(map[string][]*model.WfTaskComment, len(rows))
+	for _, r := range rows {
+		if r != nil {
+			byTask[r.TaskID] = append(byTask[r.TaskID], r)
+		}
+	}
+	return byTask
+}
+
+// mergeTimelineComments 把意见账本行合并为时间线意见源：有账本行的任务以账本行
+// 为准（首行文本为意见、全部行的附件并集），无账本行保持 Comment 快照兜底
+// （意见列启用前的存量任务）。子任务子树递归同口径。
+// 账本写入口：审批动作（含回退）、代审系统行、委派归还被委派人意见、强制改派
+// 留痕——同任务多行时首行（最早）为意见文本，代审系统行写入侧已 +1ms 保证
+// 排在本人意见行之后；委派归还是"被委派人先表态、原审批人后续完成"的两轮
+// 场景，时间线只显示最近一轮先落的那行（被委派人意见），原审批人终审意见仍
+// 在其自己的完成动作行上。AddTaskComment 是引擎开放 API 但宿主未接线，接入方
+// 若启用它须重新评估取行策略。
+func mergeTimelineComments(execs []dto.ExecutionInfo, byTask map[string][]*model.WfTaskComment) {
+	for i := range execs {
+		rows := byTask[execs[i].TaskID]
+		if len(rows) > 0 {
+			content := rows[0].Content
+			execs[i].Comment = &content
+			atts := make([]dto.ApprovalAttachment, 0, len(rows))
+			for _, r := range rows {
+				atts = append(atts, parseAttachmentRefs(r.Attachments)...)
+			}
+			if len(atts) > 0 {
+				execs[i].Attachments = atts
+			}
+		}
+		if len(execs[i].SubExecutions) > 0 {
+			mergeTimelineComments(execs[i].SubExecutions, byTask)
+		}
+	}
+}
+
+// parseAttachmentRefs 解析意见行的附件引用列；空列或损坏 JSON 返回空并告警
+// （损坏行不阻断整条时间线）。
+func parseAttachmentRefs(col *string) []dto.ApprovalAttachment {
+	if col == nil || *col == "" {
+		return nil
+	}
+	var atts []dto.ApprovalAttachment
+	if err := json.Unmarshal([]byte(*col), &atts); err != nil {
+		logrus.WithError(err).Warn("failed to parse comment attachments; skipping")
+		return nil
+	}
+	return atts
 }
 
 // Task2ExecutionInfo 把任务行装配为审批时间线视图。tasks 须包含同实例（至少是

@@ -36,7 +36,7 @@ func proxyAuditDB(t *testing.T) *query.Query {
 	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS wf_task_comment (
 		id TEXT PRIMARY KEY, task_id TEXT NOT NULL, process_instance_id TEXT NOT NULL DEFAULT '',
 		tenant_id TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL,
-		user_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL,
+		user_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, attachments TEXT,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)`).Error)
 	if c, e := db.DB(); e == nil {
 		_ = c.Close()
@@ -121,7 +121,7 @@ func TestProxyAudit_CompletesAsAssignee(t *testing.T) {
 	svc, eng := newRecallSvc(q, proxyDefinition(true), func(_ context.Context, evt TaskEvent) { evtCh <- evt })
 
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", UserName: "管理员", WorkflowAdmin: true})
-	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px1", true, "越级确认"))
+	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px1", true, "越级确认", nil))
 
 	row, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-px1")).First()
 	require.NoError(t, err)
@@ -164,7 +164,7 @@ func TestProxyAudit_RejectWritesMark(t *testing.T) {
 
 	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
-	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px2", false, "驳回理由"))
+	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px2", false, "驳回理由", nil))
 
 	row, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-px2")).First()
 	require.NoError(t, err)
@@ -180,7 +180,7 @@ func TestProxyAudit_RequiresAdmin(t *testing.T) {
 
 	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "jia", TenantID: "t1"})
-	err := svc.ProxyAudit(ctx, Actor{UserID: "jia", TenantID: "t1"}, "t-px3", true, "x")
+	err := svc.ProxyAudit(ctx, Actor{UserID: "jia", TenantID: "t1"}, "t-px3", true, "x", nil)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrPermissionDenied))
 }
@@ -193,7 +193,7 @@ func TestProxyAudit_RequiresProcessSwitch(t *testing.T) {
 
 	svc, _ := newRecallSvc(q, proxyDefinition(false), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
-	err := svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px4", true, "x")
+	err := svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px4", true, "x", nil)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrPermissionDenied))
 	require.Contains(t, err.Error(), "该流程已关闭管理员代审")
@@ -207,7 +207,7 @@ func TestProxyAudit_DefaultOnWithoutKey(t *testing.T) {
 
 	svc, _ := newRecallSvc(q, proxyDefinitionNoKey(), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
-	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px7", true, "缺省开"))
+	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px7", true, "缺省开", nil))
 
 	row, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-px7")).First()
 	require.NoError(t, err)
@@ -222,7 +222,7 @@ func TestProxyAudit_RejectsUnassigned(t *testing.T) {
 
 	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
-	err := svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px5", true, "x")
+	err := svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px5", true, "x", nil)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrValidation))
 }
@@ -239,7 +239,7 @@ func TestProxyAudit_RejectsDelegated(t *testing.T) {
 
 	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
-	err = svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px6", true, "x")
+	err = svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px6", true, "x", nil)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrValidation))
 
@@ -282,7 +282,7 @@ func TestProxyAudit_CountersignVote(t *testing.T) {
 
 	svc, _ := newRecallSvc(q, proxyDefinition(true), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
-	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-sub7-jia", true, "先批一步"))
+	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-sub7-jia", true, "先批一步", nil))
 
 	sub1, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-sub7-jia")).First()
 	require.NoError(t, err)
@@ -519,7 +519,7 @@ func TestProxyAudit_MarkNotLeakedDownstream(t *testing.T) {
 
 	svc, eng := newRecallSvc(q, proxyDefinition(true), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
-	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px8", true, "同意"))
+	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-px8", true, "同意", nil))
 
 	row, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-px8")).First()
 	require.NoError(t, err)
@@ -582,7 +582,7 @@ func TestProxyAudit_CountersignParentNotMarked(t *testing.T) {
 	svc, eng := newRecallSvc(q, proxyDefinition(true), nil)
 	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true})
 	// any 规则：代审一票即达阈值，父任务完成并流转
-	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-sub10-jia", true, "一票过"))
+	require.NoError(t, svc.ProxyAudit(ctx, Actor{UserID: "admin", TenantID: "t1", WorkflowAdmin: true}, "t-sub10-jia", true, "一票过", nil))
 
 	prow, err := q.WfTask.WithContext(context.Background()).Where(q.WfTask.ID.Eq("t-parent10")).First()
 	require.NoError(t, err)

@@ -340,8 +340,9 @@ func terminateProcessInstanceInTx(ctx context.Context, runtime RuntimeService, t
 
 // Return 退回（将任务退回到指定节点）。目标口径：本实例中已运行过的 userTask
 // 节点、当前节点的拓扑上游且非自身、重执行区域不穿并行网关，与详情接口
-// returnableNodes 列表同源。
-func (s *TaskServiceImpl) Return(ctx context.Context, actor Actor, taskID, targetActivityID, reason string) error {
+// returnableNodes 列表同源。attachments 为随退回提交的附件引用，与退回原因
+// 同事务落意见行（校验链同审批动作）。
+func (s *TaskServiceImpl) Return(ctx context.Context, actor Actor, taskID, targetActivityID, reason string, attachments []dto.ApprovalAttachment) error {
 	ctx = bindActor(ctx, actor)
 	userID := actor.UserID
 	if taskID == "" || targetActivityID == "" || userID == "" {
@@ -382,11 +383,11 @@ func (s *TaskServiceImpl) Return(ctx context.Context, actor Actor, taskID, targe
 	}
 
 	return WithInstanceTx(ctx, s.taskDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
-		return s.returnInternal(ctx, scope, graph, taskID, targetActivityID, userID, reason)
+		return s.returnInternal(ctx, scope, graph, taskID, targetActivityID, userID, reason, attachments)
 	})
 }
 
-func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceScope, graph *ChainGraph, taskID, targetActivityID, userID, reason string) error {
+func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceScope, graph *ChainGraph, taskID, targetActivityID, userID, reason string, attachments []dto.ApprovalAttachment) error {
 	taskDAO := scope.Tasks()
 	hiTaskDAO := scope.HiTasks()
 	task, err := taskDAO.Get(ctx, taskID)
@@ -412,6 +413,11 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 		return err
 	}
 
+	// 随退回提交的附件走与审批动作同一校验链（开关/数量/大小/path 租户归属）
+	if err := s.validateActionAttachments(ctx, scope, task, attachments); err != nil {
+		return err
+	}
+
 	task.Status = string(enums.TaskStatusReturned)
 	username := ""
 	if u := GetUserFromCtx(ctx); u != nil {
@@ -430,6 +436,13 @@ func (s *TaskServiceImpl) returnInternal(ctx context.Context, scope *InstanceSco
 
 	if err := taskDAO.Update(ctx, task); err != nil {
 		return fmt.Errorf("failed to return task: %w", err)
+	}
+
+	// 退回意见落意见表：此前退回原因只拼进 end_reason，时间线意见源升级为
+	// 账本行优先后取不到意见行，退回说明会从时间线消失——与审批动作同口径
+	// 补写一行（原因或附件至少其一非空才落行）。同事务，回退失败意见不留。
+	if err := s.recordApprovalComment(ctx, scope, task, userID, reason, attachments); err != nil {
+		return fmt.Errorf("failed to record return comment: %w", err)
 	}
 
 	hiTask := taskToHiTask(task)

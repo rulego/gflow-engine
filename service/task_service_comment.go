@@ -1,6 +1,11 @@
 // This file contains the task-comment methods on TaskServiceImpl:
 // AddTaskComment / GetTaskComments, plus the in-tx recordApprovalComment
 // helper used by the approval path to persist comments atomically.
+//
+// 两类"评论"的分工：本表（wf_task_comment）是审批意见留痕账本，一动作一行，
+// 由引擎在审批事务内写入，随任务归档长期可查；讨论区评论是宿主 comments 表
+// （挂 instance 实体），与本表无关。名称里的 comment 取飞书/Flowable 的意见
+// 用词，不要往讨论区语义上理解。
 
 package service
 
@@ -11,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rulego/gflow-engine/model"
+	"github.com/rulego/gflow-engine/types/dto"
 )
 
 // AddTaskComment 为任务添加审批意见。任务在办（wf_task）或已归档（wf_hi_task）均可评论。
@@ -108,17 +114,30 @@ func (s *TaskServiceImpl) locateTaskAnyState(ctx context.Context, taskID string)
 	return hiTask, instanceID, nil
 }
 
-// recordApprovalComment 在审批事务内落库审批意见（comment 为空则跳过）。
-// 与任务状态变更同事务，避免"审批成功但意见丢失"。
+// recordApprovalComment 在审批事务内落库审批意见行（意见与附件均为空才跳过：
+// 只传凭证不写意见是合法动作）。与任务状态变更同事务，避免"审批成功但意见丢失"。
 // operator 为审批操作人 ID（显式 request.UserID 优先，回退 ctx 身份）；
-// userName 在 ctx 携带同名身份时补充。
-func (s *TaskServiceImpl) recordApprovalComment(ctx context.Context, scope *InstanceScope, task *model.WfTask, operator, content string) error {
-	if strings.TrimSpace(content) == "" {
+// userName 在 ctx 携带同名身份时补充。attachments 由调用方先行通过
+// validateActionAttachments 校验，这里只负责序列化落列。
+func (s *TaskServiceImpl) recordApprovalComment(ctx context.Context, scope *InstanceScope, task *model.WfTask, operator, content string, attachments []dto.ApprovalAttachment) error {
+	return s.recordApprovalCommentAt(ctx, scope, task, operator, content, attachments, time.Now())
+}
+
+// recordApprovalCommentAt 同 recordApprovalComment，但允许指定落行时间：
+// 代审系统行显式比本人意见行晚 1ms——时间线意见源取同任务最早行，MySQL
+// DATETIME(3) 毫秒截断会让同事务两行同值、排序不定，系统行有机会跑到首行
+// 把本人意见顶掉。
+func (s *TaskServiceImpl) recordApprovalCommentAt(ctx context.Context, scope *InstanceScope, task *model.WfTask, operator, content string, attachments []dto.ApprovalAttachment, at time.Time) error {
+	if strings.TrimSpace(content) == "" && len(attachments) == 0 {
 		return nil
 	}
 	userName := ""
 	if u := GetUserFromCtx(ctx); u != nil && u.UserID == operator {
 		userName = u.UserName
+	}
+	attachmentsJSON, err := marshalAttachments(attachments)
+	if err != nil {
+		return err
 	}
 	instanceID := ""
 	if task.ProcessInstanceID != nil {
@@ -132,6 +151,7 @@ func (s *TaskServiceImpl) recordApprovalComment(ctx context.Context, scope *Inst
 		UserID:            operator,
 		UserName:          userName,
 		Content:           content,
-		CreatedAt:         time.Now(),
+		Attachments:       attachmentsJSON,
+		CreatedAt:         at,
 	})
 }
