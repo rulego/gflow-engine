@@ -206,3 +206,69 @@ func TestWithdraw_CrossNodeTaskArchivedWithWithdrawnReason(t *testing.T) {
 	require.Equal(t, "withdrawn: 填错了", *hiPar.EndReason,
 		"跨节点作废票应与同节点同口径（withdrawn 前缀 + 缘由）")
 }
+
+// 会签减到 0（最后一个有效票被移除）由普通参与人触发：引擎内部终止实例属流程
+// 语义级联，须以内部调用模式豁免实例属主守卫——否则非发起人的参与人会撞
+// 「only the process initiator」403，且整笔减签在事务回滚后一张票都减不掉。
+func TestReduceSign_ToZero_ByParticipant_Terminates(t *testing.T) {
+	q := secFixDB(t)
+	now := time.Now()
+
+	rs := &RuntimeServiceImpl{
+		instanceDAO:    dao.NewInstanceDAOWithQuery(q),
+		hiInstanceDAO:  dao.NewHiInstanceDAOWithQuery(q),
+		taskDAO:        dao.NewTaskDAOWithQuery(q),
+		workflowEngine: &testEngineDouble{listener: func(_ context.Context, _ TaskEvent) {}},
+	}
+	svc := &TaskServiceImpl{
+		taskDAO:         dao.NewTaskDAOWithQuery(q),
+		hiTaskDAO:       dao.NewHiTaskDAOWithQuery(q),
+		taskAssigneeDAO: dao.NewTaskAssigneeDAOWithQuery(q),
+		workflowEngine:  &withdrawProcEngineDouble{testEngineDouble{runtime: rs}, recallProcessFake{def: signTestDef}},
+		idGenerator:     &testSeqIDGen{},
+	}
+
+	// 发起人 wangqiang ≠ 操作人 alice（会签参与人）
+	require.NoError(t, q.WfProcess.Create(&model.WfProcess{
+		ID: "proc-1", ProcessKey: "sign-test", Name: "会签减光单", Version: 1,
+		DefinitionJSON: signTestDef, Status: "active", PublishTime: now,
+		TenantID: "t1", CreatedBy: "tester", CreatedAt: now,
+	}))
+	require.NoError(t, q.WfInstance.Create(&model.WfInstance{
+		ID: "inst-cs-zero", ProcessID: "proc-1", Name: "会签减光单",
+		Status: string(enums.InstanceStatusActive), TenantID: "t1",
+		StartUserID: "wangqiang", CreatedBy: "wangqiang", CreatedAt: now,
+	}))
+	// 会签聚合行（approvalType=all）+ 两个无标记配置子任务
+	require.NoError(t, q.WfTask.Create(&model.WfTask{
+		ID: "t-cs-zero", ProcessInstanceID: secFixStrPtr("inst-cs-zero"), ProcessID: "proc-1",
+		TaskDefKey: "a", Name: "会签节点", TaskType: constants.TaskTypeUserTask,
+		Status: string(enums.TaskStatusActive), ApprovalType: string(enums.ApprovalTypeCountersign),
+		TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+	}))
+	for _, uid := range []string{"alice", "bob"} {
+		require.NoError(t, q.WfTask.Create(&model.WfTask{
+			ID: "t-cs-zero-" + uid, ProcessInstanceID: secFixStrPtr("inst-cs-zero"), ProcessID: "proc-1",
+			TaskDefKey: "a", Name: "会签节点_" + uid, TaskType: constants.TaskTypeUserTask,
+			ParentID: secFixStrPtr("t-cs-zero"), Status: string(enums.TaskStatusActive),
+			Assignee: secFixStrPtr(uid), TenantID: "t1", CreatedBy: "system", CreatedAt: now,
+		}))
+	}
+
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "alice", TenantID: "t1", UserName: "甲"})
+	require.NoError(t, svc.ReduceSign(ctx, Actor{UserID: "alice", TenantID: "t1"}, "t-cs-zero",
+		[]string{"alice", "bob"}, "都退出会签"))
+
+	// 减到 0：实例应被引擎内部终止并归档（活表行删除，归档行 status=terminated），
+	// 不因属主守卫回滚整笔减签
+	persisted, gerr := rs.instanceDAO.Get(ctx, "inst-cs-zero")
+	require.NoError(t, gerr)
+	require.Nil(t, persisted, "终止后活表行应已删除")
+	archived, aerr := q.WfHiInstance.WithContext(ctx).Where(q.WfHiInstance.ID.Eq("inst-cs-zero")).First()
+	require.NoError(t, aerr, "终止后应存在归档实例行")
+	require.Equal(t, string(enums.InstanceStatusTerminated), archived.Status,
+		"参与人减光会签应触发实例终止而非403回滚")
+	subs, gerr := svc.taskDAO.GetByParentID(ctx, "t-cs-zero")
+	require.NoError(t, gerr)
+	require.Empty(t, subs, "两张子任务都应被移除")
+}

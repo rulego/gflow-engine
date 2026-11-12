@@ -388,7 +388,10 @@ func (s *TaskServiceImpl) reevaluateCountersignAfterReduce(ctx context.Context, 
 			return err
 		}
 		if parentTask.ProcessInstanceID != nil && *parentTask.ProcessInstanceID != "" {
-			evts, terr := terminateProcessInstanceInTx(ctx, s.workflowEngine.GetRuntimeService(), scope.Tx(), *parentTask.ProcessInstanceID, "all approvers reduced during reduce-sign")
+			// 减到 0 的实例终止是参与人合法减签触发的流程语义级联（与驳回级联
+			// 终止同类），以内部调用模式豁免实例属主守卫——否则非发起人的参与人
+			// 会撞「only the process initiator」403 且整笔减签事务回滚。
+			evts, terr := terminateProcessInstanceInTx(WithInternalCallingMode(ctx), s.workflowEngine.GetRuntimeService(), scope.Tx(), *parentTask.ProcessInstanceID, "all approvers reduced during reduce-sign")
 			if terr != nil {
 				return terr
 			}
