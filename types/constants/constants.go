@@ -194,5 +194,6 @@ const (
 	PriorityUrgent = 100
 )
 
-// TimeFormatLayout 时间格式化格式
+// TimeFormatLayout 内部存储布局：任务变量/落库的进程本地墙钟文本，不带时区。
+// 对外 DTO 透出一律走 utils.FormatTime（RFC3339 带时区偏移），两者不可混用。
 const TimeFormatLayout = "2006-01-02 15:04:05"

@@ -200,7 +200,7 @@ func TestFormatTime_Valid(t *testing.T) {
 	if result == nil {
 		t.Fatal("expected non-nil")
 	}
-	assertEqual(t, "formatted time", *result, "2025-06-15 14:30:00")
+	assertEqual(t, "formatted time", *result, "2025-06-15T14:30:00Z")
 }
 
 // ---------------------------------------------------------------------------

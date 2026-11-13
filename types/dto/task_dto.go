@@ -113,9 +113,9 @@ type NodeApproverDTO struct {
 	Action        string  `json:"action"`        // 动作：assign/add/remove
 	SortOrder     int32   `json:"sortOrder"`     // 会签顺序
 	Status        string  `json:"status"`        // 状态：pending/approved/rejected
-	ApprovalTime  *string `json:"approvalTime"`  // 审批时间
+	ApprovalTime  *string `json:"approvalTime"`  // 审批时间，RFC3339 带时区偏移
 	Comment       string  `json:"comment"`       // 审批意见
-	CreatedAt     string  `json:"createdAt"`     // 创建时间
+	CreatedAt     string  `json:"createdAt"`     // 创建时间，RFC3339 带时区偏移
 }
 
 // NodeApprovalStatusDTO 节点审批状态信息

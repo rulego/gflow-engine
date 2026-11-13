@@ -13,6 +13,7 @@ import (
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
+	"github.com/rulego/gflow-engine/utils"
 	"github.com/rulego/rulego/api/types"
 
 	"github.com/rulego/gflow-engine/model"
@@ -699,20 +700,23 @@ func Task2ExecutionInfo(task *model.WfTask, tasks []*model.WfTask) dto.Execution
 		}
 	}
 	if task.EndedAt != nil {
-		executionInfo.EndedAt = task.EndedAt.Format(constants.TimeFormatLayout)
+		executionInfo.EndedAt = utils.FormatTime(*task.EndedAt)
 	}
 	if task.ClaimedAt != nil {
-		executionInfo.ClaimedAt = task.ClaimedAt.Format(constants.TimeFormatLayout)
+		executionInfo.ClaimedAt = utils.FormatTime(*task.ClaimedAt)
 	}
 	return executionInfo
 }
 
-// formatTransferTime 转办时间规整为时间线时间格式。写入侧现为布局文本，旧数据
-// 是 time.Time 的 RFC3339 序列化文本；按布局与 RFC3339 双格式尝试，都不中则原样返回。
+// formatTransferTime 转办时间规整为时间线时间格式（RFC3339 带时区偏移）。写入侧
+// 现为 TimeFormatLayout 布局文本（进程本地墙钟，不带时区），旧数据是 time.Time 的
+// RFC3339 序列化文本。布局分支必须按 time.Local 锚定：无区布局 time.Parse 默认得
+// UTC，规整成 RFC3339 后浏览器按偏移换算会整体偏移一个时区；RFC3339 分支自带
+// 偏移，锚定参数不生效。都不中则原样返回。
 func formatTransferTime(raw string) string {
 	for _, layout := range []string{constants.TimeFormatLayout, time.RFC3339, time.RFC3339Nano} {
-		if t, err := time.Parse(layout, raw); err == nil {
-			return t.Format(constants.TimeFormatLayout)
+		if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+			return utils.FormatTime(t)
 		}
 	}
 	return raw

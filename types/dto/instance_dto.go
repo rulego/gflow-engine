@@ -170,7 +170,8 @@ type ExecutionInfo struct {
 	Status     string `json:"status"`
 	// 受托人
 	Assignee *string `json:"assignee"`
-	// EndedAt/ClaimedAt 时间字符串，格式 "2006-01-02 15:04:05"，未发生时为空串
+	// EndedAt/ClaimedAt 时间字符串，RFC3339 带时区偏移（utils.FormatTime），调用方
+	// 按偏移换算本地时间；未发生时为空串
 	EndedAt   string `json:"endedAt"`
 	ClaimedAt string `json:"claimedAt"`
 	// EndReason 任务结束原因：approved 通过 / rejected 拒绝 / returned 退回 /
@@ -192,8 +193,8 @@ type ExecutionInfo struct {
 	TransferredFrom string `json:"transferredFrom,omitempty"`
 	// TransferredReason 转办理由，随 Transfer 请求原文透出
 	TransferredReason string `json:"transferredReason,omitempty"`
-	// TransferredAt 转办时间，格式 "2006-01-02 15:04:05"；旧数据为 RFC3339
-	// 序列化文本时规整为该格式
+	// TransferredAt 转办时间，RFC3339 带时区偏移；旧数据为无时区布局文本或
+	// RFC3339 序列化文本，读取侧规整为该格式
 	TransferredAt string `json:"transferredAt,omitempty"`
 	// ForwardBy 转办操作人 userId：仅转办轨迹行（taskType=forward）携带，从
 	// 行变量 forward_by 读出；时间线据此渲染转办节点处理人

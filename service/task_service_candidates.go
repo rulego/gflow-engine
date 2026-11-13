@@ -15,7 +15,6 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/rulego/gflow-engine/model"
-	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/gflow-engine/utils"
@@ -330,7 +329,7 @@ func nodeApproverFromTask(t *model.WfTask, status string, approvalTime *string, 
 		SortOrder:     sortOrder,
 		Status:        status,
 		ApprovalTime:  approvalTime,
-		CreatedAt:     t.CreatedAt.Format(constants.TimeFormatLayout),
+		CreatedAt:     utils.FormatTime(t.CreatedAt),
 	}
 }
 
@@ -423,7 +422,7 @@ func (s *TaskServiceImpl) GetNodeApprovalStatus(ctx context.Context, actor Actor
 						CandidateType: "candidate",
 						Action:        "claim",
 						Status:        string(enums.ApproverStatusPending),
-						CreatedAt:     task.CreatedAt.Format(constants.TimeFormatLayout),
+						CreatedAt:     utils.FormatTime(task.CreatedAt),
 					})
 				}
 			}

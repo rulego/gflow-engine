@@ -313,7 +313,8 @@ func TestExecutionInfo_ProxyBy(t *testing.T) {
 }
 
 // 详情装配：转办过的任务从变量透出转办轨迹（转办前处理人/理由/时间），
-// transfer_time 的 RFC3339 序列化文本规整为时间线时间格式；未转办任务为空。
+// transfer_time 规整为 RFC3339 带偏移输出：带偏移的旧数据原时刻透传，无区的
+// 布局文本按本地时区锚定（时刻等值断言，与运行机器时区无关）；未转办任务为空。
 func TestExecutionInfo_TransferTrace(t *testing.T) {
 	transferred := &model.WfTask{
 		ID: "t-tz", TaskDefKey: "a", Name: "a", Status: string(enums.TaskStatusActive),
@@ -322,14 +323,17 @@ func TestExecutionInfo_TransferTrace(t *testing.T) {
 	info := Task2ExecutionInfo(transferred, nil)
 	require.Equal(t, "1001", info.TransferredFrom)
 	require.Equal(t, "出差在外", info.TransferredReason)
-	require.Equal(t, "2026-10-20 10:14:00", info.TransferredAt)
+	require.Equal(t, "2026-10-20T10:14:00+08:00", info.TransferredAt)
 
 	legacy := &model.WfTask{
 		ID: "t-tz3", TaskDefKey: "a", Name: "a", Status: string(enums.TaskStatusActive),
 		Variables: secFixStrPtr(`{"transfer_from":"1002","transfer_time":"2026-10-20 09:00:00"}`),
 	}
 	formatted := Task2ExecutionInfo(legacy, nil)
-	require.Equal(t, "2026-10-20 09:00:00", formatted.TransferredAt)
+	parsed, err := time.Parse(time.RFC3339, formatted.TransferredAt)
+	require.NoError(t, err, "布局文本应规整为合法 RFC3339：%q", formatted.TransferredAt)
+	require.True(t, parsed.Equal(time.Date(2026, 10, 20, 9, 0, 0, 0, time.Local)),
+		"布局文本被时区漂移：%q", formatted.TransferredAt)
 
 	plain := &model.WfTask{ID: "t-tz2", Status: string(enums.TaskStatusActive)}
 	empty := Task2ExecutionInfo(plain, nil)
