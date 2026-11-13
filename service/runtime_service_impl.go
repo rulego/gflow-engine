@@ -1982,7 +1982,9 @@ func (s *RuntimeServiceImpl) GetProcessInstanceUnionList(ctx context.Context, ac
 	}
 	size := request.GetPageSize()
 	offset := (request.GetPage() - 1) * size
-	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, request.TenantID, processIDs, "", request.Status, request.Keyword, nil, nil, size, offset, request.InstanceID, request.BusinessKey, "")
+	// 创建时间窗（startTimeFrom/To 在 DAO 侧比对 created_at）：宿主列表与表单
+	// 统计明细都以 createdAfter/createdBefore 传参，丢弃会使日期筛选形同虚设
+	instances, total, err := s.instanceDAO.GetInstancesUnionPagination(ctx, request.TenantID, processIDs, "", request.Status, request.Keyword, request.CreatedAfter, request.CreatedBefore, size, offset, request.InstanceID, request.BusinessKey, "")
 	if err != nil {
 		return nil, 0, err
 	}
