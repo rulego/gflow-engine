@@ -109,6 +109,26 @@ func TestAddSign_SubTaskInheritsFormSnapshot(t *testing.T) {
 	require.Equal(t, parentVars, *parent.Variables, "加签不得回写父任务行变量")
 }
 
+// 同一请求内同人重复提交须去重：重复 userId 只建一张子任务，
+// 否则双待办+双到达通知+会签分母虚增。
+func TestAddSign_DuplicateUserIDsInRequest(t *testing.T) {
+	svc, q := newSignTestSvc(t)
+	signSeed(t, q, "inst-1")
+	signSeedParentTask(t, q, "t-a", "inst-1", "alice", "")
+	ctx := SetUserToCtx(context.Background(), &Actor{UserID: "alice", TenantID: "t1", UserName: "甲"})
+
+	require.NoError(t, svc.AddSign(ctx, Actor{UserID: "alice", TenantID: "t1"}, "t-a", []string{"carol", "carol", "dave"}, "重复提交"))
+
+	subs, err := svc.taskDAO.GetByParentID(ctx, "t-a")
+	require.NoError(t, err)
+	require.Len(t, subs, 2, "同人重复 userId 只建一张子任务")
+	assignees := map[string]bool{}
+	for _, sub := range subs {
+		assignees[*sub.Assignee] = true
+	}
+	require.Equal(t, map[string]bool{"carol": true, "dave": true}, assignees)
+}
+
 // 带标记的加签子任务仅加签人本人可减：同节点其他参与人（被加签人 bob）减
 // carol 必须被拒，加签人 alice 本人减签成功。
 func TestReduceSign_OnlySignerCanReduce(t *testing.T) {

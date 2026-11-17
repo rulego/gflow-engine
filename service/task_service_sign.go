@@ -211,6 +211,8 @@ func (s *TaskServiceImpl) addSignInternal(ctx context.Context, scope *InstanceSc
 		if err := taskDAO.Create(ctx, signTask); err != nil {
 			return fmt.Errorf("failed to create sign task for user %s: %w", userID, err)
 		}
+		// 回写去重集合：请求内同人重复提交时不再造子任务（双待办+双通知+会签分母虚增）
+		existing[userID] = true
 
 		// 加签子任务派发 assigned 事件：站内「等你审批」与飞书/钉钉/企微卡片扇出
 		// 都挂在 assigned 上，缺派发时被加签人收不到任何到达通知（只能靠待办列表
