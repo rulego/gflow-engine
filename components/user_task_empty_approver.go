@@ -302,7 +302,8 @@ func applyFallbackVars(variables map[string]interface{}, policy, from, reason st
 	variables["fallback_policy"] = policy
 	variables["fallback_from"] = from
 	variables["fallback_reason"] = reason
-	variables["fallback_time"] = time.Now()
+	// 保留键族时间统一 TimeFormatLayout 文本，time.Time 会序列化成 RFC3339 混两种布局
+	variables["fallback_time"] = time.Now().Format(constants.TimeFormatLayout)
 }
 
 // approverSummary 生成原审批人配置的摘要（fallback_from 取值），

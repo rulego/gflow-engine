@@ -85,7 +85,8 @@ const (
 	VarsFallbackPolicy = "fallback_policy"
 	VarsFallbackFrom   = "fallback_from"
 	VarsFallbackReason = "fallback_reason"
-	VarsFallbackTime   = "fallback_time"
+	// VarsFallbackTime 兜底时刻，TimeFormatLayout 文本（与 VarsTransferTime 同口径）
+	VarsFallbackTime = "fallback_time"
 	// VarsSignAddedBy 加签子任务记录的加签操作人：减签时据此限制带标记的子任务
 	// 只能由加签人本人移除（流程配置的会签子任务无标记，不受此限）。引擎保留键，
 	// 审批提交/变量 API 同名键一律剥离，防伪造标记转嫁加签归属
