@@ -626,3 +626,25 @@ func TestAggregatePaginationBeyondDaoLimit(t *testing.T) {
 		t.Fatalf("pagination must cover all %d rows, got total %d sum %v", rows, res.Total, res.Metrics[0].Value)
 	}
 }
+
+// parseFormStatsDate 须兜住 RFC3339 带偏移文本：解析失败的行被静默丢弃，
+// 统计数字悄悄变小。
+func TestParseFormStatsDateAcceptsRFC3339(t *testing.T) {
+	got, ok := parseFormStatsDate("2026-11-13T10:49:50+08:00")
+	if !ok {
+		t.Fatal("RFC3339 带偏移值应被解析")
+	}
+	if want := time.Date(2026, 11, 13, 10, 49, 50, 0, time.FixedZone("CST", 8*3600)); !got.Equal(want) {
+		t.Fatalf("时刻被改动：got %s want %s", got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+	if _, ok := parseFormStatsDate("2026-11-13T02:49:50Z"); !ok {
+		t.Fatal("UTC Z 形式应被解析")
+	}
+	// 无偏移控件格式仍按本地锚定
+	if _, ok := parseFormStatsDate("2026-11-13 10:49:50"); !ok {
+		t.Fatal("控件布局文本应被解析")
+	}
+	if _, ok := parseFormStatsDate("not-a-time"); ok {
+		t.Fatal("非法文本不应被解析")
+	}
+}

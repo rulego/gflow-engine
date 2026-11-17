@@ -558,12 +558,13 @@ func splitGroupKey(k string) (int, string) {
 
 // parseFormStatsDate 解析日期字段值，容忍表单日期控件常见格式；
 // 按本地时区解释（表单日期无时区语义，与列表查询口径一致）。
+// RFC3339 兜外部系统提交的带偏移值，自带偏移时锚定参数不生效。
 func parseFormStatsDate(v interface{}) (time.Time, bool) {
 	s, ok := v.(string)
 	if !ok || s == "" {
 		return time.Time{}, false
 	}
-	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02", "2006/01/02"} {
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02", "2006/01/02", time.RFC3339} {
 		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
 			return t, true
 		}
