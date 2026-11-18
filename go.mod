@@ -7,8 +7,8 @@ require (
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/rulego/rulego v0.37.2
-	github.com/rulego/rulego-components-ai v0.37.1-0.20260920092958-723a541f8cab
+	github.com/rulego/rulego v1.0.1-0.20261113161836-76fca90a4fca
+	github.com/rulego/rulego-components-ai v1.0.1-0.20261111071421-ea05ea6ef84c
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cast v1.10.0
 	github.com/stretchr/testify v1.11.1
