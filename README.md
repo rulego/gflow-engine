@@ -66,7 +66,7 @@
 go get github.com/rulego/gflow-engine
 ```
 
-要求 Go 1.24+、RuleGo v0.37+。数据库表初始化脚本为 `scripts/00.init_bpm_pg.sql`（PostgreSQL）与 `scripts/00.init_bpm_mysql.sql`（MySQL），初始化与升级说明见 [docs/migration.md](docs/migration.md)。
+要求 Go 1.24+、RuleGo v1.0+。数据库表初始化脚本为 `scripts/00.init_bpm_pg.sql`（PostgreSQL）与 `scripts/00.init_bpm_mysql.sql`（MySQL），初始化与升级说明见 [docs/migration.md](docs/migration.md)。
 
 ## 初始化数据库
 

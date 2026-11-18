@@ -66,7 +66,7 @@ Real screenshots of GFlow Platform (极风工作流).
 go get github.com/rulego/gflow-engine
 ```
 
-Requires Go 1.24+ and RuleGo v0.37+. Initialize the workflow tables with `scripts/00.init_bpm_pg.sql` (PostgreSQL) or `scripts/00.init_bpm_mysql.sql` (MySQL); initialization and upgrade guidance lives in [docs/migration.md](docs/migration.md).
+Requires Go 1.24+ and RuleGo v1.0+. Initialize the workflow tables with `scripts/00.init_bpm_pg.sql` (PostgreSQL) or `scripts/00.init_bpm_mysql.sql` (MySQL); initialization and upgrade guidance lives in [docs/migration.md](docs/migration.md).
 
 ## Database setup
 

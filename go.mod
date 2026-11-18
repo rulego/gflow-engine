@@ -6,9 +6,8 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-sql-driver/mysql v1.8.1
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.9.2
-	github.com/rulego/rulego v0.37.2
-	github.com/rulego/rulego-components-ai v0.37.1-0.20260920092958-723a541f8cab
+	github.com/rulego/rulego v1.0.0
+	github.com/rulego/rulego-components-ai v1.0.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cast v1.10.0
 	github.com/stretchr/testify v1.11.1
@@ -49,6 +48,7 @@ require (
 	github.com/invopop/jsonschema v0.13.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.9.2 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect

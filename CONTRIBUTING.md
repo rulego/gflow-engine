@@ -15,7 +15,7 @@ Issue、PR、commit、代码注释、docs/ 目录文档均使用中文；代码�
 
 ## 开发环境
 
-- Go 1.24+，依赖 RuleGo v0.37+
+- Go 1.24+，依赖 RuleGo v1.0+
 - 单元测试默认跑 SQLite 内存库，无需预建环境；涉及行锁序列化的用例只有在真实 PostgreSQL / MySQL 上才有意义（SQLite 会静默忽略 `FOR UPDATE`），CI 会在真库上单独跑 `service/instance_lock_test.go`
 - 建库脚本：`scripts/00.init_bpm_pg.sql` / `scripts/00.init_bpm_mysql.sql`
 - 集成示例见 `examples/`
