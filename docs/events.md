@@ -47,6 +47,7 @@ engine, err := service.NewWorkflowEngineBuilder().
 | `returned` | 任务退回到指定节点 | ✅ | ✅ | ✅ 操作人 | ✅ | 退回后由 ExecuteNext 在目标节点重新派生任务 |
 | `terminated` | 流程终止（含级联） | ✗ | ✗ | ✅ 尽力 | ✅ | **看 `Source` 归因**：api / withdraw / reject |
 | `withdrawn` | 发起人撤回实例 | ✅ | ✅ | ✅ 撤回人 | ✅ | 随后会有一条 `Source=withdraw` 的 terminated |
+| `recalled` | 审批人收回：撤销自己最近一条已通过审批，重建同节点待审任务；已完成实例在窗口期内整单重开 | 在途 ✅ | 在途 ✅ | ✅ 收回人 | ✅ 收回原因 | 终态整单重开不带 TaskID/TaskDefKey；`ToUsers` 为同节点被作废票的其他投票人 |
 | `completed` | 流程实例完成 | ✗ | ✗ | ✅ 尽力 | ✗ | `ToUsers` 为发起人 |
 | `suspended` | 实例挂起（含级联任务挂起） | ✗ | ✗ | ✅ 操作人 | ✗ | `ToUsers` 为发起人 |
 | `activated` | 实例恢复 / 草稿激活 | ✗ | ✗ | ✅ 操作人 | ✗ | 同上 |
