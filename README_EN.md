@@ -16,7 +16,7 @@ English | [简体中文](README.md)
 * **Chinese-style approval semantics out of the box:** any-sign, all-sign (unanimous with one-vote veto), threshold vote (majority/percent/count), sequential approval, dynamic add/remove signers, transfer, delegation, claim, return, withdraw, overdue handling — no extra development. Definitions are versioned: running instances stay on the version they started with.
 * **Approvals and automation in one flow:** the process DSL is a `RuleGo` rule chain — approval nodes mix freely with gateways, parallel branches, rule chains, HTTP calls, AI agents and sub-processes. Once approved, downstream actions run automatically (booking, notifications, writing back to your systems).
 * **Embeds in your host, identity stays yours:** integrate as a pure Go library with no user-store coupling; approvers resolve by user/role/department/manager hierarchy via `IdentityService`; every operation is permission-checked against the actor, with multi-tenancy end to end.
-* **Lightweight and dependable:** no mandatory middleware; PostgreSQL / MySQL out of the box (pluggable dialects for Dameng, Kingbase, ...); runtime/history table split keeps audits off the hot path; 17 task event hooks drive notifications and other side effects ([docs/events.md](docs/events.md)).
+* **Lightweight and dependable:** no mandatory middleware; PostgreSQL / MySQL out of the box (pluggable dialects for Dameng, Kingbase, ...); runtime/history table split keeps audits off the hot path; 18 task event hooks drive notifications and other side effects ([docs/events.md](docs/events.md)).
 
 ## GFlow Platform (Enterprise Edition)
 
