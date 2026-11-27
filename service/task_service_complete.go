@@ -718,6 +718,7 @@ var engineReservedVarKeys = []string{
 	constants.VarsFallbackReason, constants.VarsFallbackTime,
 	constants.VarsSignAddedBy,
 	constants.VarsTransferFrom, constants.VarsTransferReason, constants.VarsTransferTime,
+	constants.VarsStarter,
 }
 
 // isEngineReservedVarKey 判断任务变量键是否属于引擎保留集：精确键集加
@@ -752,7 +753,7 @@ func stripEngineReservedVars(vars map[string]interface{}) {
 func stripReservedTaskVars(m map[string]interface{}) map[string]interface{} {
 	found := false
 	for k := range m {
-		if isEngineReservedVarKey(k) {
+		if isEngineReservedVarKey(k) && k != constants.VarsStarter {
 			found = true
 			break
 		}
@@ -762,7 +763,7 @@ func stripReservedTaskVars(m map[string]interface{}) map[string]interface{} {
 	}
 	out := make(map[string]interface{}, len(m))
 	for k, v := range m {
-		if !isEngineReservedVarKey(k) {
+		if !isEngineReservedVarKey(k) || k == constants.VarsStarter {
 			out[k] = v
 		}
 	}

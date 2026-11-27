@@ -140,6 +140,21 @@ func TestProcessServiceImpl_Deploy_BadCondition_Rejected(t *testing.T) {
 	}
 }
 
+func TestValidateExpressions_RejectsUnknownStarterField(t *testing.T) {
+	valid := []string{
+		`"dept" in msg._starter.deptPathIds`,
+		`"部门" in msg._starter.deptPathNames`,
+		`last(msg._starter.deptPathIds) == "dept"`,
+	}
+	if errs := ValidateExpressions(valid); len(errs) != 0 {
+		t.Fatalf("valid starter expressions should pass: %v", errs)
+	}
+	errs := ValidateExpressions([]string{`"dept" in msg._starter.deptPathId`})
+	if len(errs) != 1 || !strings.Contains(errs[0], "deptPathId") {
+		t.Fatalf("expected unknown starter field error, got: %v", errs)
+	}
+}
+
 func TestFormatConditionIssues(t *testing.T) {
 	msg := FormatConditionIssues([]ConditionIssue{{
 		NodeID: "n1", NodeName: "分支", NodeType: "switch",

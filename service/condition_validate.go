@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -82,6 +83,18 @@ func ValidateChainExpressions(chain *types.RuleChain) []ConditionIssue {
 	return issues
 }
 
+var starterFieldPattern = regexp.MustCompile(`msg\._starter\.([A-Za-z_][A-Za-z0-9_]*)`)
+
+func validateStarterFields(expression string) string {
+	for _, match := range starterFieldPattern.FindAllStringSubmatch(expression, -1) {
+		field := match[1]
+		if field != "deptPathIds" && field != "deptPathNames" {
+			return fmt.Sprintf("unknown starter field %q; supported fields are deptPathIds and deptPathNames", field)
+		}
+	}
+	return ""
+}
+
 // validateNodeCases 逐条编译 cases[].case，与 rulego SwitchNode.Init 同口径。
 func validateNodeCases(node *types.RuleNode, cfg map[string]interface{}) []ConditionIssue {
 	cases, _ := cfg["cases"].([]interface{})
@@ -103,6 +116,11 @@ func validateNodeCases(node *types.RuleNode, cfg map[string]interface{}) []Condi
 		}
 		if _, err := el.NewExprTemplate(expr); err != nil {
 			issue.Error = err.Error()
+			issues = append(issues, issue)
+			continue
+		}
+		if errMsg := validateStarterFields(expr); errMsg != "" {
+			issue.Error = errMsg
 			issues = append(issues, issue)
 		}
 	}
@@ -140,6 +158,10 @@ func ValidateExpressions(expressions []string) map[int]string {
 		}
 		if _, err := el.NewExprTemplate(expr); err != nil {
 			errs[i] = err.Error()
+			continue
+		}
+		if errMsg := validateStarterFields(expr); errMsg != "" {
+			errs[i] = errMsg
 		}
 	}
 	return errs

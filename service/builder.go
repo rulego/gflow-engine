@@ -52,6 +52,9 @@ type WorkflowEngineBuilder interface {
 	// 导致 UserTaskNode 中按角色/部门/主管解析审批人等功能无法获取真实数据。
 	SetIdentityService(service IdentityService) WorkflowEngineBuilder
 
+	// SetRoutingContextProvider 设置发起人组织快照提供者（可选）。
+	SetRoutingContextProvider(provider RoutingContextProvider) WorkflowEngineBuilder
+
 	// SetDialectProvider 设置自定义方言提供者
 	SetDialectProvider(provider DialectProvider) WorkflowEngineBuilder
 
@@ -106,19 +109,20 @@ type WorkflowEngineBuilder interface {
 // WorkflowEngineBuilderImpl 工作流引擎构建器实现类
 // 用于配置和构建工作流引擎实例
 type WorkflowEngineBuilderImpl struct {
-	name                  string
-	config                *config.Config
-	taskService           TaskService
-	processService        ProcessService
-	runtimeService        RuntimeService
-	historyService        HistoryService
-	identityService       IdentityService
-	dialectProviders      []DialectProvider
-	idGenerator           IDGenerator
-	locker                lock.Locker
-	ruleChainExecutor     RuleChainExecutor
-	ccTaskCreatedListener CCTaskCreatedListener
-	taskEventListener     TaskEventListener
+	name                   string
+	config                 *config.Config
+	taskService            TaskService
+	processService         ProcessService
+	runtimeService         RuntimeService
+	historyService         HistoryService
+	identityService        IdentityService
+	routingContextProvider RoutingContextProvider
+	dialectProviders       []DialectProvider
+	idGenerator            IDGenerator
+	locker                 lock.Locker
+	ruleChainExecutor      RuleChainExecutor
+	ccTaskCreatedListener  CCTaskCreatedListener
+	taskEventListener      TaskEventListener
 	// Add* 追加的额外监听器，Build 时排在 Set 注册的之后
 	extraCCListeners   []CCTaskCreatedListener
 	extraTaskListeners []TaskEventListener
@@ -173,6 +177,12 @@ func (b *WorkflowEngineBuilderImpl) SetHistoryService(service HistoryService) Wo
 // SetIdentityService 设置身份服务实现
 func (b *WorkflowEngineBuilderImpl) SetIdentityService(service IdentityService) WorkflowEngineBuilder {
 	b.identityService = service
+	return b
+}
+
+// SetRoutingContextProvider 设置发起人组织快照提供者（可选）。
+func (b *WorkflowEngineBuilderImpl) SetRoutingContextProvider(provider RoutingContextProvider) WorkflowEngineBuilder {
+	b.routingContextProvider = provider
 	return b
 }
 
@@ -290,6 +300,10 @@ func (b *WorkflowEngineBuilderImpl) Build() (WorkflowEngine, error) {
 
 	if b.identityService != nil {
 		engine.setIdentityService(b.identityService)
+	}
+
+	if b.routingContextProvider != nil {
+		engine.setRoutingContextProvider(b.routingContextProvider)
 	}
 
 	// Production guard: if RequireIdentityService was called, reject nil or

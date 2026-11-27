@@ -22,11 +22,12 @@ type WorkflowEngineImpl struct {
 	mutex   sync.RWMutex
 
 	// 核心服务
-	taskService     TaskService
-	processService  ProcessService
-	runtimeService  RuntimeService
-	historyService  HistoryService
-	identityService IdentityService
+	taskService            TaskService
+	processService         ProcessService
+	runtimeService         RuntimeService
+	historyService         HistoryService
+	identityService        IdentityService
+	routingContextProvider RoutingContextProvider
 
 	// 配置和数据库
 	config            *config.Config
@@ -126,6 +127,11 @@ func (e *WorkflowEngineImpl) GetHistoryService() HistoryService {
 // GetIdentityService 获取身份服务
 func (e *WorkflowEngineImpl) GetIdentityService() IdentityService {
 	return e.identityService
+}
+
+// GetRoutingContextProvider 获取可选的发起人组织快照提供者。
+func (e *WorkflowEngineImpl) GetRoutingContextProvider() RoutingContextProvider {
+	return e.routingContextProvider
 }
 
 // GetLocker 获取分布式锁
@@ -374,6 +380,11 @@ func (e *WorkflowEngineImpl) setHistoryService(service HistoryService) {
 // setIdentityService 设置身份服务（内部方法）
 func (e *WorkflowEngineImpl) setIdentityService(service IdentityService) {
 	e.identityService = service
+}
+
+// setRoutingContextProvider 设置发起人组织快照提供者（内部方法）。
+func (e *WorkflowEngineImpl) setRoutingContextProvider(provider RoutingContextProvider) {
+	e.routingContextProvider = provider
 }
 
 // setConfig 设置数据库配置（内部方法）

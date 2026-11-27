@@ -823,7 +823,8 @@ func stripApprovalResultKeys(vars *string) *string {
 
 // stripReservedMarks 剥离重建变量里的引擎保留标记键：上一轮的代审/兜底
 // 留痕带进新一轮，会被兜底钩子按陈旧缘由自动通过、误标时间线并误拦再次
-// 收回。解析失败原样返回。
+// 收回。_starter 例外，它是要沿用的组织快照，剥掉重开后组织条件全部失效。
+// 解析失败原样返回。
 func stripReservedMarks(vars *string) *string {
 	m, err := ParseVariablesJSON(vars)
 	if err != nil || len(m) == 0 {
@@ -831,6 +832,9 @@ func stripReservedMarks(vars *string) *string {
 	}
 	changed := false
 	for _, key := range engineReservedVarKeys {
+		if key == constants.VarsStarter {
+			continue
+		}
 		if _, ok := m[key]; ok {
 			delete(m, key)
 			changed = true

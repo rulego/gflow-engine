@@ -278,6 +278,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 			variables = v
 		}
 	}
+	// 任务快照可能缺失或预埋系统字段：预测与实际驱动一样，以实例快照为准。
+	variables = resolveForecastVariables(variables, instance.Variables)
 
 	// 5.5 后续审批节点预测（仅活态实例）：从活跃节点沿 Success 出边向前遍历
 	var upcoming []dto.UpcomingNode
@@ -299,6 +301,8 @@ func (s *RuntimeServiceImpl) GetProcessInstanceDetail(ctx context.Context, actor
 	}
 
 	// 6. 组装响应。ActionPermissions 在第 7 步按"状态 × 设计器"二维合并后填入
+	// 系统组织快照只参与路由和预测，不进入业务表单变量。
+	delete(variables, constants.VarsStarter)
 	resp := &dto.InstanceDetailResponse{
 		InstanceID:        instance.ID,
 		InstanceStatus:    instance.Status,

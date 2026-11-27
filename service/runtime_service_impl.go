@@ -13,7 +13,6 @@ import (
 	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/dto"
 	"github.com/rulego/gflow-engine/types/enums"
-	"github.com/rulego/rulego/utils/str"
 	"github.com/sirupsen/logrus"
 
 	"github.com/rulego/gflow-engine/dao"
@@ -34,14 +33,15 @@ const archiveBatchSize = 100
 // RuntimeServiceImpl RuntimeService的实现
 type RuntimeServiceImpl struct {
 	BaseService
-	workflowEngine WorkflowEngine
-	instanceDAO    InstanceStore
-	hiInstanceDAO  HiInstanceStore
-	processDAO     ProcessStore
-	taskDAO        TaskStore
-	taskCommentDAO TaskCommentStore
-	idGenerator    IDGenerator
-	enginePool     types.RuleEnginePool
+	workflowEngine  WorkflowEngine
+	instanceDAO     InstanceStore
+	hiInstanceDAO   HiInstanceStore
+	processDAO      ProcessStore
+	taskDAO         TaskStore
+	taskCommentDAO  TaskCommentStore
+	idGenerator     IDGenerator
+	starterProvider RoutingContextProvider
+	enginePool      types.RuleEnginePool
 	// execGates ExecuteNext 的实例级可重入门闩表（instanceID -> *execGate）
 	execGates sync.Map
 	// enginePools 租户专属引擎池：tenantID -> types.RuleEnginePool（惰性创建）。
@@ -227,15 +227,56 @@ func buildInstanceEnvelope(inst *model.WfInstance) *types.Metadata {
 
 // resolveDriveVariables 取实例驱动消息的变量载荷：任务变量（非空）优先，
 // 回退实例变量，两者皆缺用空 JSON。任务级覆盖发生在加签/会签等局部写回场景；
-// 无任务上下文的恢复路径传 nil。
+// 无任务上下文的恢复路径传 nil。_starter 一律以实例变量里发起时写入的那份为准：
+// 有就覆盖回任务载荷，没有就剥掉，调用方预埋的同名字段不参与路由。
 func resolveDriveVariables(taskVars, instVars *string) string {
+	// 两侧 JSON 都搜不到 _starter 时跳过解析，常规流程不多花开销
+	hasMarker := (taskVars != nil && strings.Contains(*taskVars, constants.VarsStarter)) ||
+		(instVars != nil && strings.Contains(*instVars, constants.VarsStarter))
+	if !hasMarker {
+		if taskVars != nil && *taskVars != "" {
+			return *taskVars
+		}
+		if instVars != nil && *instVars != "" {
+			return *instVars
+		}
+		return "{}"
+	}
+
+	payload := "{}"
+	if instVars != nil && *instVars != "" {
+		payload = *instVars
+	}
 	if taskVars != nil && *taskVars != "" {
-		return *taskVars
+		payload = *taskVars
 	}
-	if instVars != nil {
-		return *instVars
+
+	var trusted json.RawMessage
+	var hasTrusted bool
+	if instVars != nil && *instVars != "" {
+		var instanceData map[string]json.RawMessage
+		if json.Unmarshal([]byte(*instVars), &instanceData) == nil {
+			trusted, hasTrusted = instanceData[constants.VarsStarter]
+		}
 	}
-	return "{}"
+	var data map[string]json.RawMessage
+	if json.Unmarshal([]byte(payload), &data) != nil {
+		return payload
+	}
+	_, payloadHasStarter := data[constants.VarsStarter]
+	if !hasTrusted && !payloadHasStarter {
+		return payload
+	}
+	if hasTrusted {
+		data[constants.VarsStarter] = trusted
+	} else {
+		delete(data, constants.VarsStarter)
+	}
+	out, err := json.Marshal(data)
+	if err != nil {
+		return payload
+	}
+	return string(out)
 }
 
 // 契约：父实例由调用方同步 OnMsg 驱动；subProcess 子实例必须异步驱动，
@@ -245,6 +286,11 @@ func resolveDriveVariables(taskVars, instVars *string) string {
 func (s *RuntimeServiceImpl) startInstanceCore(ctx context.Context, processDef *model.WfProcess, initiator Actor, businessKey string, variables map[string]interface{}, isDraft bool, parentInstanceID string) (string, types.RuleEngine, types.RuleMsg, error) {
 	// 生成流程实例ID
 	instanceID := s.idGenerator.GenerateInstanceID()
+
+	variables, err := s.prepareStartVariables(ctx, processDef, initiator, variables, isDraft, parentInstanceID)
+	if err != nil {
+		return "", nil, types.RuleMsg{}, err
+	}
 
 	// 序列化变量（失败仅告警：实例仍可启动，变量为空）
 	var variablesJSON string
@@ -729,6 +775,22 @@ func (s *RuntimeServiceImpl) activateProcessInstanceInternal(ctx context.Context
 		if err := s.checkStarterScope(ctx, processDef, initiator); err != nil {
 			return nil, false, err
 		}
+		if requiresStarterContext(processDef.DefinitionJSON) {
+			variables, err := ParseVariablesJSON(instance.Variables)
+			if err != nil {
+				return nil, false, fmt.Errorf("failed to parse draft variables for starter context: %w", err)
+			}
+			variables, err = s.prepareStartVariables(ctx, processDef, initiator, variables, false, "")
+			if err != nil {
+				return nil, false, err
+			}
+			serialized, err := json.Marshal(variables)
+			if err != nil {
+				return nil, false, fmt.Errorf("failed to serialize starter context: %w", err)
+			}
+			variablesJSON := string(serialized)
+			instance.Variables = &variablesJSON
+		}
 	}
 
 	// 挂起恢复（非草稿路径）要求实例属主/管理员，与终止/删除/重启同口径；
@@ -889,7 +951,7 @@ func (s *RuntimeServiceImpl) GetProcessInstanceVariable(ctx context.Context, act
 // 只允许收回路径写入/累加，经变量 API 改写或清零会绕过单实例收回上限，
 // 三个变量写入口（Set/Remove）统一据此拒绝。
 func isReservedInstanceVariableKey(key string) bool {
-	return key == constants.VarsRecallCount
+	return key == constants.VarsRecallCount || key == constants.VarsStarter
 }
 
 // SetProcessInstanceVariables 批量设置流程实例变量。
@@ -1398,10 +1460,12 @@ func (s *RuntimeServiceImpl) executeNextLocked(ctx context.Context, processInsta
 	// 流程变量载荷:优先用调用方传入的 variables;为空(nil/空 map)时回退到实例存储的启动
 	// 业务变量(instance.Variables)。return/jump 等路径传 nil,若直接用空串会让重新生成的任务
 	// 丢失全部业务变量(msg.Data 空),审批人回退后看不到原始表单数据。
-	dataPayload := str.ToString(variables)
-	if len(variables) == 0 && processInstance.Variables != nil && *processInstance.Variables != "" {
-		dataPayload = *processInstance.Variables
+	var taskVars *string
+	if len(variables) > 0 {
+		raw := cast.ToString(variables)
+		taskVars = &raw
 	}
+	dataPayload := resolveDriveVariables(taskVars, processInstance.Variables)
 	msg := types.NewMsg(0, processInstanceID, types.JSON, md, dataPayload)
 
 	// fork-join 拓扑：当 startNodeId 处于 fork → suspend node(s) → join 拓扑时，

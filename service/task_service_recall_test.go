@@ -1348,3 +1348,35 @@ func TestLatestCompletedNodeInHistory_ExcludesProxyAndSystemVotes(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, []string{"u1"}, voters, "代审票与系统票不应产生收回资格")
 }
+
+// 终态收回重开要保留 _starter 组织快照，否则重开轮次的组织条件全部失效。
+func TestRecallCompleted_PreservesStarterSnapshot(t *testing.T) {
+	q := secFixDB(t)
+	def := recallDefinition(true,
+		[]string{recallNode("a", "userTask"), recallNode("b", "userTask")},
+		[]string{recallConn("a", "b")})
+	recallSeedHiInstance(t, q, "inst-term-starter", string(enums.InstanceStatusCompleted), time.Now().Add(-24*time.Hour))
+	recallSeedHiTask(t, q, "ht-s-b", "inst-term-starter", "b", "yi", time.Now().Add(-22*time.Hour))
+	variables := `{"days":2,"_starter":{"deptPathIds":["root","d1"],"deptPathNames":["测试集团","子公司甲"]}}`
+	_, err := q.WfHiInstance.WithContext(context.Background()).
+		Where(q.WfHiInstance.ID.Eq("inst-term-starter")).
+		UpdateSimple(q.WfHiInstance.Variables.Value(variables))
+	require.NoError(t, err)
+	svc, _ := newRecallSvc(q, def, nil)
+
+	require.NoError(t, svc.Recall(
+		SetUserToCtx(context.Background(), &Actor{UserID: "yi", TenantID: "t1", UserName: "乙"}),
+		Actor{UserID: "yi", TenantID: "t1"}, "inst-term-starter", "取回重审"))
+
+	revived, err := q.WfInstance.WithContext(context.Background()).
+		Where(q.WfInstance.ID.Eq("inst-term-starter")).First()
+	require.NoError(t, err, "实例应回插运行表")
+	require.NotNil(t, revived.Variables)
+	var vars map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(*revived.Variables), &vars))
+	starter, ok := vars[constants.VarsStarter].(map[string]interface{})
+	require.True(t, ok, "组织快照应原样保留")
+	require.Equal(t, []interface{}{"root", "d1"}, starter["deptPathIds"])
+	require.Equal(t, float64(2), vars["days"])
+	require.Contains(t, vars, constants.VarsRecallCount, "收回计数照常累加")
+}

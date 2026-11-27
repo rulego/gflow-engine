@@ -120,6 +120,8 @@ const (
 	// VarsRecallCount 实例变量里的累计收回次数，达到 MaxRecallCountPerInstance
 	// 后拒绝继续收回，防止收回→重投→再收回循环骚扰后续审批人
 	VarsRecallCount = "_recallCount"
+	// VarsStarter 发起人主部门路径快照，随实例变量持久化并在驱动时覆盖任务副本。
+	VarsStarter = "_starter"
 )
 
 // MaxRecallCountPerInstance 单实例累计收回次数上限
