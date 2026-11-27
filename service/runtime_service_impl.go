@@ -948,10 +948,11 @@ func (s *RuntimeServiceImpl) GetProcessInstanceVariable(ctx context.Context, act
 }
 
 // isReservedInstanceVariableKey 引擎托管的实例变量键：_recallCount 是收回频控计数器，
-// 只允许收回路径写入/累加，经变量 API 改写或清零会绕过单实例收回上限，
-// 三个变量写入口（Set/Remove）统一据此拒绝。
+// 只允许收回路径写入/累加，经变量 API 改写或清零会绕过单实例收回上限；
+// _childEndReason 只由子流程失败回传路径写入，经变量 API 改写会伪造父 Failure
+// 分支的分流依据。三个变量写入口（Set/Remove）统一据此拒绝。
 func isReservedInstanceVariableKey(key string) bool {
-	return key == constants.VarsRecallCount || key == constants.VarsStarter
+	return key == constants.VarsRecallCount || key == constants.VarsStarter || key == constants.VarsChildEndReason
 }
 
 // SetProcessInstanceVariables 批量设置流程实例变量。
@@ -1201,6 +1202,12 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 	now := time.Now()
 	duration := now.Sub(instance.CreatedAt).Milliseconds()
 
+	// 归档任务集与权威实例行声明在事务外、事务内赋值：事务提交后 subProcess 子
+	// 实例完成路径还要用它们汇总结果变量回传父实例。实例行必须用事务内重读的
+	// updatedInstance——预读行不含孙进程并发回传的变量，拿它做基底会把孙结果
+	// 丢出回传。
+	var archivedInstance *model.WfInstance
+	var archivedTasks []*model.WfTask
 	if err := WithInstanceTx(ctx, s.instanceDAO.Underlying(), processInstanceID, func(scope *InstanceScope) error {
 		tx := scope.Tx()
 		// 1. 更新实例状态为已完成
@@ -1220,6 +1227,7 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 		if err != nil {
 			return fmt.Errorf("failed to get instance for archiving: %w", err)
 		}
+		archivedInstance = updatedInstance
 
 		// 3. 创建历史实例记录
 		hiInstance := instanceToHiInstance(updatedInstance)
@@ -1234,6 +1242,7 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 		if err != nil {
 			return fmt.Errorf("failed to get tasks for archiving: %w", err)
 		}
+		archivedTasks = tasks
 
 		// 4.5 在途任务先作废再归档：原样归档会留下 active 无 end_reason 的历史行，
 		// 已完成实例的时间轴会永久挂着「进行中」节点。终态任务保留原状；作废行把
@@ -1351,6 +1360,22 @@ func (s *RuntimeServiceImpl) CompleteProcessInstance(ctx context.Context, actor 
 			parentNodeID, ok = s.deriveSubProcessParentNode(ctx, *instance.ParentID, instance.ProcessID) // 慢路径：重启后内存映射丢失，从 DB 重推导父节点
 		}
 		if ok {
+			// 子→主结果回传：子实例最终业务变量合并回父实例（同名键子值覆盖，
+			// 保留键剥离）。先落库再恢复——ExecuteNext 内部重读实例行，下游节点
+			// 拿到的载荷即含子结果。回传失败只告警不阻断——回传是增强，父恢复是
+			// 主契约。
+			merged := collectChildOutputVariables(archivedInstance, archivedTasks)
+			if len(merged) > 0 {
+				// 成功回传顺带清掉父实例里残留的 _childEndReason：失败→重跑子流程
+				// 后成功的循环里，不删会让下游条件读到陈旧失败原因
+				if err := s.mergeVariablesIntoInstance(ctx, *instance.ParentID, merged, constants.VarsChildEndReason); err != nil {
+					logrus.WithError(err).WithField("parentId", *instance.ParentID).
+						Warn("merge subProcess output into parent variables failed")
+				}
+			}
+			// variables 传 nil：ExecuteNext 的载荷口径是实例行变量（map 参数经
+			// cast.ToString 恒为空串回落），合并值已先行落库，这里不需要也不能
+			// 重复下传。
 			if err := s.ExecuteNext(ctx, *instance.ParentID, parentNodeID, nil); err != nil {
 				logrus.WithError(err).Warn("resume parent after subProcess child completed failed")
 			}

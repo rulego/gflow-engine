@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 
+	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/constants"
+	"github.com/rulego/gflow-engine/types/enums"
 )
 
 // StartSubProcessInstance 启动子流程实例（call activity 语义）：
@@ -182,6 +186,81 @@ func (s *RuntimeServiceImpl) SubProcessChildTerminated(ctx context.Context, pare
 	return terminated, nil
 }
 
+// collectChildOutputVariables 汇总子实例最终业务变量供回传父实例：instance.Variables
+// 为底（含自动化节点产出回写），已完成任务变量按 EndedAt 升序叠加（后结束覆盖
+// 先结束），最后剥保留键。作废的在途任务不参与——审批人未提交的草稿值不是最终
+// 业务变量。保留键口径=_ 前缀（引擎命名空间，业务变量不得用 _ 开头）加审批提交
+// 剥离同款（代审/兜底/加签/转办/reassign_）。纯内存不触 DAO。
+// 继承自父且未被子侧修改的键原值返回，合并回父等价无操作（零感知）。
+func collectChildOutputVariables(instance *model.WfInstance, tasks []*model.WfTask) map[string]interface{} {
+	merged, err := ParseVariablesJSON(instance.Variables)
+	if err != nil {
+		logrus.WithError(err).WithField("instanceId", instance.ID).
+			Warn("parse child instance variables for parent writeback failed; start from empty")
+		merged = make(map[string]interface{})
+	}
+	completed := make([]*model.WfTask, 0, len(tasks))
+	for _, t := range tasks {
+		if t != nil && t.Status == string(enums.TaskStatusCompleted) {
+			completed = append(completed, t)
+		}
+	}
+	sort.SliceStable(completed, func(i, j int) bool {
+		ei, ej := completed[i].EndedAt, completed[j].EndedAt
+		if ei != nil && ej != nil {
+			return ei.Before(*ej)
+		}
+		return ei != nil && ej == nil // 无结束时间的排最后
+	})
+	for _, task := range completed {
+		tv, err := ParseVariablesJSON(task.Variables)
+		if err != nil {
+			logrus.WithError(err).WithField("taskId", task.ID).
+				Warn("parse child task variables for parent writeback failed; skipped")
+			continue
+		}
+		for k, v := range tv {
+			merged[k] = v
+		}
+	}
+	stripEngineReservedVars(merged)
+	for k := range merged {
+		if strings.HasPrefix(k, "_") {
+			delete(merged, k)
+		}
+	}
+	return merged
+}
+
+// mergeVariablesIntoInstance 把 vars 逐键覆盖进实例 variables，并删除 removeKeys
+// 列出的键（同一短事务内完成；成功回传清残留 _childEndReason 用）。
+// 子→主回传与失败元数据写入共用：调用方已提交子实例事务，本函数在父行开新锁
+// 事务，避免父子实例行锁嵌套死锁；父实例已终态（并发窗口）或读写失败时返回
+// 错误，调用方降级告警，不回滚子实例已完成的事实。
+func (s *RuntimeServiceImpl) mergeVariablesIntoInstance(ctx context.Context, instanceID string, vars map[string]interface{}, removeKeys ...string) error {
+	if len(vars) == 0 && len(removeKeys) == 0 {
+		return nil
+	}
+	return WithInstanceTx(ctx, s.instanceDAO.Underlying(), instanceID, func(scope *InstanceScope) error {
+		tx := scope.Tx()
+		instance, err := tx.WfInstance.WithContext(ctx).Where(tx.WfInstance.ID.Eq(instanceID)).First()
+		if err != nil {
+			return fmt.Errorf("failed to get parent instance for variable merge: %w", err)
+		}
+		existing, err := ParseVariablesJSON(instance.Variables)
+		if err != nil {
+			return fmt.Errorf("failed to parse parent instance variables: %w", err)
+		}
+		for k, v := range vars {
+			existing[k] = v
+		}
+		for _, k := range removeKeys {
+			delete(existing, k)
+		}
+		return s.setProcessInstanceVariablesInTx(ctx, tx, instanceID, existing)
+	})
+}
+
 // resumeParentAfterChildTerminated 子实例终止后恢复父流程(子→父失败传播)。
 // 子已归档到 hi_instance(ParentID/ProcessID 保留),据此推导父 subProcess 节点并 ExecuteNext 重入。
 func (s *RuntimeServiceImpl) resumeParentAfterChildTerminated(ctx context.Context, childInstanceID string) {
@@ -197,6 +276,17 @@ func (s *RuntimeServiceImpl) resumeParentAfterChildTerminated(ctx context.Contex
 	}
 	if !ok {
 		return
+	}
+	// 失败路径只回传元数据：end_reason 写入父保留键 _childEndReason，父 Failure
+	// 分支据此区分审批拒绝/节点错误/撤回/终止；业务结果键不回传（失败的结果
+	// 不是父流程要消费的数据）。ExecuteNext 仍传 nil。
+	if hi.EndReason != nil && *hi.EndReason != "" {
+		if err := s.mergeVariablesIntoInstance(ctx, *hi.ParentID, map[string]interface{}{
+			constants.VarsChildEndReason: *hi.EndReason,
+		}); err != nil {
+			logrus.WithError(err).WithField("parentId", *hi.ParentID).
+				Warn("write child end reason into parent variables failed")
+		}
 	}
 	if err := s.ExecuteNext(ctx, *hi.ParentID, parentNodeID, nil); err != nil {
 		logrus.WithError(err).Warn("resume parent after subProcess child terminated failed")

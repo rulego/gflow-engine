@@ -122,6 +122,10 @@ const (
 	VarsRecallCount = "_recallCount"
 	// VarsStarter 发起人主部门路径快照，随实例变量持久化并在驱动时覆盖任务副本。
 	VarsStarter = "_starter"
+	// VarsChildEndReason 子流程失败回传父实例的元数据保留键：值为子实例
+	// end_reason 原文，父流程 Failure 分支据此区分审批拒绝/节点错误/撤回/终止。
+	// 只在子实例终止恢复父流程前写入，成功子实例不产生此键
+	VarsChildEndReason = "_childEndReason"
 )
 
 // MaxRecallCountPerInstance 单实例累计收回次数上限
