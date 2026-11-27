@@ -48,6 +48,10 @@ func (f *fakeProcessStore) Get(ctx context.Context, id string) (*model.WfProcess
 func (f *fakeProcessStore) GetByIDs(ctx context.Context, ids []string) ([]*model.WfProcess, error) {
 	return nil, errors.New("not implemented")
 }
+func (f *fakeProcessStore) GetByKey(ctx context.Context, tenantID, processKey string) (*model.WfProcess, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (f *fakeProcessStore) GetByKeyAndVersion(ctx context.Context, tenantID, processKey string, version int32) (*model.WfProcess, error) {
 	return nil, errors.New("not implemented")
 }

@@ -155,11 +155,27 @@ func findSubProcessNodeByTarget(def, target string) (string, bool) {
 }
 
 // ResolveSubProcessTarget 把 subProcess targetId（子链 ruleChain.id）解析为子流程定义ID。
-func (s *RuntimeServiceImpl) ResolveSubProcessTarget(tenantID, ruleChainID string) (string, bool) {
-	if v, ok := s.subProcessTargets.Load(tenantID + "|" + ruleChainID); ok {
+// 内存映射在收到部署请求的副本上由 PreloadChain 注册；多实例部署时发起与部署
+// 可能落在不同副本，未命中回落 DB 按 processKey 查 active 定义，回填映射并预载
+// 链自愈，此后该副本与部署侧同口径。
+func (s *RuntimeServiceImpl) ResolveSubProcessTarget(ctx context.Context, tenantID, ruleChainID string) (string, bool) {
+	key := tenantID + "|" + ruleChainID
+	if v, ok := s.subProcessTargets.Load(key); ok {
 		return v.(string), true
 	}
-	return "", false
+	if tenantID == "" || ruleChainID == "" {
+		return "", false
+	}
+	proc, err := s.processDAO.GetByKey(ctx, tenantID, ruleChainID)
+	if err != nil || proc == nil || proc.Status != string(enums.ProcessStatusActive) {
+		return "", false
+	}
+	// 自愈：回填映射并把子链预载进本副本租户池（幂等），后续 TellFlow 直接命中
+	if err := s.PreloadChain(tenantID, proc.ID, proc.DefinitionJSON); err != nil {
+		logrus.WithError(err).WithField("processId", proc.ID).
+			Warn("subProcess target fallback preload failed; resolution still valid")
+	}
+	return proc.ID, true
 }
 
 // SubProcessChildState 查询父实例下子流程状态：active（在跑）/ completed（已归档完成）。

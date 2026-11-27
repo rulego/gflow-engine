@@ -70,7 +70,7 @@ func (x *SubProcessNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 		return
 	}
 	tenantID := metaValue(msg, constants.KeyTenantID)
-	childProcID, ok := x.RuntimeService.ResolveSubProcessTarget(tenantID, x.Config.TargetId)
+	childProcID, ok := x.RuntimeService.ResolveSubProcessTarget(ctx.GetContext(), tenantID, x.Config.TargetId)
 	if !ok {
 		ctx.TellFailure(msg, fmt.Errorf("subProcess target %q not registered (deploy the child process first)", x.Config.TargetId))
 		return

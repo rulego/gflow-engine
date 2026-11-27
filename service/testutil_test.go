@@ -112,7 +112,7 @@ func (r *testRuntimeDouble) GetExecution(ctx context.Context, processID string) 
 func (r *testRuntimeDouble) PreloadChain(tenantID, processID, processDef string) error { return nil }
 func (r *testRuntimeDouble) EvictStaleChain(ctx context.Context, tenantID, processID string) {
 }
-func (r *testRuntimeDouble) ResolveSubProcessTarget(tenantID, ruleChainID string) (string, bool) {
+func (r *testRuntimeDouble) ResolveSubProcessTarget(_ context.Context, tenantID, ruleChainID string) (string, bool) {
 	return "", false
 }
 func (r *testRuntimeDouble) StartSubProcessInstance(ctx context.Context, parentInstanceID, parentNodeID, childProcessDefID string, variables map[string]interface{}) (string, error) {

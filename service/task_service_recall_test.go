@@ -52,7 +52,7 @@ func (d *recallInternalDouble) GetExecution(context.Context, string) (types.Rule
 func (d *recallInternalDouble) PreloadChain(string, string, string) error { return nil }
 func (d *recallInternalDouble) EvictStaleChain(context.Context, string, string) {
 }
-func (d *recallInternalDouble) ResolveSubProcessTarget(string, string) (string, bool) {
+func (d *recallInternalDouble) ResolveSubProcessTarget(context.Context, string, string) (string, bool) {
 	return "", false
 }
 func (d *recallInternalDouble) StartSubProcessInstance(context.Context, string, string, string, map[string]interface{}) (string, error) {

@@ -32,8 +32,10 @@ type RuntimeServiceInternal interface {
 	EvictStaleChain(ctx context.Context, tenantID, processID string)
 
 	// ResolveSubProcessTarget 把 subProcess 的 targetId（子链 ruleChain.id）解析为子流程定义ID。
-	// 注册表在 PreloadChain 时按 (tenant, ruleChain.id) 建立。解析不到返回 ok=false。
-	ResolveSubProcessTarget(tenantID, ruleChainID string) (processDefID string, ok bool)
+	// 内存映射在 PreloadChain 时按 (tenant, ruleChain.id) 建立；多实例部署下发起
+	// 副本可能没有该映射，未命中回落 DB 按 processKey 查 active 定义并回填自愈，
+	// 仍解析不到返回 ok=false。
+	ResolveSubProcessTarget(ctx context.Context, tenantID, ruleChainID string) (processDefID string, ok bool)
 
 	// StartSubProcessInstance 启动一个子流程实例（call activity 语义）：
 	// child.ParentID=parentInstanceID；记 parentNodeID 用于完成回调恢复父流程。
