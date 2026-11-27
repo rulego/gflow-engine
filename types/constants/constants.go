@@ -128,6 +128,18 @@ const (
 	VarsChildEndReason = "_childEndReason"
 )
 
+// 节点瞬时故障自动重试（httpCall/serviceTask）预算口径：
+// 只重试连接超时/读超时/连接拒绝/连接重置/断管/5xx，4xx 业务失败与解析失败
+// 不重试；退避 1s/4s/16s 指数封顶；预算耗尽才走 Failure 边。
+const (
+	// NodeRetryMax retryCount 配置上限，超出按此裁剪
+	NodeRetryMax = 5
+	// HttpCallDefaultRetryCount httpCall 未配置 retryCount 时的缺省重试次数
+	HttpCallDefaultRetryCount = 3
+	// ServiceTaskDefaultRetryCount serviceTask 未配置 retryCount 时的缺省重试次数
+	ServiceTaskDefaultRetryCount = 2
+)
+
 // MaxRecallCountPerInstance 单实例累计收回次数上限
 const MaxRecallCountPerInstance = 20
 const (

@@ -237,7 +237,8 @@ func TestHttpCallNode_4xxFailure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := `{"url":"` + srv.URL + `","method":"GET"}`
+	// retryCount=0 关闭重试：本用例验证失败终态语义，不验证重试（重试见 node_retry_test.go）
+	cfg := `{"url":"` + srv.URL + `","method":"GET","retryCount":0}`
 	engine := buildHttpEngine(t, "t_http_4xx", cfg)
 	msg := types.NewMsgWithJsonData(`{"days":3}`)
 
@@ -291,7 +292,8 @@ func TestHttpCall_Timeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	cfg := `{"url":"` + srv.URL + `","method":"GET","timeoutMs":100}`
+	// retryCount=0 关闭重试：本用例验证超时终态语义，不验证重试（重试见 node_retry_test.go）
+	cfg := `{"url":"` + srv.URL + `","method":"GET","timeoutMs":100,"retryCount":0}`
 	engine := buildHttpEngine(t, "t_http_timeout", cfg)
 	msg := types.NewMsgWithJsonData(`{"days":3}`)
 

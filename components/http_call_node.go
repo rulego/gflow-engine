@@ -77,6 +77,8 @@ type HttpCallNodeConfiguration struct {
 	// ReservedKey 完整响应写入的 msg.Data key（对象存对象、非对象存原文），默认 "_http"。
 	// 存量配置可自定义；设计器不再暴露此字段。
 	ReservedKey string `json:"reservedKey"`
+	// retryCount 从原始 configuration map 直读（见 Init），不走本结构体：
+	// 与 serviceTask 同一个解析器（retryCountFromConfig），缺省/裁剪口径单点维护。
 
 	// SSRF 防护（可选）
 	// AllowedHosts 允许访问的主机白名单。为空时不做主机限制。
@@ -111,6 +113,8 @@ type HttpCallNode struct {
 	allowedHostSet map[string]bool
 	// hostIsDynamic URL 模板的主机部分是否含 ${...} 变量；仅主机动态时才启用危险地址拦截
 	hostIsDynamic bool
+	// maxRetries 瞬时故障自动重试预算（Init 时经 retryCountFromConfig 解析，0=关闭）
+	maxRetries int
 }
 
 // GetSelfId 当前节点 ID（CurrentNodeDef 缺失时退回节点类型）
@@ -143,6 +147,8 @@ func (n *HttpCallNode) Init(_ types.Config, cfg types.Configuration) error {
 	if strings.TrimSpace(n.Config.ReservedKey) == "" {
 		n.Config.ReservedKey = HTTPReservedKey
 	}
+	// 重试预算：未配置走缺省 3，显式值按 [0, NodeRetryMax] 裁剪（0=关闭）
+	n.maxRetries = retryCountFromConfig(cfg, constants.HttpCallDefaultRetryCount)
 
 	// 预编译模板(支持 ${msg.xxx}/${metadata.xxx} 变量替换)
 	t, err := el.NewTemplate(n.Config.Url)
@@ -232,7 +238,7 @@ func (n *HttpCallNode) Init(_ types.Config, cfg types.Configuration) error {
 	return nil
 }
 
-// OnMsg 渲染请求 → 发送 → 合并响应到 msg → TellSuccess/Failure
+// OnMsg 渲染请求 → 发送（瞬时故障预算内自动重试）→ 合并响应到 msg → TellSuccess/Failure
 func (n *HttpCallNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 	defer recoverNodePanic(ctx, msg, HttpCallNodeType, n.GetSelfId())
 	start := time.Now()
@@ -247,73 +253,106 @@ func (n *HttpCallNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 		ctx.TellFailure(msg, fmt.Errorf("httpCall url scheme not allowed: %q", redactEndpoint(endpoint)))
 		return
 	}
-	// 主机校验：白名单（如配置）+ 动态主机危险地址拦截
+	// 主机校验：白名单（如配置）+ 动态主机危险地址拦截。校验失败属配置/注入问题，
+	// 重试无意义，直接终态。
 	if err := n.validateURLHost(ctx.GetContext(), u); err != nil {
 		n.auditLog(msg, endpoint, 0, start, err)
 		ctx.TellFailure(msg, err)
 		return
 	}
 
-	var bodyReader io.Reader
+	// body 只渲染一次（表单值重试间稳定），每次重试重建 reader；
+	// 请求头每次重试重新执行模板——带时间戳/新鲜凭证的头随重试刷新是有意行为
+	var bodyBytes []byte
 	if n.bodyTmpl != nil {
-		bodyReader = bytes.NewReader([]byte(n.bodyTmpl.ExecuteAsString(evn)))
+		bodyBytes = []byte(n.bodyTmpl.ExecuteAsString(evn))
 	}
 
-	req, err := http.NewRequestWithContext(ctx.GetContext(), n.Config.Method, endpoint, bodyReader)
-	if err != nil {
-		berr := redactEndpointInError(fmt.Errorf("build http request: %w", err), endpoint)
-		n.auditLog(msg, endpoint, 0, start, berr)
-		ctx.TellFailure(msg, berr)
-		return
-	}
-	for k, t := range n.headerTmpl {
-		req.Header.Set(k, t.ExecuteAsString(evn))
-	}
+	// Idempotency-Key 节点执行实例生成一次、贯穿全部重试：下游接口对同一键去重，
+	// 重试不产生重复副作用。设计者显式配置的同名头优先。
+	idemKey := newNodeExecutionID()
 
-	resp, err := n.client.Do(req)
-	if err != nil {
-		// 脱敏错误串中的 endpoint，避免 query 凭据落日志/终止 reason
-		lerr := redactEndpointInError(fmt.Errorf("http call failed: %w", err), endpoint)
-		n.auditLog(msg, endpoint, 0, start, lerr)
-		ctx.TellFailure(msg, lerr)
-		return
-	}
-	defer resp.Body.Close()
-	// 多读 1 字节判断截断：静默截断的 JSON 会以"纯文本"形态混入 msg，宁可显式失败
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseBytes+1))
-	if err != nil {
-		n.auditLog(msg, endpoint, resp.StatusCode, start, fmt.Errorf("read http response: %w", err))
-		ctx.TellFailure(msg, fmt.Errorf("read http response: %w", err))
-		return
-	}
-	if len(body) > maxHTTPResponseBytes {
-		err := fmt.Errorf("http response exceeds %d bytes limit", maxHTTPResponseBytes)
-		n.auditLog(msg, endpoint, resp.StatusCode, start, err)
-		ctx.TellFailure(msg, err)
-		return
-	}
-
-	if resp.StatusCode >= 400 {
-		// 响应体可能很大（上限 10MB），截断进错误串避免撑爆实例终止 reason
-		snippet := string(body)
-		if len(snippet) > 1024 {
-			snippet = snippet[:1024] + "...(truncated)"
+	attempt := 0 // 已重试次数
+	statusCode := 0
+	for {
+		statusCode = 0 // 每次尝试重置：终态审计只记本次失败的状态码，不残留上次尝试的
+		req, err := http.NewRequestWithContext(ctx.GetContext(), n.Config.Method, endpoint, bytes.NewReader(bodyBytes))
+		if err != nil {
+			// 构建失败=配置问题（方法/URL 非法），不重试
+			berr := redactEndpointInError(fmt.Errorf("build http request: %w", err), endpoint)
+			n.auditLog(msg, endpoint, 0, start, berr)
+			ctx.TellFailure(msg, berr)
+			return
 		}
-		err := fmt.Errorf("http %d: %s", resp.StatusCode, snippet)
-		n.auditLog(msg, endpoint, resp.StatusCode, start, err)
-		ctx.TellFailure(msg, err)
-		return
-	}
+		for k, t := range n.headerTmpl {
+			req.Header.Set(k, t.ExecuteAsString(evn))
+		}
+		if req.Header.Get("Idempotency-Key") == "" {
+			req.Header.Set("Idempotency-Key", idemKey)
+		}
 
-	// 输出合并与 aiAgent 同一套三规则（MergeAgentOutput）：完整响应始终写 ReservedKey(默认 _http)，
-	// 平铺模式(默认)再把对象顶层字段并入 msg.Data，映射最后执行（优先级最高）。
-	flatten := n.Config.FlattenOutput != nil && *n.Config.FlattenOutput
-	if err := MergeAgentOutput(&msg, body, n.Config.OutputMappings, n.Config.ReservedKey, flatten); err != nil {
-		ctx.TellFailure(msg, fmt.Errorf("merge http output: %w", err))
-		return
+		resp, err := n.client.Do(req)
+		if err == nil {
+			// 多读 1 字节判断截断：静默截断的 JSON 会以"纯文本"形态混入 msg，宁可显式失败
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxHTTPResponseBytes+1))
+			resp.Body.Close()
+			if readErr == nil && len(body) <= maxHTTPResponseBytes {
+				if resp.StatusCode < 400 {
+					// 成功出口：输出合并与 aiAgent 同一套三规则（MergeAgentOutput）——
+					// 完整响应始终写 ReservedKey(默认 _http)，平铺模式(默认)再把对象
+					// 顶层字段并入 msg.Data，映射最后执行（优先级最高）。
+					flatten := n.Config.FlattenOutput != nil && *n.Config.FlattenOutput
+					if merr := MergeAgentOutput(&msg, body, n.Config.OutputMappings, n.Config.ReservedKey, flatten); merr != nil {
+						merr = fmt.Errorf("merge http output: %w", merr)
+						n.auditLog(msg, endpoint, resp.StatusCode, start, merr)
+						ctx.TellFailure(msg, merr)
+						return
+					}
+					n.auditLog(msg, endpoint, resp.StatusCode, start, nil)
+					ctx.TellSuccess(msg)
+					return
+				}
+				// 响应体可能很大（上限 10MB），截断进错误串避免撑爆实例终止 reason
+				snippet := string(body)
+				if len(snippet) > 1024 {
+					snippet = snippet[:1024] + "...(truncated)"
+				}
+				err = &httpStatusError{code: resp.StatusCode, body: snippet}
+				statusCode = resp.StatusCode
+			} else if readErr == nil {
+				err = fmt.Errorf("http response exceeds %d bytes limit", maxHTTPResponseBytes)
+				statusCode = resp.StatusCode
+			} else {
+				err = fmt.Errorf("read http response: %w", readErr)
+				statusCode = resp.StatusCode
+			}
+		} else {
+			// 保留错误链（%w）：瞬时故障判定靠 errors.Is/As 解原始 net 错误，
+			// 脱敏只在终态上报时做（redact 会用 errors.New 砍链）
+			err = fmt.Errorf("http call failed: %w", err)
+		}
+
+		// 重试判定：只重试瞬时技术故障；预算耗尽或非瞬时故障（4xx/解析失败/SSRF）
+		// 才终态——重试期间不算失败。
+		if !isTransientNodeError(err) || attempt >= n.maxRetries {
+			// 终态上报前脱敏 endpoint，避免 query 凭据落日志/终止 reason
+			rerr := retryExhaustedError(attempt, redactEndpointInError(err, endpoint))
+			n.auditLog(msg, endpoint, statusCode, start, rerr)
+			ctx.TellFailure(msg, rerr)
+			return
+		}
+		idx := attempt
+		delay := retryBackoffDelay(idx)
+		attempt++
+		logNodeRetry(HttpCallNodeType, n.GetSelfId(), attempt, n.maxRetries, delay, err)
+		if cerr := waitRetryBackoff(ctx.GetContext(), idx); cerr != nil {
+			// 引擎取消即停：以取消错误终止，不再发起请求
+			cerr = fmt.Errorf("http call retry backoff canceled: %w", cerr)
+			n.auditLog(msg, endpoint, statusCode, start, cerr)
+			ctx.TellFailure(msg, cerr)
+			return
+		}
 	}
-	n.auditLog(msg, endpoint, resp.StatusCode, start, nil)
-	ctx.TellSuccess(msg)
 }
 
 // auditLog 输出结构化审计日志；endpoint 经 redactEndpoint 脱敏。

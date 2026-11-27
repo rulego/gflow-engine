@@ -35,6 +35,9 @@ const ServiceTaskNodeType = constants.NodeTypeServiceTask
 // （与 userTask/ccTask/aiAgent 一致），便于测试替换与依赖装配。
 type ServiceTaskNode struct {
 	action.FunctionsNode
+	// retryCount 瞬时故障自动重试预算：Init 从 configuration 提取
+	// （缺省 2、显式 0=关闭、上限 5）；函数注册方须自证幂等（无幂等键机制）
+	retryCount int
 }
 
 // Type 返回组件类型，与设计器 NODE_TYPES.SERVICE_TASK 对齐
@@ -51,9 +54,30 @@ func (s *ServiceTaskNode) New() types.Node {
 	return &ServiceTaskNode{}
 }
 
-// OnMsg 包装上游 FunctionsNode.OnMsg，补充 panic 兜底：
-// 宿主注册的服务函数 panic 不能击穿引擎所在进程（rulego 引擎侧不 recover）。
+// Init 初始化：沿用上游配置解析，另提取 retryCount（FunctionsNodeConfiguration
+// 无此字段，map 直读）。
+func (s *ServiceTaskNode) Init(ruleConfig types.Config, configuration types.Configuration) error {
+	if err := s.FunctionsNode.Init(ruleConfig, configuration); err != nil {
+		return err
+	}
+	s.retryCount = retryCountFromConfig(configuration, constants.ServiceTaskDefaultRetryCount)
+	return nil
+}
+
+// OnMsg 包装上游 FunctionsNode.OnMsg：
+//   - panic 兜底：宿主注册的服务函数 panic 不能击穿引擎所在进程（rulego 引擎侧不 recover）
+//   - 瞬时故障自动重试：包装 RuleContext 拦截 TellFailure，瞬时技术故障（超时/
+//     连接拒绝/5xx）在预算内退避重试，业务失败直接终态；retryCount=0 走原路径
 func (s *ServiceTaskNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 	defer recoverNodePanic(ctx, msg, ServiceTaskNodeType, ctx.GetSelfId())
-	s.FunctionsNode.OnMsg(ctx, msg)
+	if s.retryCount <= 0 {
+		s.FunctionsNode.OnMsg(ctx, msg)
+		return
+	}
+	st := &serviceRetryState{max: s.retryCount, real: ctx}
+	st.invoke = func() {
+		// 每次重试包一层新 wrapper（共享 st 的计数），TellSuccess 原样透传真实下游
+		s.FunctionsNode.OnMsg(&retryServiceContext{RuleContext: ctx, st: st}, msg)
+	}
+	st.invoke()
 }
