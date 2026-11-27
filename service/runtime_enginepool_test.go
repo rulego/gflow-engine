@@ -8,6 +8,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,17 +32,35 @@ var poolTestCounter int32
 
 const poolTestMarkerFunc = "pooltest_noop"
 
+// poolTestInvalProbeFunc 对账测试专用探针函数：驱动走到节点时发信号，验证引擎
+// 对账后未停机、OnMsg 仍被正常处理。
+const poolTestInvalProbeFunc = "pooltest_inval_probe"
+
+var poolTestInvalProbeSeen = make(chan struct{}, 8)
+
 func init() {
 	// functions 节点 + noop 函数注册（供可解析的最小链）
 	action.Functions.Register(poolTestMarkerFunc, func(ctx types.RuleContext, msg types.RuleMsg) {
+		ctx.TellSuccess(msg)
+	})
+	action.Functions.Register(poolTestInvalProbeFunc, func(ctx types.RuleContext, msg types.RuleMsg) {
+		select {
+		case poolTestInvalProbeSeen <- struct{}{}:
+		default:
+		}
 		ctx.TellSuccess(msg)
 	})
 }
 
 // poolTestChainDef 构造 ruleChain.id=chainID 的最小链（单 functions 节点）。
 func poolTestChainDef(chainID string) string {
+	return poolTestChainDefWithFunc(chainID, poolTestMarkerFunc)
+}
+
+// poolTestChainDefWithFunc 同 poolTestChainDef，functions 节点的函数名可指定。
+func poolTestChainDefWithFunc(chainID, functionName string) string {
 	return fmt.Sprintf(`{"ruleChain":{"id":%q,"name":"t","root":true},"metadata":{"firstNodeIndex":0,"nodes":[{"id":"n1","type":"functions","name":"n","configuration":{"functionName":%q}}],"connections":[]}}`,
-		chainID, poolTestMarkerFunc)
+		chainID, functionName)
 }
 
 // newPoolTestRS 构造一个带独立 SQLite 内存库的 RuntimeServiceImpl（每测独立 DSN，互不污染）。
@@ -302,9 +321,9 @@ func TestRuntimeService_TenantPool_SameTenantAliasOverwrite(t *testing.T) {
 	assert.True(t, ok, "旧版主键仍在池中（需显式驱逐）")
 }
 
-// InvalidateExecutionCache 必须驱逐注册表内所有服务实例的池条目（默认池+各租户池）
-// 并触发跨副本广播钩子；ApplyRemoteExecutionInvalidate 只清本地、不再广播（防循环）；
-// 驱逐后 GetExecution 按需自愈重装载。
+// InvalidateExecutionCache 对注册表内所有服务实例的已装载链做失效对账（默认池+
+// 各租户池）并触发跨副本广播钩子：定义仍在时原地热重载（引擎不出池、不停机），
+// 定义已删除时硬驱逐。ApplyRemoteExecutionInvalidate 只对账本地、不再广播（防循环）。
 func TestEnginePool_InvalidateExecutionCache(t *testing.T) {
 	rs, db := newPoolTestRS(t)
 	// 测试直构的 rs 不经 NewRuntimeService，手动登记进失效注册表
@@ -313,9 +332,12 @@ func TestEnginePool_InvalidateExecutionCache(t *testing.T) {
 	const tenant = "tenant-inval"
 	require := assert.New(t)
 
-	seedProcess(db, "proc-inval", "inval-key", 1, tenant, "chain-inval")
-	require.NoError(rs.PreloadChain(tenant, "proc-inval", poolTestChainDef("chain-inval")))
-	_, ok := rs.poolFor(tenant).Get("proc-inval")
+	// 探针链定义落库（对账从 DB 重载，落库定义须与预加载一致）
+	probeDef := poolTestChainDefWithFunc("chain-inval", poolTestInvalProbeFunc)
+	require.NoError(db.Exec(`INSERT INTO wf_process (id, process_key, name, version, definition_json, status, tenant_id, created_by, process_type, icon) VALUES (?,?,?,?,?, 'active', ?, 'tester', 'main', '')`,
+		"proc-inval", "inval-key", "inval-key", 1, probeDef, tenant).Error)
+	require.NoError(rs.PreloadChain(tenant, "proc-inval", probeDef))
+	eBefore, ok := rs.poolFor(tenant).Get("proc-inval")
 	require.True(ok, "预加载后应在租户池")
 
 	broadcast := make(chan string, 1)
@@ -323,32 +345,82 @@ func TestEnginePool_InvalidateExecutionCache(t *testing.T) {
 	SetEnginePoolInvalidateHook(func(processID string) { broadcast <- processID })
 	t.Cleanup(func() { SetEnginePoolInvalidateHook(oldHook) })
 
+	// 定义仍在：热重载对账，引擎不出池
 	InvalidateExecutionCache("proc-inval")
 
-	_, ok = rs.poolFor(tenant).Get("proc-inval")
-	require.False(ok, "失效后应从租户池驱逐")
+	eAfter, ok := rs.poolFor(tenant).Get("proc-inval")
+	require.True(ok, "定义仍在时对账应保留池条目（热重载）")
+	require.Same(eBefore, eAfter, "对账复用同一引擎对象，不重建")
 	select {
 	case got := <-broadcast:
 		require.Equal("proc-inval", got)
 	default:
 		t.Fatal("InvalidateExecutionCache 应触发跨副本广播钩子")
 	}
+	// 对账后 OnMsg 驱动仍能走到节点：旧实现 Del→Stop 后引擎停机，OnMsg 被拒收，
+	// 节点永不执行（部署窗口吞驱动的根因）
+	msg := types.NewMsg(0, "wf", types.JSON, types.NewMetadata(), `{}`)
+	eAfter.OnMsg(msg)
+	select {
+	case <-poolTestInvalProbeSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("对账后引擎应可正常驱动（未停机）")
+	}
 
-	// 自愈：驱逐后 GetExecution 慢路径从 DB 重装载最新定义
-	_, err := rs.GetExecution(context.Background(), "proc-inval")
-	require.NoError(err)
-	_, ok = rs.poolFor(tenant).Get("proc-inval")
-	require.True(ok, "驱逐后 GetExecution 应自愈重装载")
-
-	// 远程失效路径：只清本地、不触发钩子
+	// 定义更新（就地改 definition_json）：对账后同一引擎装载新定义
+	reloadedDef := strings.Replace(probeDef, `"name":"n"`, `"name":"reloaded"`, 1)
+	require.NoError(db.Exec(`UPDATE wf_process SET definition_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		reloadedDef, "proc-inval").Error)
 	ApplyRemoteExecutionInvalidate("proc-inval")
-	_, ok = rs.poolFor(tenant).Get("proc-inval")
-	require.False(ok)
+	eReloaded, ok := rs.poolFor(tenant).Get("proc-inval")
+	require.True(ok, "更新对账后仍在池")
+	require.Contains(string(eReloaded.DSL()), `"reloaded"`, "热重载应装载新定义")
 	select {
 	case got := <-broadcast:
 		t.Fatalf("ApplyRemoteExecutionInvalidate 不应再广播，却收到 %q", got)
 	default:
 	}
+
+	// 定义已删除：硬驱逐出池（Delete 已挡运行实例，无在途驱动）
+	require.NoError(db.Exec(`DELETE FROM wf_process WHERE id = ?`, "proc-inval").Error)
+	ApplyRemoteExecutionInvalidate("proc-inval")
+	_, ok = rs.poolFor(tenant).Get("proc-inval")
+	require.False(ok, "定义已删除时对账应硬驱逐")
+}
+
+// 定义改了 ruleChain.id（别名变更）：热重载不重新登记池别名，新别名寻址不到引擎，
+// 此时退回硬驱逐，下一次 GetExecution 走 Pool.New 重新登记。改 ruleChain.id 必经
+// Update（已挡运行实例），此回退不涉及在途驱动。
+func TestEnginePool_InvalidateExecutionCache_AliasChanged(t *testing.T) {
+	rs, db := newPoolTestRS(t)
+	runtimeServiceRegistry.Store(rs, struct{}{})
+	t.Cleanup(func() { runtimeServiceRegistry.Delete(rs) })
+	const tenant = "tenant-alias"
+	require := assert.New(t)
+
+	seedProcess(db, "proc-alias", "alias-key", 1, tenant, "chain-alias-old")
+	require.NoError(rs.PreloadChain(tenant, "proc-alias", poolTestChainDef("chain-alias-old")))
+	require.True(func() bool { _, ok := rs.poolFor(tenant).Get("chain-alias-old"); return ok }())
+	_, ok := rs.poolFor(tenant).Get("proc-alias")
+	require.True(ok)
+
+	// 更新定义：ruleChain.id 改为新别名
+	newDef := poolTestChainDef("chain-alias-new")
+	require.NoError(db.Exec(`UPDATE wf_process SET definition_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		newDef, "proc-alias").Error)
+
+	ApplyRemoteExecutionInvalidate("proc-alias")
+	_, ok = rs.poolFor(tenant).Get("proc-alias")
+	require.False(ok, "别名变更应退回硬驱逐")
+	_, ok = rs.poolFor(tenant).Get("chain-alias-new")
+	require.False(ok, "新别名尚未登记")
+
+	// GetExecution 懒重载：新别名指向重装载的引擎
+	eNew, err := rs.GetExecution(context.Background(), "proc-alias")
+	require.NoError(err)
+	got, ok := rs.poolFor(tenant).Get("chain-alias-new")
+	require.True(ok, "重装载后新别名应登记")
+	require.Same(eNew, got, "新别名应指向当前引擎")
 }
 
 // RecentlyUpdatedProcessIDs 只返回 updated_at 晚于 since 的定义：

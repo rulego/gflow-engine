@@ -173,9 +173,9 @@ func (s *ProcessServiceImpl) Update(ctx context.Context, actor Actor, process *m
 	// 被沿用。
 	InvalidateForkGraphCache(process.ID)
 
-	// 同理驱逐 enginePool 已装载链：GetExecution 快路径不回读 DB，不驱逐则本副本
-	// 继续用旧定义推进实例；多副本下另一副本装载的已是新定义，同一实例两套定义
-	// 创建任务，join 永远收不齐或路由分叉。
+	// 同理对账 enginePool 已装载链（原地热重载）：GetExecution 快路径不回读 DB，
+	// 不重载则本副本继续用旧定义推进实例；多副本下另一副本装载的已是新定义，
+	// 同一实例两套定义创建任务，join 永远收不齐或路由分叉。
 	InvalidateExecutionCache(process.ID)
 
 	return nil

@@ -12,13 +12,21 @@ import (
 	"github.com/rulego/gflow-engine/query"
 	"github.com/rulego/rulego"
 	"github.com/rulego/rulego/api/types"
+	"github.com/sirupsen/logrus"
 )
 
 // runtimeServiceRegistry 已创建的 RuntimeServiceImpl 注册表。enginePool（已装载的
-// 规则链）挂在每个服务实例上，失效时须逐个清理；池缓存按 processID 键且不回读 DB
-// （见 GetExecution 快路径），Update 就地改 definition_json 后若不驱逐，本副本会
+// 规则链）挂在每个服务实例上，失效时须逐个对账；池缓存按 processID 键且不回读 DB
+// （见 GetExecution 快路径），Update 就地改 definition_json 后若不重载，本副本会
 // 继续用旧链推进实例。
 var runtimeServiceRegistry sync.Map // *RuntimeServiceImpl -> struct{}
+
+// loadedChain 一条已装载链及其所在池：对账需要引擎（热重载）和池（别名核对、
+// 硬驱逐回退）两个对象。
+type loadedChain struct {
+	pool   types.RuleEnginePool
+	engine types.RuleEngine
+}
 
 // enginePoolInvalidateHook 跨副本失效广播钩子（多副本部署由 gflow 注入：PUBLISH 到
 // redis），语义与 forkGraph 的同名机制一致（见 fork_aware_resume.go）。
@@ -40,9 +48,10 @@ func getEnginePoolHook() func(processID string) {
 	return enginePoolInvalidateHook
 }
 
-// InvalidateExecutionCache 驱逐所有引擎池（含各租户池）中 processID 的已装载链，
-// 并触发跨副本失效广播。ProcessService.Update / Delete（就地改 definition_json、
-// processID 不变）调用；Deploy 走新版本新 processID，不命中旧缓存。
+// InvalidateExecutionCache 对所有引擎池（含各租户池）中 processID 的已装载链做
+// 失效对账，并触发跨副本失效广播。ProcessService.Update / Delete（就地改
+// definition_json、processID 不变）调用；Deploy 走新版本新 processID，不命中旧缓存。
+// 对账口径见 reconcileLoadedChain：热重载为主，硬驱逐仅限定义已删除。
 func InvalidateExecutionCache(processID string) {
 	if processID == "" {
 		return
@@ -53,7 +62,7 @@ func InvalidateExecutionCache(processID string) {
 	}
 }
 
-// ApplyRemoteExecutionInvalidate 仅清本地（不广播），供跨副本订阅方收到远程失效
+// ApplyRemoteExecutionInvalidate 仅对账本地（不广播），供跨副本订阅方收到远程失效
 // 消息时调用，避免广播循环。
 func ApplyRemoteExecutionInvalidate(processID string) {
 	if processID == "" {
@@ -65,21 +74,106 @@ func ApplyRemoteExecutionInvalidate(processID string) {
 func invalidateExecutionCacheLocal(processID string) {
 	runtimeServiceRegistry.Range(func(k, _ any) bool {
 		if s, ok := k.(*RuntimeServiceImpl); ok && s != nil {
-			s.enginePool.Del(processID)
-			s.enginePools.Range(func(_, v any) bool {
-				if p, ok := v.(types.RuleEnginePool); ok {
-					p.Del(processID)
-				}
-				return true
-			})
+			s.reconcileLoadedChain(processID)
 		}
 		return true
 	})
 }
 
+// reconcileLoadedChain 单副本对账一条已装载链。定义仍在时 ReloadSelf 原地热重载：
+// 只换链不 Stop 引擎，在途驱动不受影响（旧实现 pool.Del 内部会 Stop，超过优雅期
+// 就取消引擎 ctx，驱动中的实例滞留 active）。定义已删除时退回 pool.Del 硬驱逐，
+// Delete 已挡运行实例，此时无在途驱动。定义读取失败保留旧链，等下轮兜底巡检重试。
+func (s *RuntimeServiceImpl) reconcileLoadedChain(processID string) {
+	chains := s.loadedChains(processID)
+	if len(chains) == 0 {
+		return // 未装载：懒加载路径本就从库取最新定义，无需处理
+	}
+	if s.processDAO == nil {
+		// DAO 未装配无法对账，退回硬驱逐（GetExecution 自愈会按需重装载）
+		evictLoadedChains(processID, chains)
+		return
+	}
+	processDef, err := s.processDAO.Get(context.Background(), processID)
+	if err != nil {
+		logrus.WithError(err).WithField("processId", processID).
+			Warn("chain reconcile: read process def failed, keep loaded chain")
+		return
+	}
+	if processDef == nil {
+		evictLoadedChains(processID, chains)
+		return
+	}
+	def := normalizeChainDef(processDef.DefinitionJSON)
+	for _, lc := range chains {
+		if err := lc.engine.ReloadSelf([]byte(def)); err != nil {
+			logrus.WithError(err).WithField("processId", processID).
+				Warn("chain reconcile: reload loaded chain failed, keep old chain")
+			continue
+		}
+		ensurePoolAlias(processID, lc, def)
+	}
+}
+
+// loadedChains 收集持有 processID 的池与引擎（默认池 + 各租户池）。同一引擎只在
+// 一个池里，无需去重。Get 主键 miss 会按别名解析，此处要求命中的引擎 Id 与
+// processID 一致，防止把他链的同名别名引擎误当本链重载。
+func (s *RuntimeServiceImpl) loadedChains(processID string) []loadedChain {
+	var out []loadedChain
+	if e, ok := s.enginePool.Get(processID); ok && e.Id() == processID {
+		out = append(out, loadedChain{pool: s.enginePool, engine: e})
+	}
+	s.enginePools.Range(func(_, v any) bool {
+		if p, ok := v.(types.RuleEnginePool); ok {
+			if e, ok := p.Get(processID); ok && e.Id() == processID {
+				out = append(out, loadedChain{pool: p, engine: e})
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// evictLoadedChains 硬驱逐（pool.Del 内部会 Stop 引擎）。仅用于定义已删除/DAO
+// 未装配两种无在途驱动的场景。
+func evictLoadedChains(processID string, chains []loadedChain) {
+	for _, lc := range chains {
+		lc.pool.Del(processID)
+	}
+}
+
+// ensurePoolAlias 核对热重载后的池别名。别名只在 Pool.New 时登记，ReloadSelf 不
+// 重新登记：定义改了 ruleChain.id 后新别名寻址不到引擎，此时退回硬驱逐，让下一次
+// GetExecution 走 Pool.New 重新登记。改 ruleChain.id 必经 ProcessService.Update，
+// Update 已挡运行实例，此回退不涉及在途驱动。
+func ensurePoolAlias(processID string, lc loadedChain, def string) {
+	alias := extractRuleChainID(def)
+	if alias == "" || alias == processID {
+		return
+	}
+	if e, ok := lc.pool.Get(alias); ok && e == lc.engine {
+		return // 别名已指向本引擎
+	}
+	logrus.WithFields(logrus.Fields{
+		"processId": processID,
+		"newAlias":  alias,
+	}).Info("chain reconcile: ruleChain.id changed, evict for alias re-registration")
+	lc.pool.Del(processID)
+}
+
+// normalizeChainDef 装载期兜底归一（补 end 节点 / 补 Default 兜底边），内存态不回写
+// DB。initExecution 与热重载共用，两条装载路径产出一致。
+func normalizeChainDef(def string) string {
+	defCopy := &model.WfProcess{DefinitionJSON: def}
+	defCopy.EnsureEndNode()
+	defCopy.EnsureSwitchDefaultEdges()
+	return defCopy.DefinitionJSON
+}
+
 // RecentlyUpdatedProcessIDs 返回 updated_at 晚于 since 的流程定义 ID，供宿主做
 // enginePool/forkGraph 失效的兜底巡检：失效广播是 pub/sub，副本断连窗口内错过
-// 的消息不补发，宿主周期性按时间窗扫近期变更逐条驱逐（池条目懒加载，驱逐即对账）。
+// 的消息不补发，宿主周期性按时间窗扫近期变更逐条对账（对账是原地热重载，
+// 不 Stop 引擎，见 reconcileLoadedChain）。
 // 经注册表取服务实例的 DAO 查询；生产环境各实例共享同一数据库，任取一个即可，
 // 查询失败换下一个注册实例重试（容忍实例间瞬时差异）。
 func RecentlyUpdatedProcessIDs(ctx context.Context, since time.Time) ([]string, error) {
@@ -214,11 +308,8 @@ func (s *RuntimeServiceImpl) initExecution(tenantID, processID, processDef strin
 	// EnsureEndNode/EnsureSwitchDefaultEdges 归一，但已部署的定义不会重新走部署链
 	// ——缺 end 节点 / 缺 Default 兜底边的定义在此处对副本做同样处理（先补 end
 	// 再补 Default，Default 边才能指向新 end），保证在途流程实例也能正常装载/
-	// 完结/不卡死。
-	defCopy := &model.WfProcess{DefinitionJSON: processDef}
-	defCopy.EnsureEndNode()
-	defCopy.EnsureSwitchDefaultEdges()
-	processDef = defCopy.DefinitionJSON
+	// 完结/不卡死。热重载（reconcileLoadedChain）共用同一归一。
+	processDef = normalizeChainDef(processDef)
 	c := rulego.NewConfig()
 	// 注册到租户专属池：Pool.New 内部 WithRuleEnginePool(该租户池) 绑给引擎，
 	// 引擎内 ctx.TellFlow（如 subProcess）自动在该租户池内解析别名，天然租户隔离。
