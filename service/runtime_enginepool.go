@@ -94,7 +94,11 @@ func (s *RuntimeServiceImpl) reconcileLoadedChain(processID string) {
 		evictLoadedChains(processID, chains)
 		return
 	}
-	processDef, err := s.processDAO.Get(context.Background(), processID)
+	// 对账读限时：本函数同步跑在 Update/Delete 请求处理、广播订阅与巡检 goroutine
+	// 里，DB 挂死不应无限拖住 HTTP 请求；超时按读取失败处理（保留旧链等下轮兜底）
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	processDef, err := s.processDAO.Get(ctx, processID)
 	if err != nil {
 		logrus.WithError(err).WithField("processId", processID).
 			Warn("chain reconcile: read process def failed, keep loaded chain")
