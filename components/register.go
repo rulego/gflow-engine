@@ -89,27 +89,27 @@ func Register(deps ComponentDeps) error {
 
 	// 注入实例终态哨兵（httpCall/serviceTask 重试引用）：重试在节点 OnMsg 内同步
 	// 进行，感知不到实例被并发终止/完成；每轮退避前经运行时服务查一次运行态，
-	// 命中终态立即中止，不对已终态实例继续重试副作用。查询失败/替身未实现视为
-	// 可执行（放行），退化为仅按重试预算兜底。
-	runtimeSvc := runtimeService
-	RetryAbortHook = func(msg types.RuleMsg) bool {
-		instanceID := msg.Metadata.GetValue(constants.KeyInstanceID)
-		if instanceID == "" {
-			return false
-		}
-		executable := true
-		func() {
-			defer func() {
-				if recover() != nil {
-					executable = true // 测试替身等未实现场景：不拦
-				}
-			}()
+	// 命中终态立即中止，不对已终态实例继续重试副作用。查询失败/实现未提供该
+	// 能力（测试替身）视为可执行（放行），退化为仅按重试预算兜底。
+	// 窄接口断言而非大接口直调：替身嵌入 RuntimeServiceInternal 但未实现
+	// IsInstanceExecutable，直调会在运行期 panic。
+	type instanceExecutableChecker interface {
+		IsInstanceExecutable(ctx context.Context, instanceID string) (bool, error)
+	}
+	if checker, ok := runtimeService.(instanceExecutableChecker); ok {
+		RetryAbortHook = func(msg types.RuleMsg) bool {
+			instanceID := msg.Metadata.GetValue(constants.KeyInstanceID)
+			if instanceID == "" {
+				return false
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			exec, err := runtimeSvc.IsInstanceExecutable(ctx, instanceID)
-			executable = err != nil || exec
-		}()
-		return !executable
+			exec, err := checker.IsInstanceExecutable(ctx, instanceID)
+			if err != nil {
+				return false // 查询失败放行：不因 DB 抖动误杀正常重试
+			}
+			return !exec
+		}
 	}
 
 	// 注入 serviceTask 函数名校验器：注册表（components.Services）在本包，
