@@ -6,10 +6,12 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"time"
 
 	"context"
 
 	"github.com/rulego/gflow-engine/service"
+	"github.com/rulego/gflow-engine/types/constants"
 	"github.com/rulego/gflow-engine/types/enums"
 	"github.com/rulego/rulego"
 	"github.com/rulego/rulego/api/types"
@@ -84,6 +86,31 @@ func Register(deps ComponentDeps) error {
 
 	// 注入全局附件解析器（AIAgentNode 多模态输入引用；nil 合法）
 	SetAttachmentResolver(deps.AttachmentResolver)
+
+	// 注入实例终态哨兵（httpCall/serviceTask 重试引用）：重试在节点 OnMsg 内同步
+	// 进行，感知不到实例被并发终止/完成；每轮退避前经运行时服务查一次运行态，
+	// 命中终态立即中止，不对已终态实例继续重试副作用。查询失败/替身未实现视为
+	// 可执行（放行），退化为仅按重试预算兜底。
+	runtimeSvc := runtimeService
+	RetryAbortHook = func(msg types.RuleMsg) bool {
+		instanceID := msg.Metadata.GetValue(constants.KeyInstanceID)
+		if instanceID == "" {
+			return false
+		}
+		executable := true
+		func() {
+			defer func() {
+				if recover() != nil {
+					executable = true // 测试替身等未实现场景：不拦
+				}
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			exec, err := runtimeSvc.IsInstanceExecutable(ctx, instanceID)
+			executable = err != nil || exec
+		}()
+		return !executable
+	}
 
 	// 注入 serviceTask 函数名校验器：注册表（components.Services）在本包，
 	// service 层部署期校验经回调取用，避免 service→components 循环依赖。

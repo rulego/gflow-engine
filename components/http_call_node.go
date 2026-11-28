@@ -341,6 +341,13 @@ func (n *HttpCallNode) OnMsg(ctx types.RuleContext, msg types.RuleMsg) {
 			ctx.TellFailure(msg, rerr)
 			return
 		}
+		// 实例终态哨兵：重试期间实例被并发终止/完成时立即停，不对终态实例继续发请求
+		if retryAbortRequested(msg) {
+			aerr := redactEndpointInError(retryAbortError(), endpoint)
+			n.auditLog(msg, endpoint, statusCode, start, aerr)
+			ctx.TellFailure(msg, aerr)
+			return
+		}
 		idx := attempt
 		delay := retryBackoffDelay(idx)
 		attempt++

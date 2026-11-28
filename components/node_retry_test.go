@@ -20,6 +20,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,8 @@ import (
 	"github.com/rulego/rulego/components/action"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/rulego/gflow-engine/types/constants"
 )
 
 // speedUpRetryBackoff 把重试退避时基换到毫秒级（生产为 1s），返回还原函数。
@@ -279,4 +282,140 @@ func TestServiceTask_RetryExhaustedReportsCount(t *testing.T) {
 	assert.Equal(t, types.Failure, rel)
 	assert.Equal(t, int32(3), atomic.LoadInt32(&calls), "首试+2 次重试=3 次执行")
 	assert.Contains(t, err.Error(), "重试 2 次后失败")
+}
+
+// ---- 408/429 瞬时分类 ----
+
+// 408 请求超时与 429 限流同属瞬时过载：预算内重试，第 3 次成功。
+func TestHttpCall_RetryOn408And429(t *testing.T) {
+	for _, code := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(code), func(t *testing.T) {
+			registerHttpCallForTest(t)
+			defer speedUpRetryBackoff(t)()
+
+			var mu sync.Mutex
+			var count int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				mu.Lock()
+				count++
+				n := count
+				mu.Unlock()
+				if n <= 2 {
+					w.WriteHeader(code)
+					return
+				}
+				_, _ = w.Write([]byte(`{"ok":true}`))
+			}))
+			defer srv.Close()
+
+			cfg := `{"url":"` + srv.URL + `","method":"GET","retryCount":3}`
+			// 链 ID 必须随子测试唯一：rulego.New 同 ID 复用旧链（旧 server 已关，必炸）
+			engine := buildHttpEngine(t, "t_http_retry_code_"+strconv.Itoa(code), cfg)
+			_, rel, err := runChain(t, engine, types.NewMsgWithJsonData(`{}`))
+			require.NoError(t, err)
+			assert.Equal(t, types.Success, rel)
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Equal(t, 3, count, "两次 %d 后第三次应成功", code)
+		})
+	}
+}
+
+// ---- 实例终态哨兵 ----
+
+// 哨兵命中（实例已被并发终止）：httpCall 首次瞬时失败后立即中止，不再发请求。
+func TestRetryAbortHook_StopsHttpCallRetry(t *testing.T) {
+	registerHttpCallForTest(t)
+	defer speedUpRetryBackoff(t)()
+
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&count, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	prev := RetryAbortHook
+	RetryAbortHook = func(msg types.RuleMsg) bool {
+		return msg.Metadata.GetValue(constants.KeyInstanceID) == "inst-gone"
+	}
+	defer func() { RetryAbortHook = prev }()
+
+	cfg := `{"url":"` + srv.URL + `","method":"GET","retryCount":3}`
+	engine := buildHttpEngine(t, "t_http_retry_abort", cfg)
+	msg := types.NewMsgWithJsonData(`{}`)
+	msg.Metadata.PutValue(constants.KeyInstanceID, "inst-gone")
+	_, rel, err := runChain(t, engine, msg)
+	require.Error(t, err)
+	assert.Equal(t, types.Failure, rel)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&count), "哨兵命中：不得对终态实例继续重试")
+	assert.Contains(t, err.Error(), "中止重试")
+}
+
+// 哨兵放行（实例仍可执行）：重试照常，两次 500 后第三次成功。
+func TestRetryAbortHook_AllowsLiveInstance(t *testing.T) {
+	registerHttpCallForTest(t)
+	defer speedUpRetryBackoff(t)()
+
+	var mu sync.Mutex
+	var count int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		count++
+		n := count
+		mu.Unlock()
+		if n <= 2 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	prev := RetryAbortHook
+	RetryAbortHook = func(msg types.RuleMsg) bool {
+		return msg.Metadata.GetValue(constants.KeyInstanceID) == "inst-gone"
+	}
+	defer func() { RetryAbortHook = prev }()
+
+	cfg := `{"url":"` + srv.URL + `","method":"GET","retryCount":3}`
+	engine := buildHttpEngine(t, "t_http_retry_live", cfg)
+	msg := types.NewMsgWithJsonData(`{}`)
+	msg.Metadata.PutValue(constants.KeyInstanceID, "inst-live")
+	_, rel, err := runChain(t, engine, msg)
+	require.NoError(t, err)
+	assert.Equal(t, types.Success, rel)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 3, count, "哨兵放行：重试语义不变")
+}
+
+// 哨兵命中（实例已被并发终止）：serviceTask 首次瞬时失败后立即中止，不再重跑副作用。
+func TestRetryAbortHook_StopsServiceTaskRetry(t *testing.T) {
+	defer speedUpRetryBackoff(t)()
+	const fn = "test:svc:retry:abort"
+	action.Functions.UnRegister(fn)
+	defer action.Functions.UnRegister(fn)
+
+	var calls int32
+	action.Functions.Register(fn, func(ctx types.RuleContext, msg types.RuleMsg) {
+		atomic.AddInt32(&calls, 1)
+		ctx.TellFailure(msg, errors.New("dial tcp 10.0.0.9:8080: connection refused"))
+	})
+
+	prev := RetryAbortHook
+	RetryAbortHook = func(msg types.RuleMsg) bool {
+		return msg.Metadata.GetValue(constants.KeyInstanceID) == "inst-gone"
+	}
+	defer func() { RetryAbortHook = prev }()
+
+	engine := buildServiceEngine(t, "t_svc_retry_abort",
+		`{"functionName":"`+fn+`","retryCount":2}`)
+	msg := types.NewMsgWithJsonData(`{}`)
+	msg.Metadata.PutValue(constants.KeyInstanceID, "inst-gone")
+	_, rel, err := runChain(t, engine, msg)
+	require.Error(t, err)
+	assert.Equal(t, types.Failure, rel)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&calls), "哨兵命中：不得对终态实例继续重跑")
+	assert.Contains(t, err.Error(), "中止重试")
 }

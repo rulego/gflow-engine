@@ -55,6 +55,9 @@ func (d *recallInternalDouble) EvictStaleChain(context.Context, string, string) 
 func (d *recallInternalDouble) ResolveSubProcessTarget(context.Context, string, string) (string, bool) {
 	return "", false
 }
+func (d *recallInternalDouble) IsInstanceExecutable(context.Context, string) (bool, error) {
+	return true, nil
+}
 func (d *recallInternalDouble) StartSubProcessInstance(context.Context, string, string, string, map[string]interface{}) (string, error) {
 	return "", nil
 }

@@ -91,6 +91,30 @@ func NewRuntimeServiceWithQuery(query *query.Query, workflowEngine WorkflowEngin
 	return s
 }
 
+// IsInstanceExecutable 判断实例是否处于可执行状态：运行表在且状态为
+// active/suspended/draft。挂起可恢复仍算可执行——节点重试终态哨兵据此区分
+// 「已终态不必再重试」与「挂起等恢复」；查无运行行=已终态归档，返回 false,nil。
+func (s *RuntimeServiceImpl) IsInstanceExecutable(ctx context.Context, instanceID string) (bool, error) {
+	if instanceID == "" {
+		return false, fmt.Errorf("instanceID cannot be empty")
+	}
+	inst, err := s.instanceDAO.Get(ctx, instanceID)
+	if err != nil {
+		return false, err
+	}
+	if inst == nil {
+		return false, nil
+	}
+	switch inst.Status {
+	case string(enums.InstanceStatusActive),
+		string(enums.InstanceStatusSuspended),
+		string(enums.InstanceStatusDraft):
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 // StartProcessInstanceByKey 根据流程定义Key启动流程实例
 func (s *RuntimeServiceImpl) StartProcessInstanceByKey(ctx context.Context, actor Actor, processDefinitionKey, businessKey string, variables map[string]interface{}, opts ...StartOption) (string, error) {
 	ctx = bindActor(ctx, actor)

@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"regexp"
 	"strings"
 	"syscall"
@@ -43,6 +44,24 @@ import (
 
 // nodeRetryBackoffUnit 指数退避时基，生产 1s（1s/4s/16s）；测试替换为毫秒级提速。
 var nodeRetryBackoffUnit = time.Second
+
+// RetryAbortHook 实例终态哨兵：重试在节点 OnMsg 内同步进行，感知不到实例被并发
+// 终止/完成（终止只改库归档，不取消在途 OnMsg），若不干预会对已终态实例继续发起
+// 请求/副作用直到预算耗尽。组件装配（Register）时经 ComponentDeps.RuntimeService
+// 接线：按消息元数据的 instance_id 查一次运行态，实例已离开可执行状态返回 true，
+// 重试循环立即中止。挂起不算离开（挂起可恢复，中止会把本可恢复的实例提前推向
+// 终态）；查询失败放行（退化为仅按预算兜底）。未接线（未注册组件的嵌入式用法/
+// 单测）时为 nil，跳过检查。
+var RetryAbortHook func(msg types.RuleMsg) bool
+
+// retryAbortError 实例终态哨兵命中后的终止错误：不再重试，节点走失败路由收尾
+// （对已终态实例的失败路由由运行时守卫兜住，无害）。
+func retryAbortError() error { return errors.New("实例已离开执行中状态，中止重试") }
+
+// retryAbortRequested 哨兵命中判定。
+func retryAbortRequested(msg types.RuleMsg) bool {
+	return RetryAbortHook != nil && RetryAbortHook(msg)
+}
 
 // retryBackoffDelay 第 retryIdx 次（0 起）重试前的等待时长：1x/4x/16x 指数，16x 封顶
 // （retryCount 上限 5，后续重试不再放大等待）。
@@ -70,7 +89,8 @@ func waitRetryBackoff(ctx context.Context, retryIdx int) error {
 }
 
 // httpStatusError HTTP 状态码错误。保留原始状态码供重试判定（5xx 瞬时可重试、
-// 4xx 业务失败终态），错误串格式与历史实现一致（"http %d: %s"）。
+// 408/429 瞬时可重试、其余 4xx 业务失败终态），错误串格式与历史实现一致
+// （"http %d: %s"）。
 type httpStatusError struct {
 	code int
 	body string
@@ -78,8 +98,12 @@ type httpStatusError struct {
 
 func (e *httpStatusError) Error() string { return fmt.Sprintf("http %d: %s", e.code, e.body) }
 
-// transient 5xx=服务端瞬时故障；4xx=请求本身有问题，重试无意义。
-func (e *httpStatusError) transient() bool { return e.code >= 500 }
+// transient 5xx=服务端瞬时故障；408 请求超时/429 限流虽属 4xx，但同属瞬时过载，
+// 重试有意义（429 的 Retry-After 不单独解析，统一按退避节奏重试）；其余
+// 4xx=请求本身有问题，重试无意义。
+func (e *httpStatusError) transient() bool {
+	return e.code >= 500 || e.code == http.StatusRequestTimeout || e.code == http.StatusTooManyRequests
+}
 
 // transientMarker 可重试错误的自证接口：错误类型直接声明自己是否瞬时故障，
 // 免去按错误串猜。
@@ -93,8 +117,8 @@ type transientMarker interface{ transient() bool }
 var http5xxPattern = regexp.MustCompile(`http[ /]?5\d\d`)
 
 // isTransientNodeError 判断节点执行错误是否瞬时技术故障（值得重试）：
-// 连接/读超时、连接拒绝、连接重置、断管、5xx。4xx 业务失败、解析失败、SSRF
-// 拦截、引擎取消（context.Canceled）一律不可重试。
+// 连接/读超时、连接拒绝、连接重置、断管、5xx、408/429。其余 4xx 业务失败、
+// 解析失败、SSRF 拦截、引擎取消（context.Canceled）一律不可重试。
 func isTransientNodeError(err error) bool {
 	if err == nil {
 		return false
@@ -189,6 +213,11 @@ type retryServiceContext struct {
 func (c *retryServiceContext) TellFailure(msg types.RuleMsg, err error) {
 	st := c.st
 	if st.attempt < st.max && isTransientNodeError(err) {
+		// 实例终态哨兵：重试期间实例被并发终止/完成时立即停，不再重跑副作用
+		if retryAbortRequested(msg) {
+			st.real.TellFailure(msg, retryAbortError())
+			return
+		}
 		idx := st.attempt
 		delay := retryBackoffDelay(idx)
 		st.attempt++

@@ -54,4 +54,9 @@ type RuntimeServiceInternal interface {
 	//       processInstanceID - 流程实例ID, startNodeId - 续跑起点节点ID,
 	//       variables - 本次下传变量（空时回退到实例存储的启动变量）
 	ExecuteNext(ctx context.Context, processInstanceID, startNodeId string, variables map[string]interface{}) error
+
+	// IsInstanceExecutable 判断实例是否处于可执行状态：运行表在且状态为
+	// active/suspended/draft。挂起可恢复仍算可执行（节点重试哨兵据此区分「已终态
+	// 不必再重试」与「挂起等恢复」）；查无运行行=已终态归档，返回 false,nil。
+	IsInstanceExecutable(ctx context.Context, instanceID string) (bool, error)
 }
