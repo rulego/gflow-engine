@@ -58,6 +58,9 @@ func (f *fakeProcessStore) GetByKeyAndVersion(ctx context.Context, tenantID, pro
 func (f *fakeProcessStore) GetLatestByKey(ctx context.Context, tenantID, processKey string) (*model.WfProcess, error) {
 	return nil, errors.New("not implemented")
 }
+func (f *fakeProcessStore) GetActiveByKey(ctx context.Context, tenantID, processKey string) (*model.WfProcess, error) {
+	return nil, errors.New("not implemented")
+}
 func (f *fakeProcessStore) Update(ctx context.Context, entity *model.WfProcess) error {
 	return errors.New("not implemented")
 }

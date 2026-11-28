@@ -240,6 +240,21 @@ func (d *ProcessDAO) GetLatestByKey(ctx context.Context, tenantID, processKey st
 	return query.Order(q.Version.Desc()).First()
 }
 
+// GetActiveByKey 根据流程定义Key获取当前 active 版本的流程定义。部署侧保证同 key
+// 至多一个 active，但多版本历史行并存（每次部署新增一行、旧版本停用留档），必须
+// 带 status 过滤并按版本降序取——无排序的 First 按主键序返回随机版本，主键是
+// 随机 UUID 时多版本场景会抽中已停用旧版本。
+func (d *ProcessDAO) GetActiveByKey(ctx context.Context, tenantID, processKey string) (*model.WfProcess, error) {
+	if processKey == "" {
+		return nil, fmt.Errorf("processKey cannot be empty")
+	}
+
+	q := d.Query.WfProcess
+	return q.WithContext(ctx).
+		Where(q.TenantID.Eq(tenantID), q.ProcessKey.Eq(processKey), q.Status.Eq(string(enums.ProcessStatusActive))).
+		Order(q.Version.Desc()).First()
+}
+
 // GetAllVersionsByKey 根据流程定义Key获取所有版本的流程定义
 func (d *ProcessDAO) GetAllVersionsByKey(ctx context.Context, tenantID, processKey string) ([]*model.WfProcess, error) {
 	if processKey == "" {

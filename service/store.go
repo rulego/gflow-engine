@@ -75,11 +75,14 @@ type ProcessStore interface {
 	List(ctx context.Context, request *dto.ProcessQueryRequest) ([]*model.WfProcess, int64, error)
 	Get(ctx context.Context, id string) (*model.WfProcess, error)
 	GetByIDs(ctx context.Context, ids []string) ([]*model.WfProcess, error)
-	// GetByKey 按租户+processKey 取定义（部署侧保证同 key 仅一个 active，供
-	// subProcess 别名解析的 DB 回退用）
+	// GetByKey 按租户+processKey 取定义（无状态/排序过滤，主键序 First，多版本
+	// 场景返回哪个版本不确定——按 key 取运行版本用 GetActiveByKey）
 	GetByKey(ctx context.Context, tenantID, processKey string) (*model.WfProcess, error)
 	GetByKeyAndVersion(ctx context.Context, tenantID, processKey string, version int32) (*model.WfProcess, error)
 	GetLatestByKey(ctx context.Context, tenantID, processKey string) (*model.WfProcess, error)
+	// GetActiveByKey 按租户+processKey 取当前 active 版本（版本降序；部署侧保证
+	// 同 key 至多一个 active，供 subProcess 别名解析的 DB 回退用）
+	GetActiveByKey(ctx context.Context, tenantID, processKey string) (*model.WfProcess, error)
 	Update(ctx context.Context, entity *model.WfProcess) error
 	Delete(ctx context.Context, tenantID, id string) error
 	CountActiveReferencingForm(ctx context.Context, tenantID, formKey string) (int64, error)

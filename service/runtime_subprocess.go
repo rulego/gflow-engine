@@ -3,11 +3,13 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 
 	"github.com/rulego/gflow-engine/model"
 	"github.com/rulego/gflow-engine/types/constants"
@@ -156,18 +158,35 @@ func findSubProcessNodeByTarget(def, target string) (string, bool) {
 
 // ResolveSubProcessTarget 把 subProcess targetId（子链 ruleChain.id）解析为子流程定义ID。
 // 内存映射在收到部署请求的副本上由 PreloadChain 注册；多实例部署时发起与部署
-// 可能落在不同副本，未命中回落 DB 按 processKey 查 active 定义，回填映射并预载
-// 链自愈，此后该副本与部署侧同口径。
+// 可能落在不同副本：命中先校验映射行仍是 active 版本（子流程在另一副本重新部署
+// 后，本副本的映射会指向已停用旧版本），失效即废弃映射走 DB 重解析自愈；未命中
+// 回落 DB 按 processKey 查 active 版本（多版本历史行并存，必须带 status 过滤），
+// 回填映射并预载链自愈，此后该副本与部署侧同口径。
 func (s *RuntimeServiceImpl) ResolveSubProcessTarget(ctx context.Context, tenantID, ruleChainID string) (string, bool) {
 	key := tenantID + "|" + ruleChainID
 	if v, ok := s.subProcessTargets.Load(key); ok {
-		return v.(string), true
+		mapped := v.(string)
+		// 命中校验：子流程启动本身伴随多次 DB 写，一次主键读成本可忽略
+		if proc, err := s.processDAO.Get(ctx, mapped); err == nil && proc != nil &&
+			proc.Status == string(enums.ProcessStatusActive) {
+			return mapped, true
+		}
+		s.subProcessTargets.Delete(key)
 	}
 	if tenantID == "" || ruleChainID == "" {
 		return "", false
 	}
-	proc, err := s.processDAO.GetByKey(ctx, tenantID, ruleChainID)
-	if err != nil || proc == nil || proc.Status != string(enums.ProcessStatusActive) {
+	proc, err := s.processDAO.GetActiveByKey(ctx, tenantID, ruleChainID)
+	if err != nil {
+		// 查无此 key = 子流程未部署，静默返回由调用方报「未注册」；其余错误（DB
+		// 瞬断等）是异常路径，留痕避免静默吞成「未注册」误导排查
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			logrus.WithError(err).WithField("processKey", ruleChainID).
+				Warn("subProcess target fallback query failed")
+		}
+		return "", false
+	}
+	if proc == nil || proc.Status != string(enums.ProcessStatusActive) {
 		return "", false
 	}
 	// 自愈：回填映射并把子链预载进本副本租户池（幂等），后续 TellFlow 直接命中
